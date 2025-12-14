@@ -1,0 +1,2977 @@
+<script>
+    console.log('Script starting...');
+    const API = '/api';
+    let currentTab = 'screener';
+    let selectedStock = null;  // Store stock for trade bill creation
+    let settings = [];
+    let weeklyData = null;
+    let checklist = {};
+    let isLoading = false;  // Track loading state
+    console.log('Variables initialized');
+
+    const tabs = [
+        {id:'screener', icon:'🔍', label:'Screener'},
+        {id:'backtest', icon:'📊', label:'Signal Scanner'},
+        {id:'candlestick-screener', icon:'🕯️', label:'Candlestick'},
+        {id:'rsi-macd-screener', icon:'📈', label:'RSI+MACD'},
+        {id:'trade-bill', icon:'💼', label:'Trade Bill'},
+        {id:'trade-bills', icon:'📋', label:'Trade Bills'},
+        {id:'journal-dashboard', icon:'📈', label:'Dashboard'},
+        {id:'trade-log', icon:'📝', label:'Trade Log'},
+        {id:'trade-summary', icon:'📈', label:'Trade Summary'},
+        {id:'pnl-tracker', icon:'💵', label:'P&L Tracker'},
+        {id:'mistakes', icon:'⚠️', label:'Mistakes'},
+        {id:'favorites', icon:'⭐', label:'Favorites'},
+        {id:'account', icon:'💰', label:'Account'},
+        {id:'checklist', icon:'✅', label:'Checklist'},
+        {id:'settings', icon:'⚙️', label:'Settings'}
+    ];
+
+    async function api(method, url, data) {
+        const opts = {method, headers:{'Content-Type':'application/json'}};
+        if(data) opts.body = JSON.stringify(data);
+        const response = await fetch(API+url, opts);
+        if (!response.ok) {
+            throw new Error(`API error: ${response.status} ${response.statusText}`);
+        }
+        return await response.json();
+    }
+
+    function toast(msg, type='info') {
+        const el = document.createElement('div');
+        el.className = `px-4 py-2 rounded-lg mb-2 ${type==='success'?'bg-green-600':type==='error'?'bg-red-600':'bg-blue-600'}`;
+        el.textContent = msg;
+        document.getElementById('toast').appendChild(el);
+        setTimeout(() => el.remove(), 3000);
+    }
+
+    // Export trades to CSV
+    async function exportTrades() {
+        try {
+            const response = await api('GET', '/trade-log');
+            const trades = response.trades || [];
+            if (trades.length === 0) {
+                toast('No trades to export', 'error');
+                return;
+            }
+            
+            const headers = ['Date', 'Symbol', 'Strategy', 'Direction', 'Entry', 'Shares', 'Stop Loss', 'Take Profit', 'Exit Date', 'Exit Price', 'Gross P&L', 'Net P&L', 'Mistake', 'Notes'];
+            const rows = trades.map(t => [
+                t.entry_date, t.symbol, t.strategy, t.direction, t.entry_price, t.shares,
+                t.stop_loss, t.take_profit, t.exit_date, t.exit_price, t.gross_pnl, t.net_pnl, t.mistake, t.notes
+            ]);
+            
+            const csv = [headers.join(','), ...rows.map(r => r.map(v => `"${v || ''}"`).join(','))].join('\n');
+            const blob = new Blob([csv], {type: 'text/csv'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `trade_log_${new Date().toISOString().split('T')[0]}.csv`;
+            a.click();
+            toast('Trades exported!', 'success');
+        } catch(e) {
+            toast('Export error: ' + e.message, 'error');
+        }
+    }
+
+    // Initialize on load
+    document.addEventListener('DOMContentLoaded', async () => {
+        await loadIndicatorFilters();
+    });
+
+    function renderNav() {
+        document.getElementById('nav').innerHTML = tabs.map(t => `
+            <button onclick="switchTab('${t.id}')" class="w-full text-left px-3 py-2 rounded-lg mb-1 flex items-center gap-2 ${currentTab===t.id?'bg-blue-600/30 text-blue-400':'text-gray-400 hover:bg-gray-700/50'}">
+                ${t.icon} ${t.label}
+            </button>
+        `).join('');
+    }
+
+    function renderHeader() {
+        const s = settings[0] || {trading_capital:6000, risk_per_trade:2, currency:'GBP'};
+        const sym = s.currency==='GBP'?'£':s.currency==='INR'?'₹':'$';
+        document.getElementById('header-stats').innerHTML = `
+            <div><span class="text-gray-500">Capital:</span> <span class="font-mono text-blue-400">${sym}${s.trading_capital?.toLocaleString()}</span></div>
+            <div><span class="text-gray-500">Max Risk:</span> <span class="font-mono text-red-400">${sym}${(s.trading_capital*s.risk_per_trade/100).toFixed(0)}</span></div>
+        `;
+    }
+
+    async function switchTab(tab) { currentTab = tab; renderNav(); await render(); }
+
+    async function render() {
+        const c = document.getElementById('content');
+        try {
+            if(currentTab==='screener') c.innerHTML = screenView();
+            else if(currentTab==='backtest') c.innerHTML = await backtestView();
+            else if(currentTab==='candlestick-screener') c.innerHTML = candlestickScreenerView();
+            else if(currentTab==='rsi-macd-screener') c.innerHTML = rsiMacdScreenerView();
+            else if(currentTab==='trade-bill') { c.innerHTML = tradeBillView(); triggerTradeBillCalc(); }
+            else if(currentTab==='trade-bills') c.innerHTML = await tradeBillsView();
+            else if(currentTab==='journal-dashboard') c.innerHTML = await journalDashboardView();
+            else if(currentTab==='trade-log') c.innerHTML = await tradeLogView();
+            else if(currentTab==='trade-summary') c.innerHTML = await tradeSummaryView();
+            else if(currentTab==='pnl-tracker') c.innerHTML = await pnlTrackerView();
+            else if(currentTab==='mistakes') c.innerHTML = await mistakesView();
+            else if(currentTab==='favorites') c.innerHTML = await favoritesView();
+            else if(currentTab==='account') c.innerHTML = await accountView();
+            else if(currentTab==='checklist') c.innerHTML = checklistView();
+            else if(currentTab==='settings') c.innerHTML = settingsView();
+        } catch(e) {
+            console.error('Error rendering view:', e);
+            c.innerHTML = `<div class="text-center py-20 text-red-500">
+                <div class="text-6xl mb-4">⚠️</div>
+                <h3 class="text-xl font-semibold">Error loading view</h3>
+                <p class="mt-2 text-gray-400">${e.message}</p>
+                <p class="mt-4 text-sm text-gray-500">Check console for details</p>
+            </div>`;
+        }
+    }
+
+    // ========== SCREENER ==========
+    let indicatorFilters = null; // Will hold user's indicator config
+    
+    function screenView() {
+        const results = weeklyData?.all_results || [];
+        const sum = weeklyData?.summary || {};
+        
+        return `
+            <div class="space-y-6">
+                <div class="flex items-center justify-between">
+                    <div><h2 class="text-xl font-bold">Triple Screen Scanner</h2><p class="text-gray-500 text-sm">Weekly trend + Daily entry timing</p></div>
+                    <div class="flex gap-2">
+                        <button onclick="showIndicatorFilterModal()" class="px-3 py-2 bg-purple-600/30 border border-purple-500 rounded-lg hover:bg-purple-600/50" title="Configure Indicators" ${isLoading ? 'disabled' : ''}>⚙️ Filters</button>
+                        <button id="run-scan-btn" onclick="runWeekly()" class="px-4 py-2 bg-blue-600 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed" ${isLoading ? 'disabled' : ''}>🔍 Run Weekly Scan</button>
+                        <button onclick="showCriteriaModal()" class="px-3 py-2 bg-gray-700 rounded-lg hover:bg-gray-600" title="How grading works" ${isLoading ? 'disabled' : ''}>❓</button>
+                    </div>
+                </div>
+
+                ${weeklyData ? `
+                    <div class="grid grid-cols-5 gap-3">
+                        <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-3 text-center">
+                            <div class="text-2xl font-bold text-green-400">⭐${sum.a_trades||0}</div>
+                            <div class="text-xs text-gray-400">A-Trades</div>
+                        </div>
+                        <div class="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3 text-center">
+                            <div class="text-2xl font-bold text-blue-400">${sum.b_trades||0}</div>
+                            <div class="text-xs text-gray-400">B-Trades</div>
+                        </div>
+                        <div class="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 text-center">
+                            <div class="text-2xl font-bold text-yellow-400">${sum.watch_list||0}</div>
+                            <div class="text-xs text-gray-400">Watch</div>
+                        </div>
+                        <div class="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-center">
+                            <div class="text-2xl font-bold text-red-400">${sum.avoid||0}</div>
+                            <div class="text-xs text-gray-400">Avoid</div>
+                        </div>
+                        <div class="bg-gray-700 rounded-lg p-3 text-center">
+                            <div class="text-2xl font-bold">${results.length}</div>
+                            <div class="text-xs text-gray-400">Total</div>
+                        </div>
+                    </div>
+
+                    <div class="bg-[#111827] rounded-xl overflow-hidden border border-gray-700">
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm">
+                                <thead class="bg-[#1f2937]">
+                                    <tr>
+                                        <th class="text-left p-3 font-medium text-gray-400">Symbol</th>
+                                        <th class="text-left p-3 font-medium text-gray-400">Price</th>
+                                        <th class="text-left p-3 font-medium text-gray-400">Change</th>
+                                        <th class="text-center p-3 font-medium text-gray-400">Grade</th>
+                                        <th class="text-center p-3 font-medium text-gray-400">Score</th>
+                                        <th class="text-left p-3 font-medium text-gray-400">Weekly</th>
+                                        <th class="text-left p-3 font-medium text-gray-400">Impulse</th>
+                                        <th class="text-right p-3 font-medium text-gray-400">Force Idx</th>
+                                        <th class="text-right p-3 font-medium text-gray-400">Stoch</th>
+                                        <th class="text-right p-3 font-medium text-gray-400">RSI</th>
+                                        <th class="text-right p-3 font-medium text-gray-400">vs EMA</th>
+                                        <th class="text-center p-3 font-medium text-gray-400">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${results.map(r => `
+                                        <tr class="border-t border-gray-700/50 hover:bg-[#1f2937]/50">
+                                            <td class="p-3">
+                                                <div class="font-mono font-bold">${r.symbol}</div>
+                                                <div class="text-xs text-gray-500 truncate max-w-[100px]">${r.name||''}</div>
+                                            </td>
+                                            <td class="p-3 font-mono">$${r.price?.toFixed(2)}</td>
+                                            <td class="p-3 font-mono ${r.change>=0?'text-green-400':'text-red-400'}">${r.change>=0?'+':''}${r.change?.toFixed(2)}</td>
+                                            <td class="p-3 text-center">
+                                                <span class="px-2 py-1 rounded text-xs font-bold ${
+                                                    r.grade==='A'?'bg-green-500/20 text-green-400':
+                                                    r.grade==='B'?'bg-blue-500/20 text-blue-400':
+                                                    r.grade==='C'?'bg-yellow-500/20 text-yellow-400':
+                                                    'bg-red-500/20 text-red-400'
+                                                }">${r.is_a_trade?'⭐':''} ${r.grade}</span>
+                                            </td>
+                                            <td class="p-3 text-center">
+                                                <div class="flex items-center justify-center gap-1">
+                                                    <div class="w-12 h-1.5 bg-gray-700 rounded overflow-hidden">
+                                                        <div class="h-full ${r.signal_strength>=5?'bg-green-500':r.signal_strength>=3?'bg-yellow-500':'bg-red-500'}" style="width:${r.signal_strength*10}%"></div>
+                                                    </div>
+                                                    <span class="font-mono text-xs">${r.signal_strength}/10</span>
+                                                </div>
+                                            </td>
+                                            <td class="p-3">
+                                                <span class="${r.weekly_bullish?'text-green-400':'text-red-400'}" title="${r.ema_status||'No data'}">${r.screen1_score||0}/6</span>
+                                                ${r.macd_h_rising?'<span class="text-green-400 ml-1">↑</span>':'<span class="text-red-400 ml-1">↓</span>'}
+                                            </td>
+                                            <td class="p-3">
+                                                <span class="px-2 py-0.5 rounded text-xs font-bold ${
+                                                    r.impulse_color==='GREEN'?'bg-green-500/20 text-green-400':
+                                                    r.impulse_color==='RED'?'bg-red-500/20 text-red-400':
+                                                    'bg-blue-500/20 text-blue-400'
+                                                }">${r.impulse_color}</span>
+                                            </td>
+                                            <td class="p-3 text-right font-mono ${r.force_index<0?'text-green-400':'text-red-400'}">${(r.force_index/1e6)?.toFixed(1)}M</td>
+                                            <td class="p-3 text-right font-mono ${r.stochastic<30?'text-green-400':r.stochastic>70?'text-red-400':'text-gray-300'}">${r.stochastic?.toFixed(0)}</td>
+                                            <td class="p-3 text-right font-mono ${r.rsi<30?'text-green-400':r.rsi>70?'text-red-400':'text-gray-300'}">${r.rsi?.toFixed(0)}</td>
+                                            <td class="p-3 text-right font-mono ${r.price_vs_ema<=0?'text-green-400':r.price_vs_ema>3?'text-red-400':'text-yellow-400'}">${r.price_vs_ema>=0?'+':''}${r.price_vs_ema?.toFixed(1)}%</td>
+                                            <td class="p-3 text-center">
+                                                <div class="flex gap-1 justify-center">
+                                                    <button onclick="toggleFavorite('${r.symbol}')" class="px-2 py-1 text-xs rounded hover:bg-yellow-600/40" title="Add to favorites">⭐</button>
+                                                    <button onclick="showDetail(this.dataset.stock)" class="px-2 py-1 bg-gray-700 rounded text-xs hover:bg-blue-600" data-stock='${JSON.stringify(r).replace(/'/g, "&apos;")}'>Details</button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Indicator Configuration Info -->
+                    <div class="bg-[#111827] rounded-xl p-4 border border-gray-700 mt-4">
+                        <h3 class="font-bold mb-2">📊 Current Indicator Configuration</h3>
+                        <div class="grid grid-cols-3 gap-4 text-sm">
+                            <div>
+                                <p class="text-gray-500">Screen 1 (Weekly)</p>
+                                <p>Trend: <span class="text-blue-400">EMA 22</span></p>
+                                <p>Momentum: <span class="text-blue-400">MACD Histogram</span></p>
+                            </div>
+                            <div>
+                                <p class="text-gray-500">Screen 2 (Daily)</p>
+                                <p>Oscillator 1: <span class="text-green-400">Force Index</span></p>
+                                <p>Oscillator 2: <span class="text-green-400">Stochastic</span></p>
+                            </div>
+                            <div>
+                                <p class="text-gray-500">Screen 3 (Entry)</p>
+                                <p>Volatility: <span class="text-yellow-400">ATR</span></p>
+                                <p>Impulse: <span class="text-yellow-400">Elder Impulse</span></p>
+                            </div>
+                        </div>
+                        <button onclick="showIndicatorConfig()" class="mt-3 text-xs text-blue-400 hover:underline">View all available indicators →</button>
+                    </div>
+                ` : `
+                    <div class="text-center py-20 text-gray-500">
+                        <div class="text-6xl mb-4">🔍</div>
+                        <h3 class="text-xl font-semibold">Run the scanner to see results</h3>
+                        <p class="mt-2">All stocks will be displayed with their indicator values and grades</p>
+                    </div>
+                `}
+            </div>
+        `;
+    }
+
+    async function runWeekly() {
+        if(isLoading) return;  // Prevent multiple clicks
+        
+        isLoading = true;
+        const btn = document.getElementById('run-scan-btn');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<span class="inline-block animate-spin">⏳</span> Scanning...';
+        btn.disabled = true;
+        
+        // Show loading modal
+        const loadingModal = document.createElement('div');
+        loadingModal.id = 'loading-modal';
+        loadingModal.className = 'fixed inset-0 bg-black/80 z-50 flex items-center justify-center';
+        loadingModal.innerHTML = `
+            <div class="text-center">
+                <div class="inline-block animate-spin text-6xl mb-4">⏳</div>
+                <h3 class="text-xl font-bold text-white mb-2">Scanning 100 stocks...</h3>
+                <p class="text-gray-400">This may take 2-3 minutes</p>
+            </div>
+        `;
+        document.body.appendChild(loadingModal);
+        
+        const market = document.getElementById('market').value;
+        try {
+            weeklyData = await api('POST', '/screener/weekly', {market});
+            toast(`Found ${weeklyData.summary?.a_trades||0} A-Trades!`, 'success');
+            await render();
+        } catch(e) {
+            toast('Scan failed: '+e.message, 'error');
+        } finally {
+            isLoading = false;
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+            const modal = document.getElementById('loading-modal');
+            if(modal) modal.remove();
+            await render();  // Re-render to update button state
+        }
+    }
+
+    function showDetail(stockData) {
+        // Parse JSON if it's a string (from data attribute)
+        let stock = typeof stockData === 'string' ? JSON.parse(stockData) : stockData;
+        selectedStock = stock;  // Store for trade bill creation
+        document.getElementById('modal').classList.remove('hidden');
+        const patterns = stock.pattern_names || [];
+        const bullishPatterns = stock.bullish_pattern_names || [];
+        
+        document.getElementById('modal-body').innerHTML = `
+            <div class="p-6">
+                <div class="flex justify-between items-start mb-6">
+                    <div>
+                        <h2 class="text-2xl font-bold">${stock.symbol}</h2>
+                        <p class="text-gray-500">${stock.name}</p>
+                    </div>
+                    <button onclick="closeModal()" class="text-gray-400 hover:text-white text-2xl">&times;</button>
+                </div>
+
+                <div class="grid grid-cols-2 gap-6">
+                    <div>
+                        <h3 class="font-bold text-lg mb-3 text-blue-400">📊 Indicator Values</h3>
+                        <div class="space-y-2 bg-[#1f2937] rounded-lg p-4">
+                            <div class="flex justify-between"><span class="text-gray-400">Price</span><span class="font-mono">$${stock.price?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">EMA 22</span><span class="font-mono">$${stock.ema_22?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Price vs EMA</span><span class="font-mono ${stock.price_vs_ema<=0?'text-green-400':'text-red-400'}">${stock.price_vs_ema?.toFixed(1)}%</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">MACD Histogram</span><span class="font-mono">${stock.macd_histogram?.toFixed(4)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Force Index</span><span class="font-mono ${stock.force_index<0?'text-green-400':'text-red-400'}">${stock.force_index?.toFixed(0)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Stochastic</span><span class="font-mono">${stock.stochastic?.toFixed(1)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">RSI</span><span class="font-mono">${stock.rsi?.toFixed(1)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">ATR</span><span class="font-mono">$${stock.atr?.toFixed(2)}</span></div>
+                        </div>
+
+                        <h3 class="font-bold text-lg mb-3 mt-6 text-purple-400">🕯️ Candlestick Patterns</h3>
+                        <div class="bg-[#1f2937] rounded-lg p-4">
+                            ${patterns.length > 0 ? `
+                                <div class="space-y-2">
+                                    ${patterns.map(p => `
+                                        <div class="flex items-center gap-2">
+                                            <span class="${bullishPatterns.includes(p) ? 'text-green-400' : 'text-red-400'}">
+                                                ${bullishPatterns.includes(p) ? '🟢' : '🔴'}
+                                            </span>
+                                            <span>${p}</span>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            ` : `
+                                <p class="text-gray-500">No significant patterns detected</p>
+                            `}
+                        </div>
+                    </div>
+
+                    <div>
+                        <h3 class="font-bold text-lg mb-3 text-green-400">📈 Score Breakdown</h3>
+                        <div class="space-y-2 bg-[#1f2937] rounded-lg p-4">
+                            ${(stock.score_breakdown||[]).map(s => `
+                                <div class="text-sm ${s.startsWith('+')?'text-green-400':s.startsWith('-')?'text-red-400':'text-gray-400'}">${s}</div>
+                            `).join('')}
+                            <div class="border-t border-gray-600 pt-2 mt-2">
+                                <div class="flex justify-between font-bold">
+                                    <span>Total Score</span>
+                                    <span class="${stock.signal_strength>=5?'text-green-400':'text-yellow-400'}">${stock.signal_strength}/10</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <h3 class="font-bold text-lg mb-3 mt-6 text-yellow-400">🎯 Trade Levels</h3>
+                        <div class="space-y-2 bg-[#1f2937] rounded-lg p-4">
+                            <div class="flex justify-between"><span class="text-gray-400">Entry</span><span class="font-mono text-blue-400">$${stock.entry?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Stop Loss</span><span class="font-mono text-red-400">$${stock.stop_loss?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Target 1</span><span class="font-mono text-green-400">$${stock.target_b?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Target 2</span><span class="font-mono text-green-400">$${stock.target_a?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Risk</span><span class="font-mono">${stock.risk_percent?.toFixed(1)}%</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-6 flex gap-2">
+                    <button onclick="createTradeBillFromStock(selectedStock)" class="flex-1 py-2 bg-blue-600 rounded-lg font-medium hover:bg-blue-700">💼 Create Trade Bill</button>
+                    <button onclick="addToWatchlist('${stock.symbol}')" class="px-4 py-2 bg-gray-700 rounded-lg hover:bg-gray-600">👀 Add to Watchlist</button>
+                </div>
+            </div>
+        `;
+    }
+
+    function closeModal() { document.getElementById('modal').classList.add('hidden'); }
+
+    async function newTradeBill() {
+        window.tradeBillTemplate = {};  // Clear any previous data for a fresh form
+        await switchTab('trade-bill');
+    }
+
+    async function createTradeBillFromStock(stock) {
+        closeModal();
+        // Clear previous template completely and set ONLY fresh data from stock (no ID for new bills)
+        window.tradeBillTemplate = {
+            // Do NOT include 'id' - this is a NEW bill
+            ticker: stock.symbol,
+            current_market_price: stock.price,
+            entry_price: stock.entry,
+            stop_loss: stock.stop_loss,
+            target_price: stock.target_b,  // Target 1 = Target B
+            // Use Keltner Channel values (KC 20,10,1) from screener
+            upper_channel: stock.kc_upper || (stock.price * 1.03),
+            lower_channel: stock.kc_lower || (stock.price * 0.97),
+            risk_percent: stock.risk_percent
+        };
+        await switchTab('trade-bill');
+        // Trigger calculation immediately after view renders
+        setTimeout(() => {
+            autoCalculateTradeBill();
+        }, 150);
+    }
+
+    async function addToWatchlist(symbol) {
+        try {
+            const market = document.getElementById('market').value;
+            const result = await api('POST', '/watchlists', {ticker: symbol, market});
+            if (result.success) {
+                toast(`Added ${symbol} to watchlist!`, 'success');
+            }
+        } catch(e) {
+            toast('Error adding to watchlist: ' + e.message, 'error');
+        }
+    }
+
+    // ========== INDICATOR FILTER CONFIGURATION ==========
+    const INDICATOR_CATALOG = {
+        TREND: {
+            description: 'Trend Direction Indicators',
+            indicators: {
+                'ema_22': { name: 'EMA 22 Slope', description: 'Weekly EMA direction', recommended: true },
+                'ema_13': { name: 'EMA 13 Slope', description: 'Faster EMA for shorter swings' },
+                'sma_50': { name: 'SMA 50 Slope', description: '50-day moving average' },
+                'sma_200': { name: 'SMA 200 Slope', description: 'Long-term trend' },
+                'adx': { name: 'ADX', description: 'Trend strength (not direction)' }
+            }
+        },
+        MOMENTUM: {
+            description: 'Momentum Indicators',
+            indicators: {
+                'macd_histogram': { name: 'MACD Histogram', description: 'Trend momentum', recommended: true },
+                'macd_signal': { name: 'MACD Signal Line', description: 'MACD crossovers' },
+                'roc': { name: 'Rate of Change', description: 'Price momentum' },
+                'momentum': { name: 'Momentum', description: '10-period momentum' }
+            }
+        },
+        OSCILLATOR: {
+            description: 'Oscillator Indicators',
+            indicators: {
+                'force_index': { name: 'Force Index (2 EMA)', description: 'Volume-weighted momentum', recommended: true },
+                'stochastic': { name: 'Stochastic %K', description: 'Overbought/oversold', recommended: true },
+                'rsi': { name: 'RSI (14)', description: 'Relative strength' },
+                'williams_r': { name: 'Williams %R', description: 'Similar to stochastic' },
+                'cci': { name: 'CCI', description: 'Commodity Channel Index' }
+            }
+        },
+        VOLUME: {
+            description: 'Volume Indicators',
+            indicators: {
+                'volume_ratio': { name: 'Volume Ratio', description: 'Current vs average volume' },
+                'obv': { name: 'OBV Trend', description: 'On-Balance Volume' },
+                'mfi': { name: 'MFI', description: 'Money Flow Index' }
+            }
+        },
+        VOLATILITY: {
+            description: 'Volatility Indicators',
+            indicators: {
+                'atr': { name: 'ATR', description: 'Average True Range' },
+                'bollinger_position': { name: 'Bollinger Position', description: 'Price within bands' },
+                'keltner_position': { name: 'Keltner Position', description: 'Price within channels' }
+            }
+        },
+        IMPULSE: {
+            description: 'Impulse System',
+            indicators: {
+                'impulse': { name: 'Elder Impulse', description: 'EMA + MACD-H combined', recommended: true }
+            }
+        }
+    };
+    
+    const DEFAULT_FILTERS = {
+        TREND: ['ema_22'],
+        MOMENTUM: ['macd_histogram'],
+        OSCILLATOR: ['force_index', 'stochastic'],
+        VOLUME: ['volume_ratio'],
+        VOLATILITY: [],
+        IMPULSE: ['impulse']
+    };
+    
+    async function loadIndicatorFilters() {
+        try {
+            indicatorFilters = await api('GET', '/indicator-filters');
+        } catch(e) {
+            indicatorFilters = JSON.parse(JSON.stringify(DEFAULT_FILTERS));
+        }
+        if (!indicatorFilters || Object.keys(indicatorFilters).length === 0) {
+            indicatorFilters = JSON.parse(JSON.stringify(DEFAULT_FILTERS));
+        }
+    }
+    
+    async function showIndicatorFilterModal() {
+        if (!indicatorFilters) await loadIndicatorFilters();
+        
+        document.getElementById('modal').classList.remove('hidden');
+        document.getElementById('modal-body').innerHTML = `
+            <div class="p-6 max-w-4xl">
+                <div class="flex justify-between items-start mb-6">
+                    <div>
+                        <h2 class="text-2xl font-bold">⚙️ Indicator Filters</h2>
+                        <p class="text-gray-500">Configure which indicators to use in the screener</p>
+                    </div>
+                    <button onclick="closeModal()" class="text-gray-400 hover:text-white text-2xl">&times;</button>
+                </div>
+                
+                <div class="grid grid-cols-2 gap-4 max-h-[60vh] overflow-y-auto">
+                    ${Object.entries(INDICATOR_CATALOG).map(([category, data]) => `
+                        <div class="bg-[#1f2937] rounded-lg p-4">
+                            <h3 class="font-bold text-sm text-blue-400 mb-3">${category}: ${data.description}</h3>
+                            <div class="space-y-2">
+                                ${Object.entries(data.indicators).map(([id, ind]) => {
+                                    const isActive = (indicatorFilters[category] || []).includes(id);
+                                    return `
+                                        <label class="flex items-center gap-2 cursor-pointer hover:bg-[#111827] p-1 rounded">
+                                            <input type="checkbox" id="ind-${id}" ${isActive ? 'checked' : ''} 
+                                                onchange="toggleIndicator('${category}', '${id}')"
+                                                class="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500">
+                                            <span class="flex-1">
+                                                <span class="text-sm ${ind.recommended ? 'text-green-400' : ''}">${ind.name}</span>
+                                                ${ind.recommended ? '<span class="text-xs text-green-500 ml-1">★ Elder</span>' : ''}
+                                                <span class="text-xs text-gray-500 block">${ind.description}</span>
+                                            </span>
+                                        </label>
+                                    `;
+                                }).join('')}
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+                
+                <div class="flex gap-2 mt-6">
+                    <button onclick="resetIndicatorFilters()" class="px-4 py-2 bg-gray-700 rounded-lg hover:bg-gray-600">↺ Reset to Elder Defaults</button>
+                    <button onclick="saveIndicatorFilters()" class="flex-1 px-4 py-2 bg-green-600 rounded-lg hover:bg-green-700">💾 Save Configuration</button>
+                </div>
+            </div>
+        `;
+    }
+    
+    function toggleIndicator(category, id) {
+        if (!indicatorFilters[category]) indicatorFilters[category] = [];
+        const idx = indicatorFilters[category].indexOf(id);
+        if (idx >= 0) {
+            indicatorFilters[category].splice(idx, 1);
+        } else {
+            indicatorFilters[category].push(id);
+        }
+    }
+    
+    function resetIndicatorFilters() {
+        indicatorFilters = JSON.parse(JSON.stringify(DEFAULT_FILTERS));
+        showIndicatorFilterModal(); // Re-render
+        toast('Reset to Elder defaults', 'success');
+    }
+    
+    async function saveIndicatorFilters() {
+        try {
+            await api('POST', '/indicator-filters', indicatorFilters);
+            toast('Indicator filters saved!', 'success');
+            closeModal();
+        } catch(e) {
+            toast('Error saving filters: ' + e.message, 'error');
+        }
+    }
+
+    let allStocks = null;
+
+    async function getAvailableStocks() {
+        if (allStocks) return allStocks;
+        
+        const market = document.getElementById('market').value;
+        const response = await api('POST', '/screener/weekly', {market});
+        allStocks = (response.all_results || []).map(r => ({
+            symbol: r.symbol,
+            name: r.name,
+            price: r.price,
+            ema_22: r.ema_22,
+            atr: r.atr
+        }));
+        return allStocks;
+    }
+
+    async function handleTickerTypeahead(e) {
+        const input = e.target.value.toUpperCase();
+        const list = document.getElementById('ticker-suggestions');
+        
+        if (!input) {
+            list.innerHTML = '';
+            return;
+        }
+
+        try {
+            const stocks = await getAvailableStocks();
+            const matches = stocks.filter(s => 
+                s.symbol.startsWith(input) || s.name.toUpperCase().includes(input)
+            ).slice(0, 8);
+
+            list.innerHTML = matches.map(s => `
+                <div onclick="selectStock('${s.symbol}')" class="px-3 py-2 hover:bg-[#1f2937] cursor-pointer text-sm">
+                    <div class="font-mono font-bold text-blue-400">${s.symbol}</div>
+                    <div class="text-xs text-gray-500">${s.name} - $${s.price?.toFixed(2)}</div>
+                </div>
+            `).join('');
+        } catch(e) {
+            console.log('Error fetching stocks:', e);
+        }
+    }
+
+    function selectStock(symbol) {
+        document.getElementById('tb-ticker').value = symbol;
+        document.getElementById('ticker-suggestions').innerHTML = '';
+        toast(`Stock ${symbol} selected!`, 'success');
+    }
+
+    // ========== HISTORICAL SCREENER (formerly Backtest) ==========
+    let historicalStocks = [];
+    let selectedStocks = new Set();
+    
+    async function backtestView() {
+        // Load available stocks
+        try {
+            const resp = await fetch('/api/v2/historical-screener/stocks?market=US');
+            const data = await resp.json();
+            historicalStocks = data.stocks || [];
+        } catch(e) {
+            historicalStocks = ['AAPL','MSFT','GOOGL','AMZN','NVDA','META','TSLA','AMD','AVGO','NFLX'];
+        }
+        
+        const html = `
+            <div class="space-y-6">
+                <h2 class="text-2xl font-bold text-blue-400">📊 Historical Signal Scanner</h2>
+                <p class="text-gray-400">Scan historical data to find Elder trading signals for manual verification</p>
+                
+                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                    <h3 class="font-bold text-lg mb-4 text-blue-300">⚙️ Scanner Configuration</h3>
+                    
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <!-- Left: Stock Selection -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Select Stocks (NASDAQ 100)</label>
+                            <div class="flex gap-2 mb-2">
+                                <button onclick="selectAllStocks()" class="text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded">Select All</button>
+                                <button onclick="clearAllStocks()" class="text-xs bg-gray-600 hover:bg-gray-700 text-white px-3 py-1 rounded">Clear All</button>
+                                <button onclick="selectTopStocks()" class="text-xs bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded">Top 20</button>
+                            </div>
+                            <div class="bg-[#1f2937] border border-gray-600 rounded-lg p-3 max-h-64 overflow-y-auto">
+                                <input type="text" id="stock-search" placeholder="Search stocks..." 
+                                       class="w-full bg-[#111827] border border-gray-600 rounded px-2 py-1 mb-2 text-white text-sm"
+                                       oninput="filterStockList()">
+                                <div id="stock-list" class="grid grid-cols-4 gap-1 text-xs">
+                                    ${historicalStocks.map(s => `
+                                        <label class="flex items-center space-x-1 cursor-pointer hover:bg-gray-700 p-1 rounded stock-item" data-symbol="${s}">
+                                            <input type="checkbox" class="stock-checkbox rounded" value="${s}" onchange="toggleStock('${s}')">
+                                            <span class="text-gray-300">${s}</span>
+                                        </label>
+                                    `).join('')}
+                                </div>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-1"><span id="selected-count">0</span> stocks selected</p>
+                        </div>
+                        
+                        <!-- Right: Parameters -->
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-2">Lookback Period (days)</label>
+                                <input type="number" id="hs-lookback" value="180" min="30" max="365"
+                                       class="w-full bg-[#1f2937] border border-gray-600 rounded-lg px-3 py-2 text-white">
+                                <p class="text-xs text-gray-500 mt-1">Scan last N days for signals (30-365)</p>
+                            </div>
+                            
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-2">Minimum Score</label>
+                                <select id="hs-min-score" class="w-full bg-[#1f2937] border border-gray-600 rounded-lg px-3 py-2 text-white">
+                                    <option value="7">7+ (A-Trades only)</option>
+                                    <option value="5" selected>5+ (A & B-Trades)</option>
+                                    <option value="3">3+ (Include C-Trades)</option>
+                                    <option value="1">1+ (All signals)</option>
+                                </select>
+                            </div>
+                            
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-2">Market</label>
+                                <select id="hs-market" class="w-full bg-[#1f2937] border border-gray-600 rounded-lg px-3 py-2 text-white" onchange="changeMarket()">
+                                    <option value="US">US Market (NASDAQ 100)</option>
+                                    <option value="India">India Market (NIFTY 100)</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Indicator Columns to Show -->
+                    <div class="mt-6 pt-6 border-t border-gray-600">
+                        <h4 class="font-semibold text-blue-300 mb-3">📊 Columns to Display</h4>
+                        <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2 text-sm">
+                            <label class="flex items-center space-x-2 text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="col-price" checked class="rounded col-toggle">
+                                <span>Price</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="col-score" checked class="rounded col-toggle">
+                                <span>Score</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="col-grade" checked class="rounded col-toggle">
+                                <span>Grade</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="col-screen1" checked class="rounded col-toggle">
+                                <span>Screen 1</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="col-screen2" checked class="rounded col-toggle">
+                                <span>Screen 2</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="col-macd-h" checked class="rounded col-toggle">
+                                <span>MACD-H (+)</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="col-macd-line" checked class="rounded col-toggle">
+                                <span>MACD Line (+)</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="col-ema" checked class="rounded col-toggle">
+                                <span>EMA (+)</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="col-kc" checked class="rounded col-toggle">
+                                <span>KC (+)</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="col-fi" checked class="rounded col-toggle">
+                                <span>Force Idx (+)</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="col-stoch" checked class="rounded col-toggle">
+                                <span>Stoch (+)</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="col-pattern" class="rounded col-toggle">
+                                <span>Pattern (+)</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="col-weekly-vals" class="rounded col-toggle">
+                                <span>Weekly Values</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="col-daily-vals" class="rounded col-toggle">
+                                <span>Daily Values</span>
+                            </label>
+                            <label class="flex items-center space-x-2 text-gray-300 cursor-pointer">
+                                <input type="checkbox" id="col-entry" class="rounded col-toggle">
+                                <span>Entry/Stop/Target</span>
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-6 flex gap-3">
+                        <button onclick="runHistoricalScreener()" id="run-screener-btn" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-lg transition">
+                            🔍 Scan Historical Data
+                        </button>
+                        <button onclick="resetHistoricalScreener()" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 px-6 rounded-lg transition">
+                            ↻ Reset
+                        </button>
+                        <button onclick="exportToCSV()" id="export-btn" style="display:none;" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded-lg transition">
+                            📥 Export CSV
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Results Section -->
+                <div id="hs-results" style="display:none;" class="space-y-6">
+                    
+                    <!-- Summary Stats -->
+                    <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                        <h3 class="font-bold text-lg mb-4 text-green-400">📈 Scan Summary</h3>
+                        <div class="grid grid-cols-2 md:grid-cols-5 gap-4" id="hs-summary">
+                        </div>
+                    </div>
+                    
+                    <!-- Signals Table -->
+                    <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                        <div class="flex justify-between items-center mb-4">
+                            <h3 class="font-bold text-lg text-blue-400">📋 Historical Signals</h3>
+                            <div class="flex gap-2">
+                                <input type="text" id="signal-filter" placeholder="Filter by symbol..." 
+                                       class="bg-[#1f2937] border border-gray-600 rounded px-3 py-1 text-white text-sm w-40"
+                                       oninput="filterSignals()">
+                                <select id="grade-filter" class="bg-[#1f2937] border border-gray-600 rounded px-2 py-1 text-white text-sm" onchange="filterSignals()">
+                                    <option value="">All Grades</option>
+                                    <option value="A">A Only</option>
+                                    <option value="B">B Only</option>
+                                    <option value="C">C Only</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm" id="signals-table">
+                                <thead class="border-b border-gray-600 bg-[#1f2937] sticky top-0">
+                                    <tr class="text-left text-gray-300" id="signals-header">
+                                    </tr>
+                                </thead>
+                                <tbody id="signals-body" class="divide-y divide-gray-700">
+                                </tbody>
+                            </table>
+                        </div>
+                        <div id="pagination" class="mt-4 flex justify-center gap-2">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        return html;
+    }
+    
+    // Historical Screener data
+    let allSignals = [];
+    let currentPage = 1;
+    const pageSize = 50;
+
+    // ========== CRITERIA ==========
+    function criteriaView() {
+        return `
+            <div class="space-y-6">
+                <h2 class="text-xl font-bold">📊 Grading Criteria - Elder Triple Screen</h2>
+                
+                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                    <h3 class="font-bold text-lg text-blue-400 mb-4">Screen 1: Weekly Trend (Strategic Direction)</h3>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="bg-[#1f2937] p-4 rounded-lg">
+                            <p class="font-medium text-green-400">✓ BULLISH (Look for longs)</p>
+                            <ul class="text-sm text-gray-400 mt-2 space-y-1">
+                                <li>• 22-Week EMA Slope: Rising</li>
+                                <li>• Weekly MACD-H: Rising (bulls gaining)</li>
+                            </ul>
+                        </div>
+                        <div class="bg-[#1f2937] p-4 rounded-lg">
+                            <p class="font-medium text-red-400">✗ BEARISH (Stay out)</p>
+                            <ul class="text-sm text-gray-400 mt-2 space-y-1">
+                                <li>• 22-Week EMA Slope: Falling</li>
+                                <li>• Weekly MACD-H: Falling (bears in control)</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                    <h3 class="font-bold text-lg text-green-400 mb-4">Screen 2: Daily Entry (Tactical Timing)</h3>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="bg-[#1f2937] p-4 rounded-lg">
+                            <p class="font-medium">Force Index (2-EMA)</p>
+                            <p class="text-sm text-gray-400 mt-1"><span class="text-green-400">&lt; 0</span> = Pullback in uptrend = BUY ZONE</p>
+                        </div>
+                        <div class="bg-[#1f2937] p-4 rounded-lg">
+                            <p class="font-medium">Stochastic</p>
+                            <p class="text-sm text-gray-400 mt-1"><span class="text-green-400">&lt; 30</span> = Oversold = Good entry</p>
+                        </div>
+                        <div class="bg-[#1f2937] p-4 rounded-lg">
+                            <p class="font-medium">Price vs 22-EMA</p>
+                            <p class="text-sm text-gray-400 mt-1"><span class="text-green-400">At/Below</span> = Buying value</p>
+                        </div>
+                        <div class="bg-[#1f2937] p-4 rounded-lg">
+                            <p class="font-medium">Impulse System</p>
+                            <p class="text-sm text-gray-400 mt-1"><span class="text-green-400">GREEN</span> or <span class="text-blue-400">BLUE</span> = OK to buy</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                    <h3 class="font-bold text-lg text-yellow-400 mb-4">Signal Strength Scoring (0-10)</h3>
+                    <div class="grid grid-cols-2 gap-2 text-sm">
+                        <div class="bg-green-500/10 p-2 rounded">+2: Weekly EMA strongly rising</div>
+                        <div class="bg-green-500/10 p-2 rounded">+1: Weekly MACD-H rising</div>
+                        <div class="bg-green-500/10 p-2 rounded">+2: Force Index &lt; 0 (pullback)</div>
+                        <div class="bg-green-500/10 p-2 rounded">+2: Stochastic &lt; 30 (oversold)</div>
+                        <div class="bg-green-500/10 p-2 rounded">+1: Stochastic 30-50</div>
+                        <div class="bg-green-500/10 p-2 rounded">+1: Price at/below EMA</div>
+                        <div class="bg-green-500/10 p-2 rounded">+2: Bullish divergence</div>
+                        <div class="bg-green-500/10 p-2 rounded">+1: Impulse GREEN</div>
+                        <div class="bg-red-500/10 p-2 rounded col-span-2">-2: Impulse RED (disqualifies trade)</div>
+                    </div>
+                </div>
+
+                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                    <h3 class="font-bold text-lg mb-4">Grade Thresholds</h3>
+                    <div class="grid grid-cols-4 gap-4">
+                        <div class="text-center p-4 bg-green-500/10 rounded-lg border border-green-500/30">
+                            <div class="text-2xl">⭐ A</div>
+                            <div class="text-sm text-gray-400 mt-2">Score ≥ 5<br/>Impulse not RED</div>
+                        </div>
+                        <div class="text-center p-4 bg-blue-500/10 rounded-lg border border-blue-500/30">
+                            <div class="text-2xl">📊 B</div>
+                            <div class="text-sm text-gray-400 mt-2">Score 3-4<br/>Impulse GREEN/BLUE</div>
+                        </div>
+                        <div class="text-center p-4 bg-yellow-500/10 rounded-lg border border-yellow-500/30">
+                            <div class="text-2xl">👀 C</div>
+                            <div class="text-sm text-gray-400 mt-2">Score 1-2<br/>Watch list</div>
+                        </div>
+                        <div class="text-center p-4 bg-red-500/10 rounded-lg border border-red-500/30">
+                            <div class="text-2xl">🛑 AVOID</div>
+                            <div class="text-sm text-gray-400 mt-2">Score ≤ 0<br/>OR Impulse RED</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function showCriteriaModal() { switchTab('criteria'); }
+
+    // ========== CANDLESTICK PATTERN SCREENER ==========
+    let candlestickResults = [];
+    let candlestickLoading = false;
+    let candlestickSelectedStocks = [];
+    let candlestickLookbackDays = 180;
+    let candlestickKcLevel = -1;
+    let candlestickRsiLevel = 30;
+    let candlestickKcLevel = -1;
+    let candlestickRsiLevel = 30;
+    let candlestickRsiLevel = 30;
+    let candlestickSelectedPatterns = [];
+    
+    function candlestickScreenerView() {
+        const market = document.getElementById('market')?.value || 'US';
+        
+        const resultsHtml = candlestickResults.length > 0 ? `
+            <div class="bg-[#111827] rounded-xl border border-gray-700 overflow-hidden mt-4">
+                <div class="p-4 border-b border-gray-700">
+                    <h3 class="font-semibold">Results: ${candlestickResults.length} signals found</h3>
+                </div>
+                <div class="overflow-x-auto max-h-96">
+                    <table class="w-full text-sm">
+                        <thead class="bg-gray-800 sticky top-0">
+                            <tr>
+                                <th class="px-3 py-2 text-left">Symbol</th>
+                                <th class="px-3 py-2 text-left">Company</th>
+                                <th class="px-3 py-2 text-left">Sector</th>
+                                <th class="px-3 py-2 text-left">Date</th>
+                                <th class="px-3 py-2 text-right">Close</th>
+                                <th class="px-3 py-2 text-left">Patterns</th>
+                                <th class="px-3 py-2 text-right">RSI</th>
+                                <th class="px-3 py-2 text-right">KC Threshold</th>
+                                <th class="px-3 py-2 text-center">Filters</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-700">
+                            ${candlestickResults.slice(0, 100).map(s => `
+                                <tr class="hover:bg-gray-700/50 ${s.filters_match ? 'bg-green-900/20' : ''}">
+                                    <td class="px-3 py-2 font-medium text-blue-400">${s.symbol}</td>
+                                    <td class="px-3 py-2 text-sm text-gray-300" title="${s.name || ''}">${(s.name || '').substring(0, 30)}${(s.name || '').length > 30 ? '...' : ''}</td>
+                                    <td class="px-3 py-2 text-sm text-gray-400">${s.sector || '-'}</td>
+                                    <td class="px-3 py-2">${s.date}</td>
+                                    <td class="px-3 py-2 text-right ${s.below_kc_threshold ? 'text-green-400 font-medium' : ''}">$${s.close}</td>
+                                    <td class="px-3 py-2">
+                                        ${(s.patterns || []).map(p => `<span class="px-2 py-0.5 text-xs rounded ${p.includes('Hammer') ? 'bg-green-600/30 text-green-400' : p.includes('Engulfing') ? 'bg-blue-600/30 text-blue-400' : 'bg-purple-600/30 text-purple-400'}">${p}</span>`).join(' ')}
+                                    </td>
+                                    <td class="px-3 py-2 text-right ${s.rsi < 30 ? 'text-green-400 font-medium' : ''}">${s.rsi || '-'}</td>
+                                    <td class="px-3 py-2 text-right">${s.kc_threshold || '-'}</td>
+                                    <td class="px-3 py-2 text-center">${s.filters_match ? '✅' : '❌'}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        ` : '';
+        
+        return `
+            <div class="space-y-4">
+                <div class="flex justify-between items-center">
+                    <h2 class="text-2xl font-bold">🕯️ Candlestick Pattern Screener</h2>
+                </div>
+                
+                <div class="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4 text-sm">
+                    <strong>Patterns:</strong> Select from listbox below<br>
+                    <strong>Filters:</strong> KC Level + RSI Level
+                </div>
+
+                <div class="bg-[#111827] rounded-xl border border-gray-700 p-4">
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Lookback Days</label>
+                            <input type="number" id="candlestick-lookback" value="${candlestickLookbackDays}" min="30" max="365"
+                                onchange="candlestickLookbackDays=parseInt(this.value)"
+                                class="w-full bg-[#1f2937] border border-gray-600 rounded px-3 py-2">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-1">KC Channel Level</label>
+                            <select id="candlestick-kc-level" onchange="candlestickKcLevel=parseFloat(this.value)"
+                                class="w-full bg-[#1f2937] border border-gray-600 rounded px-3 py-2">
+                                <option value="0" ${candlestickKcLevel === 0 ? 'selected' : ''}>KC &lt; 0 (Below Middle)</option>
+                                <option value="-1" ${candlestickKcLevel === -1 ? 'selected' : ''}>KC &lt; -1 (Below Lower)</option>
+                                <option value="-2" ${candlestickKcLevel === -2 ? 'selected' : ''}>KC &lt; -2 (Below Lower - ATR)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Filter Mode</label>
+                            <select id="candlestick-filter" onchange="candlestickFilterMode=this.value"
+                                class="w-full bg-[#1f2937] border border-gray-600 rounded px-3 py-2">
+                                <option value="all" ${candlestickFilterMode === 'all' ? 'selected' : ''}>Show All Patterns</option>
+                                <option value="filtered_only" ${candlestickFilterMode === 'filtered_only' ? 'selected' : ''}>Filtered Only (KC+RSI)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Auto-Scan All Stocks</label>
+                            <div class="flex gap-2 items-center">
+                                <div class="text-sm text-gray-400">📊 Will scan all stocks from CSV</div>
+                                <button onclick="runCandlestickScreener()" 
+                                    class="px-4 py-2 bg-blue-600 rounded hover:bg-blue-500 font-medium ${candlestickLoading ? 'opacity-50' : ''}">
+                                    ${candlestickLoading ? '⏳ Scanning...' : '🔍 Scan All'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                ${resultsHtml}
+            </div>
+        `;
+    }
+    
+    function toggleCandlestickPattern(pattern) {
+        const idx = candlestickSelectedPatterns.indexOf(pattern);
+        if (idx > -1) {
+            candlestickSelectedPatterns.splice(idx, 1);
+        } else {
+            candlestickSelectedPatterns.push(pattern);
+        }
+        render();
+    }
+
+    async function runCandlestickScreener() {
+        candlestickLoading = true;
+        render();
+
+        try {
+            const market = document.getElementById('market')?.value || 'US';
+            
+            const res = await fetch('/api/v2/screener/candlestick/run', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    symbols: 'all',
+                    lookback_days: candlestickLookbackDays,
+                    market: market,
+                    kc_level: candlestickKcLevel,
+                    rsi_level: candlestickRsiLevel,
+                    selected_patterns: candlestickSelectedPatterns.length > 0 ? candlestickSelectedPatterns : null
+                })
+            });
+
+            const data = await res.json();
+            candlestickResults = data.signals || [];
+            toast(`Found ${candlestickResults.length} candlestick signals`, 'success');
+        } catch (err) {
+            toast('Error running screener: ' + err.message, 'error');
+        } finally {
+            candlestickLoading = false;
+            render();
+        }
+    }
+
+    // ========== RSI + MACD SCREENER ==========
+    let rsiMacdResults = [];
+    let rsiMacdLoading = false;
+    let rsiMacdSelectedStocks = [];
+    let rsiMacdLookbackDays = 180;
+    
+    function rsiMacdScreenerView() {
+        const market = document.getElementById('market')?.value || 'US';
+        
+        const resultsHtml = rsiMacdResults.length > 0 ? `
+            <div class="bg-[#111827] rounded-xl border border-gray-700 overflow-hidden mt-4">
+                <div class="p-4 border-b border-gray-700">
+                    <h3 class="font-semibold">Results: ${rsiMacdResults.length} signals found</h3>
+                </div>
+                <div class="overflow-x-auto max-h-96">
+                    <table class="w-full text-sm">
+                        <thead class="bg-gray-800 sticky top-0">
+                            <tr>
+                                <th class="px-3 py-2 text-left">Symbol</th>
+                                <th class="px-3 py-2 text-left">Company</th>
+                                <th class="px-3 py-2 text-left">Sector</th>
+                                <th class="px-3 py-2 text-left">Date</th>
+                                <th class="px-3 py-2 text-right">Close</th>
+                                <th class="px-3 py-2 text-left">Signal Type</th>
+                                <th class="px-3 py-2 text-right">RSI</th>
+                                <th class="px-3 py-2 text-right">RSI Δ</th>
+                                <th class="px-3 py-2 text-right">MACD</th>
+                                <th class="px-3 py-2 text-right">MACD Hist</th>
+                                <th class="px-3 py-2 text-right">Hist Δ</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-700">
+                            ${rsiMacdResults.slice(0, 100).map(s => `
+                                <tr class="hover:bg-gray-700/50 ${s.conditions?.macd_crossing_up ? 'bg-green-900/20' : ''}">
+                                    <td class="px-3 py-2 font-medium text-blue-400">${s.symbol}</td>
+                                    <td class="px-3 py-2 text-sm text-gray-300" title="${s.name || ''}">${(s.name || '').substring(0, 30)}${(s.name || '').length > 30 ? '...' : ''}</td>
+                                    <td class="px-3 py-2 text-sm text-gray-400">${s.sector || '-'}</td>
+                                    <td class="px-3 py-2">${s.date}</td>
+                                    <td class="px-3 py-2 text-right">$${s.close}</td>
+                                    <td class="px-3 py-2">
+                                        <span class="px-2 py-0.5 text-xs rounded ${s.conditions?.macd_crossing_up ? 'bg-green-600/30 text-green-400' : 'bg-blue-600/30 text-blue-400'}">
+                                            ${s.signal_type || 'RSI+MACD'}
+                                        </span>
+                                    </td>
+                                    <td class="px-3 py-2 text-right text-green-400 font-medium">${s.rsi}</td>
+                                    <td class="px-3 py-2 text-right ${s.rsi_change > 0 ? 'text-green-400' : 'text-red-400'}">${s.rsi_change > 0 ? '+' : ''}${s.rsi_change}</td>
+                                    <td class="px-3 py-2 text-right">${s.macd}</td>
+                                    <td class="px-3 py-2 text-right">${s.macd_hist}</td>
+                                    <td class="px-3 py-2 text-right ${s.macd_hist_change > 0 ? 'text-green-400' : 'text-red-400'}">${s.macd_hist_change > 0 ? '+' : ''}${s.macd_hist_change}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        ` : '';
+        
+        return `
+            <div class="space-y-4">
+                <div class="flex justify-between items-center">
+                    <h2 class="text-2xl font-bold">📈 RSI + MACD Indicator Screener</h2>
+                </div>
+                
+                <div class="bg-green-500/10 border border-green-500/30 rounded-xl p-4 text-sm">
+                    <strong>Filter Conditions (ALL must be TRUE):</strong><br>
+                    • RSI(14) &lt; 30 (Oversold)<br>
+                    • RSI is Increasing (today &gt; yesterday)<br>
+                    • MACD pointing up OR crossing up
+                </div>
+                
+                <div class="bg-[#111827] rounded-xl border border-gray-700 p-4">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Lookback Days</label>
+                            <input type="number" id="rsimacd-lookback" value="${rsiMacdLookbackDays}" min="30" max="365" 
+                                onchange="rsiMacdLookbackDays=parseInt(this.value)"
+                                class="w-full bg-[#1f2937] border border-gray-600 rounded px-3 py-2">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Market</label>
+                            <div class="py-2 text-gray-400">Using: ${market === 'US' ? '🇺🇸 NASDAQ' : '🇮🇳 NSE'}</div>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Auto-Scan All Stocks</label>
+                            <div class="flex gap-2 items-center">
+                                <div class="text-sm text-gray-400">📊 Will scan all stocks from CSV</div>
+                                <button onclick="runRsiMacdScreener()" 
+                                    class="px-4 py-2 bg-green-600 rounded hover:bg-green-500 font-medium ${rsiMacdLoading ? 'opacity-50' : ''}">
+                                    ${rsiMacdLoading ? '⏳ Scanning...' : '🔍 Scan All'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                ${resultsHtml}
+            </div>
+        `;
+    }
+    
+    async function runRsiMacdScreener() {
+        rsiMacdLoading = true;
+        render();
+        
+        try {
+            const market = document.getElementById('market')?.value || 'US';
+            
+            const res = await fetch('/api/v2/screener/rsi-macd/run', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    symbols: 'all',
+                    lookback_days: rsiMacdLookbackDays,
+                    market: market
+                })
+            });
+            
+            const data = await res.json();
+            rsiMacdResults = data.signals || [];
+            toast(`Found ${rsiMacdResults.length} RSI+MACD signals`, 'success');
+        } catch (err) {
+            toast('Error running screener: ' + err.message, 'error');
+        } finally {
+            rsiMacdLoading = false;
+            render();
+        }
+    }
+
+    // ========== TRADE BILL ==========
+    function tradeBillView() {
+        const tb = window.tradeBillTemplate || {};
+        const s = settings[0] || {trading_capital:6000, risk_per_trade:2, currency:'GBP'};
+        const sym = '$';  // Always use $ for clarity
+        
+        return `
+            <div class="space-y-6 max-w-5xl">
+                <div class="flex justify-between items-center">
+                    <h2 class="text-2xl font-bold">💼 Trade Bill</h2>
+                    <button onclick="switchTab('trade-bills')" class="px-4 py-2 bg-gray-700 rounded-lg hover:bg-gray-600">📋 View Saved Bills</button>
+                </div>
+
+                <!-- Account Info Banner -->
+                <div class="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4 flex justify-between items-center">
+                    <div>
+                        <span class="text-gray-400">Trading Capital:</span>
+                        <span class="font-mono font-bold text-blue-400 ml-2">${sym}${s.trading_capital?.toLocaleString()}</span>
+                    </div>
+                    <div>
+                        <span class="text-gray-400">Max Risk (${s.risk_per_trade}%):</span>
+                        <span class="font-mono font-bold text-red-400 ml-2">${sym}${(s.trading_capital * s.risk_per_trade / 100).toFixed(2)}</span>
+                    </div>
+                </div>
+
+                <!-- Trade Info Section -->
+                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
+                    <h3 class="font-bold text-lg text-blue-400">Trade Info</h3>
+                    <div class="grid grid-cols-3 gap-4">
+                        <div>
+                            <label class="text-sm text-gray-400">Ticker</label>
+                            <input id="tb-ticker" value="${tb.ticker||''}" placeholder="AAPL" onkeyup="handleTickerTypeahead(event)" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono">
+                            <div id="ticker-suggestions" class="mt-1 bg-[#1f2937] rounded-lg border border-gray-600 max-h-40 overflow-y-auto"></div>
+                        </div>
+                        <div><label class="text-sm text-gray-400">Current Market Price (${sym})</label><input id="tb-cmp" type="number" value="${tb.current_market_price||''}" step="0.01" placeholder="150.25" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Entry Price (${sym})</label><input id="tb-entry" type="number" value="${tb.entry_price||''}" step="0.01" placeholder="148.50" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                    </div>
+                    <div class="grid grid-cols-3 gap-4">
+                        <div><label class="text-sm text-gray-400">Stop Loss (${sym})</label><input id="tb-sl" type="number" value="${tb.stop_loss||''}" step="0.01" placeholder="145.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Target (${sym})</label><input id="tb-target" type="number" value="${tb.target_price||''}" step="0.01" placeholder="155.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Quantity (shares)</label><input id="tb-qty" type="number" value="${tb.quantity||''}" step="0.01" placeholder="auto" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                    </div>
+                    <div class="grid grid-cols-4 gap-4">
+                        <div><label class="text-sm text-gray-400">Upper Channel (${sym})</label><input id="tb-uc" type="number" value="${tb.upper_channel||''}" step="0.01" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Lower Channel (${sym})</label><input id="tb-lc" type="number" value="${tb.lower_channel||''}" step="0.01" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Target Pips</label><input id="tb-tp" type="number" value="${tb.target_pips||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                        <div><label class="text-sm text-gray-400">SL Pips</label><input id="tb-slp" type="number" value="${tb.stop_loss_pips||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                    </div>
+                </div>
+
+                <!-- Trade Risk Section -->
+                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
+                    <h3 class="font-bold text-lg text-red-400">📉 Trade Risk</h3>
+                    <div class="grid grid-cols-3 gap-4">
+                        <div><label class="text-sm text-gray-400">Max Qty for Risk</label><input id="tb-maxqty" type="number" value="${tb.max_qty_for_risk||''}" step="1" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                        <div><label class="text-sm text-gray-400">Overnight Charges (${sym})</label><input id="tb-oc" type="number" value="${tb.overnight_charges||0}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Risk per Share (${sym})</label><input id="tb-rps" type="number" value="${tb.risk_per_share||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                    </div>
+                    <div class="grid grid-cols-3 gap-4">
+                        <div><label class="text-sm text-gray-400">Position Size (${sym})</label><input id="tb-ps" type="number" value="${tb.position_size||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                        <div><label class="text-sm text-gray-400">Risk %</label><input id="tb-rp" type="number" value="${tb.risk_percent||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                        <div></div>
+                    </div>
+                </div>
+
+                <!-- Reward Information -->
+                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
+                    <h3 class="font-bold text-lg text-green-400">📈 Reward Information</h3>
+                    <div class="grid grid-cols-3 gap-4">
+                        <div><label class="text-sm text-gray-400">Channel Height (${sym})</label><input id="tb-ch" type="number" value="${tb.channel_height||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                        <div><label class="text-sm text-gray-400">Potential Gain (${sym})</label><input id="tb-pg" type="number" value="${tb.potential_gain||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                        <div><label class="text-sm text-gray-400">C Target 1:1 (${sym})</label><input id="tb-c" type="number" value="${tb.target_1_1_c||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-yellow-900/30"></div>
+                    </div>
+                    <div class="grid grid-cols-3 gap-4">
+                        <div><label class="text-sm text-gray-400">B Target 1:2 (${sym}) <span class="text-xs text-green-400">★ Recommended</span></label><input id="tb-b" type="number" value="${tb.target_1_2_b||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-green-600 rounded-lg font-mono bg-green-900/30"></div>
+                        <div><label class="text-sm text-gray-400">A Target 1:3 (${sym})</label><input id="tb-a" type="number" value="${tb.target_1_3_a||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-blue-900/30"></div>
+                        <div></div>
+                    </div>
+                    <div class="grid grid-cols-3 gap-4">
+                        <div><label class="text-sm text-gray-400">Risk (${sym})</label><input id="tb-risk" type="number" value="${tb.risk_amount_currency||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-red-900/30" readonly></div>
+                        <div><label class="text-sm text-gray-400">Reward (${sym}) <span class="text-xs text-gray-500">(B target)</span></label><input id="tb-reward" type="number" value="${tb.reward_amount_currency||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-green-900/30"></div>
+                        <div><label class="text-sm text-gray-400">R:R Ratio</label><input id="tb-rrr" type="number" value="${tb.risk_reward_ratio||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                    </div>
+                </div>
+
+                <!-- After Entry -->
+                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
+                    <h3 class="font-bold text-lg text-purple-400">🎯 After Entry</h3>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div><label class="text-sm text-gray-400">Break Even (${sym})</label><input id="tb-be" type="number" value="${tb.break_even||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                        <div><label class="text-sm text-gray-400">Trailing Stop (${sym})</label><input id="tb-ts" type="number" value="${tb.trailing_stop||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                    </div>
+                </div>
+
+                <!-- Actions -->
+                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
+                    <h3 class="font-bold text-lg">Actions</h3>
+                    <div class="space-y-2">
+                        <label class="flex items-center gap-3 p-2 rounded cursor-pointer hover:bg-[#1f2937]">
+                            <input type="checkbox" id="tb-filled" ${tb.is_filled ? 'checked' : ''} class="w-4 h-4"><span>Filled</span>
+                        </label>
+                        <label class="flex items-center gap-3 p-2 rounded cursor-pointer hover:bg-[#1f2937]">
+                            <input type="checkbox" id="tb-stop-entered" ${tb.stop_entered ? 'checked' : ''} class="w-4 h-4"><span>Stop Entered</span>
+                        </label>
+                        <label class="flex items-center gap-3 p-2 rounded cursor-pointer hover:bg-[#1f2937]">
+                            <input type="checkbox" id="tb-target-entered" ${tb.target_entered ? 'checked' : ''} class="w-4 h-4"><span>Target Entered</span>
+                        </label>
+                        <label class="flex items-center gap-3 p-2 rounded cursor-pointer hover:bg-[#1f2937]">
+                            <input type="checkbox" id="tb-journal-entered" ${tb.journal_entered ? 'checked' : ''} class="w-4 h-4"><span>Journal Entered</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Comments -->
+                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
+                    <h3 class="font-bold text-lg">Comments</h3>
+                    <textarea id="tb-comments" class="w-full h-24 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg" placeholder="Add any notes about this trade...">${tb.comments||''}</textarea>
+                </div>
+
+                <!-- Elder Calculation Reference -->
+                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                    <h3 class="font-bold text-lg text-gray-400 mb-3">📖 Calculation Reference</h3>
+                    <div class="grid grid-cols-2 gap-4 text-xs text-gray-500">
+                        <div class="space-y-1">
+                            <p><span class="text-blue-400">Risk per Share</span> = Entry − Stop Loss</p>
+                            <p><span class="text-blue-400">Risk %</span> = (Risk per Share ÷ Entry) × 100</p>
+                            <p><span class="text-blue-400">Max Qty</span> = Max Risk ÷ Risk per Share</p>
+                            <p><span class="text-blue-400">Position Size</span> = Entry × Quantity</p>
+                            <p><span class="text-blue-400">Target/SL Pips</span> = Distance × 100</p>
+                        </div>
+                        <div class="space-y-1">
+                            <p><span class="text-blue-400">Channel Height</span> = Upper − Lower Channel</p>
+                            <p><span class="text-yellow-400">C Target</span> = Entry + (Channel × 0.10)</p>
+                            <p><span class="text-green-400">B Target</span> = Entry + (Channel × 0.20)</p>
+                            <p><span class="text-blue-400">A Target</span> = Entry + (Channel × 0.30)</p>
+                            <p><span class="text-green-400">R:R</span> = Reward ÷ Risk</p>
+                        </div>
+                    </div>
+                    <p class="text-xs text-gray-600 mt-2">Potential Gain % = ((Upper Channel − Entry) ÷ Entry) × 100 (max 9.9%)</p>
+                </div>
+
+                <!-- Save Button -->
+                <div class="flex gap-2">
+                    <button onclick="calculateTradeBillMetrics()" class="flex-1 py-3 bg-purple-600 rounded-lg font-medium hover:bg-purple-700">🔢 Calculate Metrics</button>
+                    <button onclick="saveTradeBill()" class="flex-1 py-3 bg-green-600 rounded-lg font-medium hover:bg-green-700 disabled:opacity-50" id="save-btn">💾 Save Trade Bill</button>
+                </div>
+            </div>
+        `;
+    }
+
+    // Auto-calculate when trade bill view is rendered
+    function triggerTradeBillCalc() {
+        setTimeout(() => {
+            if (document.getElementById('tb-entry')) {
+                autoCalculateTradeBill();
+            }
+        }, 100);
+    }
+
+    function calculateTradeBillMetrics() {
+        autoCalculateTradeBill();
+        toast('Metrics calculated!', 'success');
+    }
+
+    function autoCalculateTradeBill() {
+        // Get input values
+        const entry = parseFloat(document.getElementById('tb-entry').value) || 0;
+        const sl = parseFloat(document.getElementById('tb-sl').value) || 0;
+        const target = parseFloat(document.getElementById('tb-target').value) || 0;
+        const cmp = parseFloat(document.getElementById('tb-cmp').value) || 0;
+        const upperChannel = parseFloat(document.getElementById('tb-uc').value) || 0;
+        const lowerChannel = parseFloat(document.getElementById('tb-lc').value) || 0;
+        const manualQty = parseFloat(document.getElementById('tb-qty').value) || 0;
+        const overnightCharges = parseFloat(document.getElementById('tb-oc').value) || 0;
+        
+        const s = settings[0] || {trading_capital: 6000, risk_per_trade: 2, currency: 'GBP'};
+        const acSize = s.trading_capital;
+        const riskPerTradePercent = s.risk_per_trade;
+
+        // Need at least entry and stop loss
+        if (!entry || !sl) return;
+
+        // === CALCULATIONS MATCHING .NET APP (LONG direction) ===
+        
+        // Risk per Share = Entry - Stop Loss
+        const riskPerShare = Math.round((entry - sl) * 100) / 100;
+        if (riskPerShare <= 0) return;  // Invalid stop loss
+        
+        // Risk per Share % = (Risk per Share / Entry) × 100
+        const riskPerSharePercent = Math.round((riskPerShare / entry) * 100 * 100) / 100;
+        
+        // Max Risk = Account Size × (Risk% / 100)
+        const maxRisk = Math.round(acSize * (riskPerTradePercent / 100) * 100) / 100;
+        
+        // Max Qty for Risk = Max Risk / Risk per Share
+        const maxQtyRisk = riskPerShare > 0 ? Math.round(maxRisk / riskPerShare * 100) / 100 : 0;
+        
+        // Quantity (use manual if entered, otherwise maxQtyRisk)
+        const quantity = manualQty > 0 ? manualQty : maxQtyRisk;
+        
+        // Trade Size (Position Size) = Quantity × Entry
+        const tradeSize = Math.round(quantity * entry * 100) / 100;
+        
+        // Target Pips = (Target - Entry) × 100
+        const targetPips = target ? Math.round((target - entry) * 100 * 100) / 100 : 0;
+        
+        // SL Pips = (Entry - Stop Loss) × 100
+        const stopLossPips = Math.round((entry - sl) * 100 * 100) / 100;
+        
+        // Channel Height = Upper Channel - Lower Channel
+        const channelHeight = upperChannel && lowerChannel ? Math.round((upperChannel - lowerChannel) * 100) / 100 : 0;
+        
+        // A, B, C Targets based on Channel Height (Elder's channel trading)
+        // A Target = Entry + (Channel Height × 0.30)
+        // B Target = Entry + (Channel Height × 0.20)
+        // C Target = Entry + (Channel Height × 0.10)
+        const aTrade = channelHeight > 0 ? Math.round((entry + (channelHeight * 0.30)) * 100) / 100 : 0;
+        const bTrade = channelHeight > 0 ? Math.round((entry + (channelHeight * 0.20)) * 100) / 100 : 0;
+        const cTrade = channelHeight > 0 ? Math.round((entry + (channelHeight * 0.10)) * 100) / 100 : 0;
+        
+        // Potential Gain % = ((Upper Channel - Entry) / Entry) × 100 (capped at 9.9%)
+        let potentialGain = upperChannel > 0 ? Math.round(((upperChannel - entry) / entry) * 100 * 100) / 100 : 0;
+        if (potentialGain >= 10) potentialGain = 9.9;
+        
+        // Risk = (Entry - Stop Loss) × Quantity (hard stop risk)
+        const risk = Math.round(riskPerShare * quantity * 100) / 100;
+        // Reward = (Target - Entry) × Quantity
+        const reward = target ? Math.round((target - entry) * quantity * 100) / 100 : 0;
+        
+        // R:R Ratio = Reward / Risk (as a decimal number)
+        const riskRewardRatio = risk > 0 && reward > 0 ? Math.round((reward / risk) * 100) / 100 : 0;
+        
+        // Break Even = Entry (or Entry + overnight charges per share)
+        const breakEven = quantity > 0 && overnightCharges > 0 ? Math.round((entry + (overnightCharges / quantity)) * 100) / 100 : entry;
+        
+        // Trailing Stop = Stop Loss initially
+        const trailingStop = sl;
+
+        // Update all form fields
+        if (!manualQty) document.getElementById('tb-qty').value = quantity.toFixed(2);
+        document.getElementById('tb-tp').value = targetPips.toFixed(2);
+        document.getElementById('tb-slp').value = stopLossPips.toFixed(2);
+        document.getElementById('tb-maxqty').value = maxQtyRisk.toFixed(2);
+        document.getElementById('tb-rps').value = riskPerShare.toFixed(2);
+        document.getElementById('tb-ps').value = tradeSize.toFixed(2);
+        document.getElementById('tb-rp').value = riskPerSharePercent.toFixed(2);
+        document.getElementById('tb-ch').value = channelHeight.toFixed(2);
+        document.getElementById('tb-pg').value = potentialGain.toFixed(2);
+        document.getElementById('tb-c').value = cTrade.toFixed(2);
+        document.getElementById('tb-b').value = bTrade.toFixed(2);
+        document.getElementById('tb-a').value = aTrade.toFixed(2);
+        document.getElementById('tb-risk').value = risk.toFixed(2);
+        document.getElementById('tb-reward').value = reward.toFixed(2);
+        document.getElementById('tb-rrr').value = riskRewardRatio;
+        document.getElementById('tb-be').value = breakEven.toFixed(2);
+        document.getElementById('tb-ts').value = trailingStop.toFixed(2);
+    }
+
+    async function saveTradeBill() {
+        const s = settings[0] || {id:1};
+        const ticker = document.getElementById('tb-ticker').value;
+        
+        if (!ticker) {
+            toast('Please enter a ticker', 'error');
+            return;
+        }
+
+        const data = {
+            ticker: ticker,
+            current_market_price: parseFloat(document.getElementById('tb-cmp').value) || null,
+            entry_price: parseFloat(document.getElementById('tb-entry').value),
+            stop_loss: parseFloat(document.getElementById('tb-sl').value),
+            target_price: parseFloat(document.getElementById('tb-target').value),
+            quantity: parseFloat(document.getElementById('tb-qty').value),
+            upper_channel: parseFloat(document.getElementById('tb-uc').value) || null,
+            lower_channel: parseFloat(document.getElementById('tb-lc').value) || null,
+            target_pips: parseFloat(document.getElementById('tb-tp').value) || null,
+            stop_loss_pips: parseFloat(document.getElementById('tb-slp').value) || null,
+            max_qty_for_risk: parseFloat(document.getElementById('tb-maxqty').value) || null,
+            overnight_charges: parseFloat(document.getElementById('tb-oc').value) || 0,
+            risk_per_share: parseFloat(document.getElementById('tb-rps').value) || null,
+            position_size: parseFloat(document.getElementById('tb-ps').value) || null,
+            risk_percent: parseFloat(document.getElementById('tb-rp').value) || null,
+            channel_height: parseFloat(document.getElementById('tb-ch').value) || null,
+            potential_gain: parseFloat(document.getElementById('tb-pg').value) || null,
+            target_1_1_c: parseFloat(document.getElementById('tb-c').value) || null,
+            target_1_2_b: parseFloat(document.getElementById('tb-b').value) || null,
+            target_1_3_a: parseFloat(document.getElementById('tb-a').value) || null,
+            risk_amount_currency: parseFloat(document.getElementById('tb-risk').value) || null,
+            reward_amount_currency: parseFloat(document.getElementById('tb-reward').value) || null,
+            risk_reward_ratio: parseFloat(document.getElementById('tb-rrr').value) || null,
+            break_even: parseFloat(document.getElementById('tb-be').value) || null,
+            trailing_stop: parseFloat(document.getElementById('tb-ts').value) || null,
+            is_filled: document.getElementById('tb-filled').checked,
+            stop_entered: document.getElementById('tb-stop-entered').checked,
+            target_entered: document.getElementById('tb-target-entered').checked,
+            journal_entered: document.getElementById('tb-journal-entered').checked,
+            comments: document.getElementById('tb-comments').value
+        };
+
+        try {
+            const tb = window.tradeBillTemplate || {};
+            let result;
+            
+            if (tb.id) {
+                // Update existing
+                result = await api('PUT', `/trade-bills/${tb.id}`, data);
+                if (result.success) {
+                    toast(`Trade Bill for ${ticker} updated!`, 'success');
+                }
+            } else {
+                // Create new
+                result = await api('POST', '/trade-bills', data);
+                if (result.success || result.id) {
+                    toast(`Trade Bill for ${ticker} saved!`, 'success');
+                }
+            }
+            
+            window.tradeBillTemplate = null;
+            await switchTab('trade-bills');
+        } catch(e) {
+            toast('Error saving Trade Bill: ' + e.message, 'error');
+            console.error('Save error:', e);
+        }
+    }
+
+    // ========== TRADE BILLS LIST ==========
+    async function tradeBillsView() {
+        try {
+            const bills = await api('GET', '/trade-bills');
+            const s = settings[0] || {currency:'USD'};
+            const sym = s.currency==='GBP'?'£':s.currency==='INR'?'₹':'$';
+
+            if (!Array.isArray(bills)) {
+                return `<div class="text-red-400">Error: API returned invalid data</div>`;
+            }
+
+            return `
+                <div class="space-y-6">
+                    <div class="flex justify-between items-center">
+                        <h2 class="text-2xl font-bold">📋 Trade Bills</h2>
+                        <button onclick="newTradeBill()" class="px-4 py-2 bg-blue-600 rounded-lg hover:bg-blue-700">➕ New Trade Bill</button>
+                    </div>
+
+                    ${bills.length > 0 ? `
+                        <div class="bg-[#111827] rounded-xl overflow-hidden border border-gray-700">
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-sm">
+                                    <thead class="bg-[#1f2937]">
+                                        <tr>
+                                            <th class="text-left p-3 font-medium text-gray-400">Ticker</th>
+                                            <th class="text-right p-3 font-medium text-gray-400">Entry</th>
+                                            <th class="text-right p-3 font-medium text-gray-400">SL</th>
+                                            <th class="text-right p-3 font-medium text-gray-400">Target</th>
+                                            <th class="text-right p-3 font-medium text-gray-400">Qty</th>
+                                            <th class="text-right p-3 font-medium text-gray-400">Risk (${sym})</th>
+                                            <th class="text-right p-3 font-medium text-gray-400">R:R</th>
+                                            <th class="text-center p-3 font-medium text-gray-400">Status</th>
+                                            <th class="text-center p-3 font-medium text-gray-400">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${bills.map(b => `
+                                            <tr class="border-t border-gray-700/50 hover:bg-[#1f2937]/50">
+                                                <td class="p-3 font-mono font-bold text-blue-400">${b.ticker}</td>
+                                                <td class="p-3 text-right font-mono">${sym}${b.entry_price?.toFixed(2)}</td>
+                                                <td class="p-3 text-right font-mono text-red-400">${sym}${b.stop_loss?.toFixed(2)}</td>
+                                                <td class="p-3 text-right font-mono text-green-400">${sym}${b.target_price?.toFixed(2)}</td>
+                                                <td class="p-3 text-right font-mono">${b.quantity?.toFixed(1)}</td>
+                                                <td class="p-3 text-right font-mono">${sym}${b.risk_amount_currency?.toFixed(2)}</td>
+                                                <td class="p-3 text-right font-mono ${b.risk_reward_ratio >= 2 ? 'text-green-400' : 'text-yellow-400'}">${b.risk_reward_ratio?.toFixed(2)}</td>
+                                                <td class="p-3 text-center">
+                                                    <span class="px-2 py-1 rounded text-xs font-bold ${
+                                                        b.is_filled ? 'bg-green-500/20 text-green-400' :
+                                                        b.status === 'active' ? 'bg-blue-500/20 text-blue-400' :
+                                                        'bg-gray-500/20 text-gray-400'
+                                                    }">${b.is_filled ? '✓ Filled' : b.status || 'pending'}</span>
+                                                </td>
+                                                <td class="p-3 text-center">
+                                                    <button onclick="editTradeBill(${b.id})" class="px-2 py-1 bg-gray-700 rounded text-xs hover:bg-blue-600 mr-1">Edit</button>
+                                                    <button onclick="deleteTradeBill(${b.id})" class="px-2 py-1 bg-gray-700 rounded text-xs hover:bg-red-600">Delete</button>
+                                                </td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    ` : `
+                        <div class="text-center py-20 text-gray-500">
+                            <div class="text-6xl mb-4">📋</div>
+                            <h3 class="text-xl font-semibold">No Trade Bills yet</h3>
+                            <p class="mt-2">Create your first trade bill to get started</p>
+                            <button onclick="newTradeBill()" class="mt-4 px-6 py-2 bg-blue-600 rounded-lg hover:bg-blue-700">Create Trade Bill</button>
+                        </div>
+                    `}
+                </div>
+            `;
+        } catch(e) {
+            console.error('Error loading Trade Bills:', e);
+            return `<div class="text-red-400">Error loading Trade Bills: ${e.message}</div>`;
+        }
+    }
+
+    async function editTradeBill(id) {
+        try {
+            const bill = await api('GET', `/trade-bills/${id}`);
+            window.tradeBillTemplate = bill;
+            await switchTab('trade-bill');
+        } catch(e) {
+            toast('Error loading Trade Bill: ' + e.message, 'error');
+        }
+    }
+
+    async function deleteTradeBill(id) {
+        if (confirm('Delete this Trade Bill?')) {
+            try {
+                await api('DELETE', `/trade-bills/${id}`);
+                toast('Trade Bill deleted!', 'success');
+                await render();
+            } catch(e) {
+                toast('Error deleting Trade Bill: ' + e.message, 'error');
+            }
+        }
+    }
+
+    // ========== ACCOUNT INFO ==========
+    async function accountView() {
+        try {
+            const account = await api('GET', '/account/info');
+            const sym = account.currency==='GBP'?'£':account.currency==='INR'?'₹':'$';
+
+            return `
+                <div class="space-y-6 max-w-4xl">
+                    <h2 class="text-2xl font-bold">💰 Account Information</h2>
+
+                    <!-- Account Summary Cards -->
+                    <div class="grid grid-cols-4 gap-4">
+                        <div class="bg-gradient-to-br from-blue-500/10 to-blue-600/5 rounded-lg p-4 border border-blue-500/30">
+                            <div class="text-sm text-gray-400">Account Size</div>
+                            <div class="text-2xl font-bold text-blue-400 mt-2">${sym}${account.trading_capital?.toLocaleString()}</div>
+                        </div>
+                        <div class="bg-gradient-to-br from-red-500/10 to-red-600/5 rounded-lg p-4 border border-red-500/30">
+                            <div class="text-sm text-gray-400">Risk per Trade</div>
+                            <div class="text-2xl font-bold text-red-400 mt-2">${account.risk_per_trade?.toFixed(1)}%</div>
+                            <div class="text-xs text-gray-500 mt-1">${sym}${((account.trading_capital * account.risk_per_trade)/100).toFixed(0)}</div>
+                        </div>
+                        <div class="bg-gradient-to-br from-yellow-500/10 to-yellow-600/5 rounded-lg p-4 border border-yellow-500/30">
+                            <div class="text-sm text-gray-400">Open Positions</div>
+                            <div class="text-2xl font-bold text-yellow-400 mt-2">${account.no_of_open_positions}</div>
+                        </div>
+                        <div class="bg-gradient-to-br from-purple-500/10 to-purple-600/5 rounded-lg p-4 border border-purple-500/30">
+                            <div class="text-sm text-gray-400">Money Locked</div>
+                            <div class="text-2xl font-bold text-purple-400 mt-2">${sym}${account.money_locked_in_positions?.toLocaleString()}</div>
+                        </div>
+                    </div>
+
+                    <!-- Risk Management -->
+                    <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
+                        <h3 class="font-bold text-lg text-red-400">Risk Management</h3>
+                        <div class="grid grid-cols-2 gap-6">
+                            <div>
+                                <div class="flex justify-between mb-2">
+                                    <span class="text-gray-400">Max Monthly Drawdown: ${account.max_monthly_drawdown}%</span>
+                                    <span class="font-mono">${sym}${((account.trading_capital * account.max_monthly_drawdown)/100).toFixed(0)}</span>
+                                </div>
+                                <div class="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
+                                    <div class="h-full bg-red-500" style="width:${Math.min(100, (account.money_locked_in_positions / (account.trading_capital * account.max_monthly_drawdown / 100)) * 100)}%"></div>
+                                </div>
+                                <div class="text-xs text-gray-500 mt-1">${((account.money_locked_in_positions / (account.trading_capital * account.max_monthly_drawdown / 100)) * 100).toFixed(1)}% Used</div>
+                            </div>
+                            <div>
+                                <div class="flex justify-between mb-2">
+                                    <span class="text-gray-400">Money Remaining to Risk</span>
+                                    <span class="font-mono text-green-400">${sym}${Math.max(0, account.money_remaining_to_risk).toLocaleString()}</span>
+                                </div>
+                                <div class="text-xs text-gray-500 mt-4">${account.risk_percent_remaining?.toFixed(1)}% of capital available</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Account Details -->
+                    <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
+                        <h3 class="font-bold text-lg">Account Details</h3>
+                        <div class="grid grid-cols-2 gap-6">
+                            <div>
+                                <div class="text-sm text-gray-400 mb-1">Account Name</div>
+                                <div class="font-mono text-lg">${account.account_name}</div>
+                            </div>
+                            <div>
+                                <div class="text-sm text-gray-400 mb-1">Broker</div>
+                                <div class="font-mono text-lg">${account.broker || 'N/A'}</div>
+                            </div>
+                            <div>
+                                <div class="text-sm text-gray-400 mb-1">Market</div>
+                                <div class="font-mono text-lg">${account.market}</div>
+                            </div>
+                            <div>
+                                <div class="text-sm text-gray-400 mb-1">Target R:R</div>
+                                <div class="font-mono text-lg">${account.target_rr?.toFixed(1)} : 1</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Position Summary -->
+                    <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
+                        <h3 class="font-bold text-lg">Position Summary</h3>
+                        <div class="grid grid-cols-3 gap-4">
+                            <div class="bg-[#1f2937] rounded-lg p-4">
+                                <div class="text-sm text-gray-400">Total Positions</div>
+                                <div class="text-2xl font-bold text-blue-400 mt-2">${account.no_of_open_positions}</div>
+                            </div>
+                            <div class="bg-[#1f2937] rounded-lg p-4">
+                                <div class="text-sm text-gray-400">Money Locked</div>
+                                <div class="text-2xl font-bold text-purple-400 mt-2">${sym}${account.money_locked_in_positions?.toLocaleString()}</div>
+                            </div>
+                            <div class="bg-[#1f2937] rounded-lg p-4">
+                                <div class="text-sm text-gray-400">Slots Remaining</div>
+                                <div class="text-2xl font-bold text-green-400 mt-2">${account.max_open_positions - account.no_of_open_positions}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        } catch(e) {
+            return `<div class="text-red-400">Error loading Account Info: ${e.message}</div>`;
+        }
+    }
+
+    // ========== JOURNAL DASHBOARD ==========
+    async function journalDashboardView() {
+        try {
+            const trades = await api('GET', '/trade-log');
+            const tradeList = trades.trades || [];
+            const closedTrades = tradeList.filter(t => t.exit_date);
+            const openTrades = tradeList.filter(t => !t.exit_date);
+            const winners = closedTrades.filter(t => t.net_pnl > 0);
+            const losers = closedTrades.filter(t => t.net_pnl < 0);
+            const breakeven = closedTrades.filter(t => t.net_pnl === 0);
+            
+            const totalPnL = closedTrades.reduce((sum, t) => sum + (t.net_pnl || 0), 0);
+            const winRate = closedTrades.length > 0 ? (winners.length / closedTrades.length * 100) : 0;
+            const avgWin = winners.length > 0 ? winners.reduce((sum, t) => sum + t.net_pnl, 0) / winners.length : 0;
+            const avgLoss = losers.length > 0 ? losers.reduce((sum, t) => sum + Math.abs(t.net_pnl), 0) / losers.length : 0;
+            const expectancy = closedTrades.length > 0 ? totalPnL / closedTrades.length : 0;
+            const s = settings[0] || {trading_capital: 6000};
+            const sym = '$';
+            
+            return `
+                <div class="space-y-6">
+                    <h2 class="text-2xl font-bold">📊 Trade Journal Dashboard</h2>
+                    
+                    <!-- Win Rate Donut -->
+                    <div class="grid grid-cols-3 gap-6">
+                        <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 text-center">
+                            <div class="text-6xl font-bold ${winRate >= 50 ? 'text-green-400' : 'text-red-400'}">${winRate.toFixed(1)}%</div>
+                            <div class="text-gray-400 mt-2">Win Rate</div>
+                            <div class="flex justify-center gap-4 mt-4 text-sm">
+                                <span class="text-green-400">${winners.length}W</span>
+                                <span class="text-red-400">${losers.length}L</span>
+                                <span class="text-gray-400">${breakeven.length}BE</span>
+                            </div>
+                        </div>
+                        
+                        <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                            <h3 class="font-bold text-lg mb-4">Journal Statistics</h3>
+                            <div class="space-y-3 text-sm">
+                                <div class="flex justify-between"><span class="text-gray-400">Closed Trades</span><span class="font-mono">${closedTrades.length}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Open Trades</span><span class="font-mono">${openTrades.length}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Trade Expectancy</span><span class="font-mono ${expectancy >= 0 ? 'text-green-400' : 'text-red-400'}">${sym}${expectancy.toFixed(2)}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Overall P/L</span><span class="font-mono text-lg ${totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}">${sym}${totalPnL.toFixed(2)}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Account Growth</span><span class="font-mono ${totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}">${(totalPnL / s.trading_capital * 100).toFixed(2)}%</span></div>
+                            </div>
+                        </div>
+                        
+                        <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                            <h3 class="font-bold text-lg mb-4">Trade Analysis</h3>
+                            <div class="space-y-3 text-sm">
+                                <div class="flex justify-between"><span class="text-gray-400">Avg Winning Trade</span><span class="font-mono text-green-400">${sym}${avgWin.toFixed(2)}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Avg Losing Trade</span><span class="font-mono text-red-400">-${sym}${avgLoss.toFixed(2)}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Profit Factor</span><span class="font-mono">${avgLoss > 0 ? (avgWin / avgLoss).toFixed(2) : 'N/A'}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Best Trade</span><span class="font-mono text-green-400">${sym}${Math.max(...closedTrades.map(t => t.net_pnl || 0), 0).toFixed(2)}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Worst Trade</span><span class="font-mono text-red-400">${sym}${Math.min(...closedTrades.map(t => t.net_pnl || 0), 0).toFixed(2)}</span></div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Quick Actions -->
+                    <div class="grid grid-cols-4 gap-4">
+                        <button onclick="switchTab('trade-log')" class="p-4 bg-blue-600/20 border border-blue-600/50 rounded-xl hover:bg-blue-600/30 text-center">
+                            <div class="text-2xl">📝</div>
+                            <div class="mt-2">Add Trade</div>
+                        </button>
+                        <button onclick="switchTab('trade-summary')" class="p-4 bg-green-600/20 border border-green-600/50 rounded-xl hover:bg-green-600/30 text-center">
+                            <div class="text-2xl">📈</div>
+                            <div class="mt-2">Summary</div>
+                        </button>
+                        <button onclick="switchTab('pnl-tracker')" class="p-4 bg-purple-600/20 border border-purple-600/50 rounded-xl hover:bg-purple-600/30 text-center">
+                            <div class="text-2xl">💵</div>
+                            <div class="mt-2">P&L Tracker</div>
+                        </button>
+                        <button onclick="switchTab('mistakes')" class="p-4 bg-red-600/20 border border-red-600/50 rounded-xl hover:bg-red-600/30 text-center">
+                            <div class="text-2xl">⚠️</div>
+                            <div class="mt-2">Mistakes</div>
+                        </button>
+                    </div>
+                    
+                    <!-- Recent Trades -->
+                    <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                        <h3 class="font-bold text-lg mb-4">Recent Trades</h3>
+                        ${tradeList.length > 0 ? `
+                            <table class="w-full text-sm">
+                                <thead class="text-gray-400 border-b border-gray-700">
+                                    <tr>
+                                        <th class="text-left py-2">Date</th>
+                                        <th class="text-left py-2">Symbol</th>
+                                        <th class="text-left py-2">Strategy</th>
+                                        <th class="text-right py-2">Entry</th>
+                                        <th class="text-right py-2">Exit</th>
+                                        <th class="text-right py-2">P&L</th>
+                                        <th class="text-center py-2">Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${tradeList.slice(0, 10).map(t => `
+                                        <tr class="border-b border-gray-700/50">
+                                            <td class="py-2 font-mono text-xs">${t.entry_date || '-'}</td>
+                                            <td class="py-2 font-mono font-bold">${t.symbol}</td>
+                                            <td class="py-2">${t.strategy || '-'}</td>
+                                            <td class="py-2 text-right font-mono">${sym}${t.entry_price?.toFixed(2) || '-'}</td>
+                                            <td class="py-2 text-right font-mono">${t.exit_price ? sym + t.exit_price.toFixed(2) : '-'}</td>
+                                            <td class="py-2 text-right font-mono ${(t.net_pnl || 0) >= 0 ? 'text-green-400' : 'text-red-400'}">${t.exit_date ? sym + (t.net_pnl || 0).toFixed(2) : '-'}</td>
+                                            <td class="py-2 text-center"><span class="px-2 py-1 rounded text-xs ${t.exit_date ? (t.net_pnl > 0 ? 'bg-green-500/20 text-green-400' : t.net_pnl < 0 ? 'bg-red-500/20 text-red-400' : 'bg-gray-500/20') : 'bg-blue-500/20 text-blue-400'}">${t.exit_date ? (t.net_pnl > 0 ? 'WIN' : t.net_pnl < 0 ? 'LOSS' : 'BE') : 'OPEN'}</span></td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        ` : '<p class="text-gray-500 text-center py-8">No trades recorded yet. Start by adding a trade!</p>'}
+                    </div>
+                </div>
+            `;
+        } catch(e) {
+            return `<div class="text-center py-20"><p class="text-red-400">Error: ${e.message}</p></div>`;
+        }
+    }
+
+    // ========== TRADE LOG ==========
+    async function tradeLogView() {
+        const strategies = ['SE - Canon', 'SE - White Marubozu', 'EL - Daily Swing', 'EL - False Breakout', 'EL - LC Bounce', 'CI - Trending Stocks'];
+        const mistakes = ['Tight Stop Loss', 'Entered Early', 'Entered Late', 'FOMO', 'Revenge Trading', 'Stock In News', 'Rule Deviation', 'Staying Long'];
+        const s = settings[0] || {trading_capital: 6000};
+        const sym = '$';
+        
+        let trades = [];
+        try {
+            const response = await api('GET', '/trade-log');
+            trades = response.trades || [];
+        } catch(e) { console.log('No trades yet'); }
+        
+        return `
+            <div class="space-y-6">
+                <div class="flex justify-between items-center">
+                    <h2 class="text-2xl font-bold">📝 Trade Log</h2>
+                    <div class="flex gap-2">
+                        <button onclick="showAddTradeModal()" class="px-4 py-2 bg-green-600 rounded-lg hover:bg-green-700">+ Add Trade</button>
+                        <button onclick="exportTrades()" class="px-4 py-2 bg-gray-700 rounded-lg hover:bg-gray-600">📥 Export</button>
+                    </div>
+                </div>
+                
+                <!-- Trade Entry Form -->
+                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700" id="trade-form">
+                    <h3 class="font-bold text-lg mb-4 text-blue-400">New Trade Entry</h3>
+                    
+                    <div class="grid grid-cols-6 gap-4 mb-4">
+                        <div><label class="text-xs text-gray-400">Entry Date</label><input type="datetime-local" id="tl-entry-date" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
+                        <div><label class="text-xs text-gray-400">Symbol</label><input id="tl-symbol" placeholder="AAPL" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
+                        <div><label class="text-xs text-gray-400">Strategy</label><select id="tl-strategy" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm">${strategies.map(s => `<option>${s}</option>`).join('')}</select></div>
+                        <div><label class="text-xs text-gray-400">Direction</label><select id="tl-direction" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm"><option>Long</option><option>Short</option></select></div>
+                        <div><label class="text-xs text-gray-400">Entry Price (${sym})</label><input type="number" id="tl-entry" step="0.01" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
+                        <div><label class="text-xs text-gray-400">Shares</label><input type="number" id="tl-shares" step="1" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
+                    </div>
+                    
+                    <div class="grid grid-cols-6 gap-4 mb-4">
+                        <div><label class="text-xs text-gray-400">Stop Loss (${sym})</label><input type="number" id="tl-sl" step="0.01" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
+                        <div><label class="text-xs text-gray-400">Take Profit (${sym})</label><input type="number" id="tl-tp" step="0.01" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
+                        <div><label class="text-xs text-gray-400">Exit Date</label><input type="datetime-local" id="tl-exit-date" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
+                        <div><label class="text-xs text-gray-400">Exit Price (${sym})</label><input type="number" id="tl-exit" step="0.01" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
+                        <div><label class="text-xs text-gray-400">Trade Costs (${sym})</label><input type="number" id="tl-costs" step="0.01" value="0" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
+                        <div><label class="text-xs text-gray-400">Mistake</label><select id="tl-mistake" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm"><option value="">None</option>${mistakes.map(m => `<option>${m}</option>`).join('')}</select></div>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4 mb-4">
+                        <div><label class="text-xs text-gray-400">Discipline Rating (1-10)</label><input type="number" id="tl-discipline" min="1" max="10" value="8" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
+                        <div><label class="text-xs text-gray-400">Notes</label><input id="tl-notes" placeholder="Trade notes..." class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm"></div>
+                    </div>
+                    
+                    <button onclick="saveTradeLog()" class="px-6 py-2 bg-green-600 rounded-lg hover:bg-green-700">💾 Save Trade</button>
+                </div>
+                
+                <!-- Trade List -->
+                <div class="bg-[#111827] rounded-xl border border-gray-700 overflow-hidden">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs">
+                            <thead class="bg-[#1f2937]">
+                                <tr>
+                                    <th class="text-left p-2 text-gray-400">Date</th>
+                                    <th class="text-left p-2 text-gray-400">Symbol</th>
+                                    <th class="text-left p-2 text-gray-400">Strategy</th>
+                                    <th class="text-center p-2 text-gray-400">Dir</th>
+                                    <th class="text-right p-2 text-gray-400">Entry</th>
+                                    <th class="text-right p-2 text-gray-400">Shares</th>
+                                    <th class="text-right p-2 text-gray-400">Size</th>
+                                    <th class="text-right p-2 text-gray-400">SL</th>
+                                    <th class="text-right p-2 text-gray-400">TP</th>
+                                    <th class="text-right p-2 text-gray-400">Exit</th>
+                                    <th class="text-right p-2 text-gray-400">Gross P/L</th>
+                                    <th class="text-right p-2 text-gray-400">Net P/L</th>
+                                    <th class="text-right p-2 text-gray-400">R</th>
+                                    <th class="text-center p-2 text-gray-400">Status</th>
+                                    <th class="text-center p-2 text-gray-400">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${trades.length > 0 ? trades.map(t => {
+                                    const tradeSize = (t.entry_price * t.shares).toFixed(2);
+                                    const grossPnL = t.exit_price ? ((t.direction === 'Long' ? t.exit_price - t.entry_price : t.entry_price - t.exit_price) * t.shares).toFixed(2) : '-';
+                                    const netPnL = t.net_pnl?.toFixed(2) || grossPnL;
+                                    const rValue = t.stop_loss && t.entry_price ? ((t.net_pnl || 0) / Math.abs(t.entry_price - t.stop_loss) / t.shares).toFixed(2) : '-';
+                                    return `
+                                        <tr class="border-t border-gray-700/50 hover:bg-[#1f2937]/50">
+                                            <td class="p-2 font-mono">${t.entry_date?.split('T')[0] || '-'}</td>
+                                            <td class="p-2 font-mono font-bold">${t.symbol}</td>
+                                            <td class="p-2">${t.strategy || '-'}</td>
+                                            <td class="p-2 text-center"><span class="${t.direction === 'Long' ? 'text-green-400' : 'text-red-400'}">${t.direction === 'Long' ? '▲' : '▼'}</span></td>
+                                            <td class="p-2 text-right font-mono">${sym}${t.entry_price?.toFixed(2)}</td>
+                                            <td class="p-2 text-right font-mono">${t.shares}</td>
+                                            <td class="p-2 text-right font-mono">${sym}${tradeSize}</td>
+                                            <td class="p-2 text-right font-mono text-red-400">${t.stop_loss ? sym + t.stop_loss.toFixed(2) : '-'}</td>
+                                            <td class="p-2 text-right font-mono text-green-400">${t.take_profit ? sym + t.take_profit.toFixed(2) : '-'}</td>
+                                            <td class="p-2 text-right font-mono">${t.exit_price ? sym + t.exit_price.toFixed(2) : '-'}</td>
+                                            <td class="p-2 text-right font-mono ${parseFloat(grossPnL) >= 0 ? 'text-green-400' : 'text-red-400'}">${grossPnL !== '-' ? sym + grossPnL : '-'}</td>
+                                            <td class="p-2 text-right font-mono ${parseFloat(netPnL) >= 0 ? 'text-green-400' : 'text-red-400'}">${netPnL !== '-' ? sym + netPnL : '-'}</td>
+                                            <td class="p-2 text-right font-mono">${rValue}R</td>
+                                            <td class="p-2 text-center"><span class="px-1.5 py-0.5 rounded text-xs ${t.exit_date ? (parseFloat(netPnL) > 0 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400') : 'bg-blue-500/20 text-blue-400'}">${t.exit_date ? 'CLOSED' : 'OPEN'}</span></td>
+                                            <td class="p-2 text-center">
+                                                <button onclick="editTrade(${t.id})" class="text-blue-400 hover:text-blue-300 mr-2">✏️</button>
+                                                <button onclick="deleteTrade(${t.id})" class="text-red-400 hover:text-red-300">🗑️</button>
+                                            </td>
+                                        </tr>
+                                    `;
+                                }).join('') : '<tr><td colspan="15" class="p-8 text-center text-gray-500">No trades recorded. Add your first trade above!</td></tr>'}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    async function saveTradeLog() {
+        const data = {
+            entry_date: document.getElementById('tl-entry-date').value,
+            symbol: document.getElementById('tl-symbol').value.toUpperCase(),
+            strategy: document.getElementById('tl-strategy').value,
+            direction: document.getElementById('tl-direction').value,
+            entry_price: parseFloat(document.getElementById('tl-entry').value),
+            shares: parseInt(document.getElementById('tl-shares').value),
+            stop_loss: parseFloat(document.getElementById('tl-sl').value) || null,
+            take_profit: parseFloat(document.getElementById('tl-tp').value) || null,
+            exit_date: document.getElementById('tl-exit-date').value || null,
+            exit_price: parseFloat(document.getElementById('tl-exit').value) || null,
+            trade_costs: parseFloat(document.getElementById('tl-costs').value) || 0,
+            mistake: document.getElementById('tl-mistake').value || null,
+            discipline_rating: parseInt(document.getElementById('tl-discipline').value) || 8,
+            notes: document.getElementById('tl-notes').value
+        };
+        
+        // Calculate P&L if exit price exists
+        if (data.exit_price) {
+            const grossPnL = (data.direction === 'Long' ? data.exit_price - data.entry_price : data.entry_price - data.exit_price) * data.shares;
+            data.gross_pnl = grossPnL;
+            data.net_pnl = grossPnL - data.trade_costs;
+        }
+        
+        try {
+            await api('POST', '/trade-log', data);
+            toast('Trade saved!', 'success');
+            await render();
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    async function deleteTrade(id) {
+        if (confirm('Delete this trade?')) {
+            await api('DELETE', `/trade-log/${id}`);
+            toast('Trade deleted', 'success');
+            await render();
+        }
+    }
+
+    // ========== TRADE SUMMARY ==========
+    async function tradeSummaryView() {
+        try {
+            const response = await api('GET', '/trade-log');
+            const trades = response.trades || [];
+            const closed = trades.filter(t => t.exit_date);
+            const s = settings[0] || {trading_capital: 6000};
+            const sym = '$';
+            
+            // Calculate by strategy
+            const strategies = {};
+            closed.forEach(t => {
+                if (!strategies[t.strategy]) strategies[t.strategy] = {wins: 0, losses: 0, totalPnL: 0, count: 0};
+                strategies[t.strategy].count++;
+                strategies[t.strategy].totalPnL += t.net_pnl || 0;
+                if (t.net_pnl > 0) strategies[t.strategy].wins++;
+                else if (t.net_pnl < 0) strategies[t.strategy].losses++;
+            });
+            
+            const winners = closed.filter(t => t.net_pnl > 0);
+            const losers = closed.filter(t => t.net_pnl < 0);
+            
+            return `
+                <div class="space-y-6">
+                    <h2 class="text-2xl font-bold">📈 Trade Summary</h2>
+                    
+                    <div class="grid grid-cols-2 gap-6">
+                        <!-- Overall Stats -->
+                        <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                            <h3 class="font-bold text-lg mb-4">Overall Statistics</h3>
+                            <div class="space-y-3">
+                                <div class="flex justify-between"><span class="text-gray-400">Total Closed Trades</span><span class="font-mono">${closed.length}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Winning Trades</span><span class="font-mono text-green-400">${winners.length}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Losing Trades</span><span class="font-mono text-red-400">${losers.length}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Win Rate</span><span class="font-mono">${closed.length > 0 ? (winners.length / closed.length * 100).toFixed(1) : 0}%</span></div>
+                                <div class="border-t border-gray-700 pt-3 mt-3"></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Avg Winning Trade</span><span class="font-mono text-green-400">${sym}${winners.length > 0 ? (winners.reduce((s, t) => s + t.net_pnl, 0) / winners.length).toFixed(2) : '0.00'}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Avg Losing Trade</span><span class="font-mono text-red-400">${sym}${losers.length > 0 ? (losers.reduce((s, t) => s + Math.abs(t.net_pnl), 0) / losers.length).toFixed(2) : '0.00'}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Largest Win</span><span class="font-mono text-green-400">${sym}${Math.max(...closed.map(t => t.net_pnl || 0), 0).toFixed(2)}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Largest Loss</span><span class="font-mono text-red-400">${sym}${Math.min(...closed.map(t => t.net_pnl || 0), 0).toFixed(2)}</span></div>
+                            </div>
+                        </div>
+                        
+                        <!-- Strategy Breakdown -->
+                        <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                            <h3 class="font-bold text-lg mb-4">Strategy Performance</h3>
+                            <div class="space-y-3">
+                                ${Object.entries(strategies).map(([name, data]) => `
+                                    <div class="p-3 bg-[#1f2937] rounded-lg">
+                                        <div class="flex justify-between items-center">
+                                            <span class="font-medium">${name}</span>
+                                            <span class="font-mono ${data.totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}">${sym}${data.totalPnL.toFixed(2)}</span>
+                                        </div>
+                                        <div class="text-xs text-gray-400 mt-1">
+                                            ${data.count} trades | ${(data.wins / data.count * 100).toFixed(0)}% win rate | ${data.wins}W / ${data.losses}L
+                                        </div>
+                                    </div>
+                                `).join('') || '<p class="text-gray-500">No trades yet</p>'}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        } catch(e) {
+            return `<div class="text-red-400">Error: ${e.message}</div>`;
+        }
+    }
+
+    // ========== P&L TRACKER ==========
+    async function pnlTrackerView() {
+        try {
+            const response = await api('GET', '/trade-log');
+            const trades = response.trades || [];
+            const closed = trades.filter(t => t.exit_date);
+            const sym = '$';
+            
+            // Group by date
+            const byDate = {};
+            closed.forEach(t => {
+                const date = t.exit_date?.split('T')[0];
+                if (date) {
+                    if (!byDate[date]) byDate[date] = {trades: 0, pnl: 0};
+                    byDate[date].trades++;
+                    byDate[date].pnl += t.net_pnl || 0;
+                }
+            });
+            
+            // Group by week
+            const byWeek = {};
+            closed.forEach(t => {
+                if (t.exit_date) {
+                    const d = new Date(t.exit_date);
+                    const week = `${d.getFullYear()}-W${Math.ceil((d.getDate() + new Date(d.getFullYear(), d.getMonth(), 1).getDay()) / 7)}`;
+                    if (!byWeek[week]) byWeek[week] = {trades: 0, pnl: 0};
+                    byWeek[week].trades++;
+                    byWeek[week].pnl += t.net_pnl || 0;
+                }
+            });
+            
+            // Group by month
+            const byMonth = {};
+            closed.forEach(t => {
+                if (t.exit_date) {
+                    const d = new Date(t.exit_date);
+                    const month = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+                    if (!byMonth[month]) byMonth[month] = {trades: 0, pnl: 0};
+                    byMonth[month].trades++;
+                    byMonth[month].pnl += t.net_pnl || 0;
+                }
+            });
+            
+            return `
+                <div class="space-y-6">
+                    <h2 class="text-2xl font-bold">💵 P&L Tracker</h2>
+                    
+                    <div class="grid grid-cols-3 gap-6">
+                        <!-- Daily P&L -->
+                        <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                            <h3 class="font-bold text-lg mb-4">Daily P&L</h3>
+                            <div class="space-y-2 max-h-80 overflow-y-auto">
+                                ${Object.entries(byDate).sort((a, b) => b[0].localeCompare(a[0])).map(([date, data]) => `
+                                    <div class="flex justify-between items-center p-2 bg-[#1f2937] rounded">
+                                        <span class="font-mono text-sm">${date}</span>
+                                        <div class="text-right">
+                                            <div class="font-mono ${data.pnl >= 0 ? 'text-green-400' : 'text-red-400'}">${sym}${data.pnl.toFixed(2)}</div>
+                                            <div class="text-xs text-gray-500">${data.trades} trades</div>
+                                        </div>
+                                    </div>
+                                `).join('') || '<p class="text-gray-500">No data</p>'}
+                            </div>
+                        </div>
+                        
+                        <!-- Weekly P&L -->
+                        <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                            <h3 class="font-bold text-lg mb-4">Weekly P&L</h3>
+                            <div class="space-y-2 max-h-80 overflow-y-auto">
+                                ${Object.entries(byWeek).sort((a, b) => b[0].localeCompare(a[0])).map(([week, data]) => `
+                                    <div class="flex justify-between items-center p-2 bg-[#1f2937] rounded">
+                                        <span class="font-mono text-sm">${week}</span>
+                                        <div class="text-right">
+                                            <div class="font-mono ${data.pnl >= 0 ? 'text-green-400' : 'text-red-400'}">${sym}${data.pnl.toFixed(2)}</div>
+                                            <div class="text-xs text-gray-500">${data.trades} trades</div>
+                                        </div>
+                                    </div>
+                                `).join('') || '<p class="text-gray-500">No data</p>'}
+                            </div>
+                        </div>
+                        
+                        <!-- Monthly P&L -->
+                        <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                            <h3 class="font-bold text-lg mb-4">Monthly P&L</h3>
+                            <div class="space-y-2 max-h-80 overflow-y-auto">
+                                ${Object.entries(byMonth).sort((a, b) => b[0].localeCompare(a[0])).map(([month, data]) => `
+                                    <div class="flex justify-between items-center p-2 bg-[#1f2937] rounded">
+                                        <span class="font-mono text-sm">${month}</span>
+                                        <div class="text-right">
+                                            <div class="font-mono ${data.pnl >= 0 ? 'text-green-400' : 'text-red-400'}">${sym}${data.pnl.toFixed(2)}</div>
+                                            <div class="text-xs text-gray-500">${data.trades} trades</div>
+                                        </div>
+                                    </div>
+                                `).join('') || '<p class="text-gray-500">No data</p>'}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        } catch(e) {
+            return `<div class="text-red-400">Error: ${e.message}</div>`;
+        }
+    }
+
+    // ========== MISTAKES TRACKER ==========
+    async function mistakesView() {
+        try {
+            const response = await api('GET', '/trade-log');
+            const trades = response.trades || [];
+            const closed = trades.filter(t => t.exit_date);
+            const sym = '$';
+            
+            // Group by mistake
+            const byMistake = {};
+            closed.filter(t => t.mistake).forEach(t => {
+                if (!byMistake[t.mistake]) byMistake[t.mistake] = {trades: 0, pnl: 0};
+                byMistake[t.mistake].trades++;
+                byMistake[t.mistake].pnl += t.net_pnl || 0;
+            });
+            
+            const totalMistakeTrades = Object.values(byMistake).reduce((s, m) => s + m.trades, 0);
+            const totalMistakePnL = Object.values(byMistake).reduce((s, m) => s + m.pnl, 0);
+            
+            return `
+                <div class="space-y-6">
+                    <h2 class="text-2xl font-bold">⚠️ Mistakes Tracker</h2>
+                    
+                    <!-- Summary -->
+                    <div class="grid grid-cols-3 gap-4">
+                        <div class="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-center">
+                            <div class="text-3xl font-bold text-red-400">${totalMistakeTrades}</div>
+                            <div class="text-gray-400">Trades with Mistakes</div>
+                        </div>
+                        <div class="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-center">
+                            <div class="text-3xl font-bold text-red-400">${sym}${totalMistakePnL.toFixed(2)}</div>
+                            <div class="text-gray-400">Total Impact</div>
+                        </div>
+                        <div class="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 text-center">
+                            <div class="text-3xl font-bold text-yellow-400">${closed.length > 0 ? (totalMistakeTrades / closed.length * 100).toFixed(1) : 0}%</div>
+                            <div class="text-gray-400">Mistake Rate</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Mistakes Breakdown -->
+                    <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                        <h3 class="font-bold text-lg mb-4">Mistakes Breakdown</h3>
+                        <table class="w-full text-sm">
+                            <thead class="text-gray-400 border-b border-gray-700">
+                                <tr>
+                                    <th class="text-left py-2">Mistake</th>
+                                    <th class="text-right py-2">No. Trades</th>
+                                    <th class="text-right py-2">Total P&L Impact</th>
+                                    <th class="text-right py-2">Avg per Trade</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${Object.entries(byMistake).sort((a, b) => a[1].pnl - b[1].pnl).map(([mistake, data]) => `
+                                    <tr class="border-b border-gray-700/50">
+                                        <td class="py-3 font-medium">${mistake}</td>
+                                        <td class="py-3 text-right font-mono">${data.trades}</td>
+                                        <td class="py-3 text-right font-mono ${data.pnl >= 0 ? 'text-green-400' : 'text-red-400'}">${sym}${data.pnl.toFixed(2)}</td>
+                                        <td class="py-3 text-right font-mono ${data.pnl >= 0 ? 'text-green-400' : 'text-red-400'}">${sym}${(data.pnl / data.trades).toFixed(2)}</td>
+                                    </tr>
+                                `).join('') || '<tr><td colspan="4" class="py-8 text-center text-gray-500">No mistakes recorded. Great discipline!</td></tr>'}
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    <!-- Improvement Tips -->
+                    <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                        <h3 class="font-bold text-lg mb-4">📚 Elder's Wisdom on Common Mistakes</h3>
+                        <div class="grid grid-cols-2 gap-4 text-sm">
+                            <div class="p-3 bg-[#1f2937] rounded-lg">
+                                <div class="font-medium text-yellow-400">Tight Stop Loss</div>
+                                <p class="text-gray-400 mt-1">"Place stops outside the noise. Use 2× ATR below entry for long trades."</p>
+                            </div>
+                            <div class="p-3 bg-[#1f2937] rounded-lg">
+                                <div class="font-medium text-yellow-400">FOMO</div>
+                                <p class="text-gray-400 mt-1">"Never chase a runaway market. Wait for pullbacks to the EMA."</p>
+                            </div>
+                            <div class="p-3 bg-[#1f2937] rounded-lg">
+                                <div class="font-medium text-yellow-400">Revenge Trading</div>
+                                <p class="text-gray-400 mt-1">"After a loss, step away. The 6% rule protects you from yourself."</p>
+                            </div>
+                            <div class="p-3 bg-[#1f2937] rounded-lg">
+                                <div class="font-medium text-yellow-400">Rule Deviation</div>
+                                <p class="text-gray-400 mt-1">"Good records are the single most important contribution to success."</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        } catch(e) {
+            return `<div class="text-red-400">Error: ${e.message}</div>`;
+        }
+    }
+
+    // ========== FAVORITES ==========
+    async function favoritesView() {
+        const market = document.getElementById('market').value;
+        try {
+            const response = await api('GET', `/favorites?market=${market}`);
+            const favorites = response.favorites || [];
+            
+            return `
+                <div class="space-y-6">
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <h2 class="text-2xl font-bold">⭐ Favorite Stocks</h2>
+                            <p class="text-gray-500 text-sm">Your watched stocks with price data</p>
+                        </div>
+                        <div class="flex gap-2">
+                            <select id="fav-market" onchange="favoritesMarketChanged()" class="bg-[#1f2937] border border-gray-600 rounded px-3 py-2 text-sm">
+                                <option value="US" ${market === 'US' ? 'selected' : ''}>🇺🇸 NASDAQ</option>
+                                <option value="IN" ${market === 'IN' ? 'selected' : ''}>🇮🇳 NSE</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    ${favorites.length === 0 ? `
+                        <div class="text-center py-20 text-gray-500">
+                            <div class="text-6xl mb-4">⭐</div>
+                            <h3 class="text-xl font-semibold">No Favorite Stocks Yet</h3>
+                            <p class="mt-2">Click the star icon on any stock in the screener to add it to your favorites</p>
+                            <button onclick="switchTab('screener')" class="mt-6 px-4 py-2 bg-blue-600 rounded-lg hover:bg-blue-700">Go to Screener</button>
+                        </div>
+                    ` : `
+                        <div class="bg-[#111827] rounded-xl overflow-hidden border border-gray-700">
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-sm">
+                                    <thead class="bg-[#1f2937]">
+                                        <tr>
+                                            <th class="text-left p-3 font-medium text-gray-400">Symbol</th>
+                                            <th class="text-left p-3 font-medium text-gray-400">Price</th>
+                                            <th class="text-left p-3 font-medium text-gray-400">Name</th>
+                                            <th class="text-left p-3 font-medium text-gray-400">Notes</th>
+                                            <th class="text-left p-3 font-medium text-gray-400">Added</th>
+                                            <th class="text-center p-3 font-medium text-gray-400">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${favorites.map(fav => `
+                                            <tr class="border-t border-gray-700/50 hover:bg-[#1f2937]/50">
+                                                <td class="p-3">
+                                                    <span class="font-mono font-bold text-blue-400">${fav.symbol}</span>
+                                                </td>
+                                                <td class="p-3 font-mono">
+                                                    $${fav.price ? fav.price.toFixed(2) : 'N/A'}
+                                                </td>
+                                                <td class="p-3 text-sm text-gray-400">${fav.name || ''}</td>
+                                                <td class="p-3 text-sm text-gray-400">${fav.notes ? fav.notes : '-'}</td>
+                                                <td class="p-3 text-xs text-gray-500">${new Date(fav.created_at).toLocaleDateString()}</td>
+                                                <td class="p-3 text-center">
+                                                    <div class="flex gap-1 justify-center">
+                                                        <button onclick="editFavoriteNotes('${fav.symbol}')" class="px-2 py-1 text-xs bg-blue-600 rounded hover:bg-blue-700" title="Edit notes">📝</button>
+                                                        <button onclick="removeFavoriteStock('${fav.symbol}')" class="px-2 py-1 text-xs bg-red-600 rounded hover:bg-red-700" title="Remove">✕</button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div class="bg-[#111827] rounded-xl p-4 border border-gray-700">
+                            <div class="flex justify-between items-center">
+                                <p class="text-sm text-gray-400">Total favorites: <span class="font-bold text-blue-400">${favorites.length}</span></p>
+                                <div class="flex gap-2">
+                                    <button onclick="switchTab('screener')" class="px-3 py-2 text-sm bg-blue-600 rounded hover:bg-blue-700">➕ Add More</button>
+                                    <button onclick="confirmClearAllFavorites()" class="px-3 py-2 text-sm bg-red-600 rounded hover:bg-red-700">🗑️ Clear All</button>
+                                </div>
+                            </div>
+                        </div>
+                    `}
+                </div>
+            `;
+        } catch(e) {
+            return `<div class="text-red-400">Error loading favorites: ${e.message}</div>`;
+        }
+    }
+
+    async function removeFavoriteStock(symbol) {
+        if (!confirm(`Remove ${symbol} from favorites?`)) return;
+        
+        const market = document.getElementById('market').value;
+        try {
+            await api('DELETE', `/favorites/${symbol}?market=${market}`);
+            toast(`${symbol} removed from favorites`, 'success');
+            await switchTab('favorites');
+        } catch(e) {
+            toast(`Error: ${e.message}`, 'error');
+        }
+    }
+
+    async function editFavoriteNotes(symbol) {
+        const market = document.getElementById('market').value;
+        const currentNotes = prompt('Enter notes for this stock:', '');
+        if (currentNotes === null) return;
+        
+        try {
+            const result = await api('PUT', `/favorites/${symbol}/notes`, {market, notes: currentNotes});
+            toast('Notes updated', 'success');
+            await switchTab('favorites');
+        } catch(e) {
+            toast(`Error: ${e.message}`, 'error');
+        }
+    }
+
+    async function toggleFavorite(symbol) {
+        const market = document.getElementById('market').value;
+        try {
+            const result = await api('POST', `/favorites/${symbol}`, {market});
+            if (result.favorited) {
+                toast(`${symbol} added to favorites!`, 'success');
+            } else {
+                toast(`${symbol} removed from favorites`, 'success');
+            }
+        } catch(e) {
+            toast(`Error: ${e.message}`, 'error');
+        }
+    }
+
+    async function confirmClearAllFavorites() {
+        if (!confirm('Are you sure? This will remove ALL favorites. This cannot be undone.')) return;
+        await clearAllFavorites();
+    }
+
+    async function clearAllFavorites() {
+        const market = document.getElementById('market').value;
+        try {
+            const response = await api('GET', `/favorites?market=${market}`);
+            const favorites = response.favorites || [];
+            
+            if (favorites.length === 0) {
+                toast('No favorites to clear', 'info');
+                return;
+            }
+            
+            let cleared = 0;
+            for (let fav of favorites) {
+                try {
+                    await api('DELETE', `/favorites/${fav.symbol}?market=${market}`);
+                    cleared++;
+                } catch(e) {
+                    console.error(`Failed to delete ${fav.symbol}:`, e);
+                }
+            }
+            
+            toast(`Cleared ${cleared} favorites`, 'success');
+            await switchTab('favorites');
+        } catch(e) {
+            toast(`Error: ${e.message}`, 'error');
+        }
+    }
+
+    async function favoritesMarketChanged() {
+        const newMarket = document.getElementById('fav-market').value;
+        document.getElementById('market').value = newMarket;
+        await switchTab('favorites');
+    }
+
+    // ========== HISTORICAL SCREENER FUNCTIONS ==========
+    
+    function toggleStock(symbol) {
+        if (selectedStocks.has(symbol)) {
+            selectedStocks.delete(symbol);
+        } else {
+            selectedStocks.add(symbol);
+        }
+        updateSelectedCount();
+    }
+    
+    function selectAllStocks() {
+        const checkboxes = document.querySelectorAll('.stock-checkbox');
+        checkboxes.forEach(cb => {
+            cb.checked = true;
+            selectedStocks.add(cb.value);
+        });
+        updateSelectedCount();
+    }
+    
+    function clearAllStocks() {
+        selectedStocks.clear();
+        const checkboxes = document.querySelectorAll('.stock-checkbox');
+        checkboxes.forEach(cb => cb.checked = false);
+        updateSelectedCount();
+    }
+    
+    function selectTopStocks() {
+        clearAllStocks();
+        const top20 = historicalStocks.slice(0, 20);
+        top20.forEach(s => {
+            selectedStocks.add(s);
+            const cb = document.querySelector(`.stock-checkbox[value="${s}"]`);
+            if (cb) cb.checked = true;
+        });
+        updateSelectedCount();
+    }
+    
+    function updateSelectedCount() {
+        const el = document.getElementById('selected-count');
+        if (el) el.textContent = selectedStocks.size;
+    }
+    
+    function filterStockList() {
+        const query = document.getElementById('stock-search').value.toLowerCase();
+        const items = document.querySelectorAll('.stock-item');
+        items.forEach(item => {
+            const symbol = item.dataset.symbol.toLowerCase();
+            item.style.display = symbol.includes(query) ? '' : 'none';
+        });
+    }
+    
+    async function changeMarket() {
+        const market = document.getElementById('hs-market').value;
+        try {
+            const resp = await fetch(`/api/v2/historical-screener/stocks?market=${market}`);
+            const data = await resp.json();
+            historicalStocks = data.stocks || [];
+            
+            // Rebuild stock list
+            const stockList = document.getElementById('stock-list');
+            stockList.innerHTML = historicalStocks.map(s => `
+                <label class="flex items-center space-x-1 cursor-pointer hover:bg-gray-700 p-1 rounded stock-item" data-symbol="${s}">
+                    <input type="checkbox" class="stock-checkbox rounded" value="${s}" onchange="toggleStock('${s}')">
+                    <span class="text-gray-300">${s}</span>
+                </label>
+            `).join('');
+            
+            clearAllStocks();
+        } catch(e) {
+            console.error('Error changing market:', e);
+        }
+    }
+    
+    async function runHistoricalScreener() {
+        if (selectedStocks.size === 0) {
+            toast('Please select at least one stock', 'warning');
+            return;
+        }
+        
+        const symbols = Array.from(selectedStocks);
+        const lookback = parseInt(document.getElementById('hs-lookback').value) || 180;
+        const minScore = parseInt(document.getElementById('hs-min-score').value) || 5;
+        const market = document.getElementById('hs-market').value;
+        
+        const btn = document.getElementById('run-screener-btn');
+        btn.disabled = true;
+        btn.innerHTML = '⏳ Scanning... (this may take a few minutes)';
+        
+        try {
+            const response = await fetch('/api/v2/historical-screener/run', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({symbols, lookback_days: lookback, min_score: minScore, market})
+            });
+            
+            const result = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(result.error || 'Scan failed');
+            }
+            
+            allSignals = result.signals || [];
+            currentPage = 1;
+            
+            displaySummary(result.summary, result.symbols_scanned, result.symbols_with_signals, result.diagnostics);
+            renderSignalsTable();
+            
+            document.getElementById('hs-results').style.display = 'block';
+            document.getElementById('export-btn').style.display = allSignals.length > 0 ? 'inline-block' : 'none';
+            
+            // Show warning if no data was fetched
+            if (result.diagnostics && result.diagnostics.symbols_with_data === 0) {
+                toast('⚠️ No data available! Make sure IBKR Gateway is connected.', 'warning');
+            } else {
+                toast(`Scan complete! Found ${allSignals.length} signals`, 'success');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = '🔍 Scan Historical Data';
+        }
+    }
+    
+    function displaySummary(summary, scanned, withSignals, diagnostics) {
+        const summaryEl = document.getElementById('hs-summary');
+        
+        // Check if we have data issues
+        const hasDataIssue = diagnostics && diagnostics.symbols_with_data === 0;
+        
+        const stats = [
+            {label: 'Total Signals', value: summary.total_signals, icon: '📊', color: 'text-blue-400'},
+            {label: 'A-Trades', value: summary.a_trades, icon: '⭐', color: 'text-yellow-400'},
+            {label: 'B-Trades', value: summary.b_trades, icon: '📈', color: 'text-green-400'},
+            {label: 'Avg Score', value: summary.avg_score || '-', icon: '🎯', color: 'text-purple-400'},
+            {label: 'Stocks w/ Data', value: diagnostics ? `${diagnostics.symbols_with_data}/${scanned}` : `${withSignals}/${scanned}`, icon: hasDataIssue ? '⚠️' : '📋', color: hasDataIssue ? 'text-red-400' : 'text-cyan-400'}
+        ];
+        
+        let html = stats.map(s => `
+            <div class="bg-[#1f2937] rounded-lg p-4 border border-gray-600 text-center">
+                <div class="text-2xl mb-1">${s.icon}</div>
+                <div class="text-gray-400 text-xs">${s.label}</div>
+                <div class="text-lg font-bold ${s.color}">${s.value}</div>
+            </div>
+        `).join('');
+        
+        // Add warning message if no data
+        if (hasDataIssue) {
+            html += `
+                <div class="col-span-full mt-4 p-4 bg-red-900/30 border border-red-700 rounded-lg text-center">
+                    <p class="text-red-400 font-semibold">⚠️ No Data Available</p>
+                    <p class="text-sm text-gray-400 mt-1">Make sure IBKR Gateway is running and authenticated.</p>
+                    <p class="text-xs text-gray-500 mt-1">The historical screener needs live IBKR connection to fetch stock data.</p>
+                </div>
+            `;
+        }
+        
+        summaryEl.innerHTML = html;
+    }
+    
+    function getVisibleColumns() {
+        return {
+            price: document.getElementById('col-price')?.checked,
+            score: document.getElementById('col-score')?.checked,
+            grade: document.getElementById('col-grade')?.checked,
+            screen1: document.getElementById('col-screen1')?.checked,
+            screen2: document.getElementById('col-screen2')?.checked,
+            macd_h: document.getElementById('col-macd-h')?.checked,
+            macd_line: document.getElementById('col-macd-line')?.checked,
+            ema: document.getElementById('col-ema')?.checked,
+            kc: document.getElementById('col-kc')?.checked,
+            fi: document.getElementById('col-fi')?.checked,
+            stoch: document.getElementById('col-stoch')?.checked,
+            pattern: document.getElementById('col-pattern')?.checked,
+            weekly_vals: document.getElementById('col-weekly-vals')?.checked,
+            daily_vals: document.getElementById('col-daily-vals')?.checked,
+            entry: document.getElementById('col-entry')?.checked
+        };
+    }
+    
+    function renderSignalsTable() {
+        const cols = getVisibleColumns();
+        const filtered = filterSignalsData();
+        const totalPages = Math.ceil(filtered.length / pageSize);
+        const start = (currentPage - 1) * pageSize;
+        const pageData = filtered.slice(start, start + pageSize);
+        
+        // Build header
+        let headers = ['Symbol', 'Date'];
+        if (cols.price) headers.push('Price');
+        if (cols.score) headers.push('Score');
+        if (cols.grade) headers.push('Grade');
+        if (cols.screen1) headers.push('Scr1');
+        if (cols.screen2) headers.push('Scr2');
+        if (cols.macd_h) headers.push('MACD-H');
+        if (cols.macd_line) headers.push('MACD-L');
+        if (cols.ema) headers.push('EMA');
+        if (cols.kc) headers.push('KC');
+        if (cols.fi) headers.push('FI');
+        if (cols.stoch) headers.push('Stoch');
+        if (cols.pattern) headers.push('Patt');
+        if (cols.weekly_vals) headers.push('W-MACD', 'W-EMA20/50/100');
+        if (cols.daily_vals) headers.push('D-FI2', 'D-Stoch', 'D-RSI');
+        if (cols.entry) headers.push('Entry', 'Stop', 'Target');
+        
+        document.getElementById('signals-header').innerHTML = headers.map(h => 
+            `<th class="pb-2 px-2 text-xs whitespace-nowrap">${h}</th>`
+        ).join('');
+        
+        // Build rows
+        const rowsHtml = pageData.map(s => {
+            const gradeColor = s.grade === 'A' ? 'bg-yellow-500/20 text-yellow-400' : 
+                              s.grade === 'B' ? 'bg-green-500/20 text-green-400' : 'bg-gray-500/20 text-gray-400';
+            const allWeekly = s.all_weekly_filters ? '✓' : '';
+            
+            let cells = [
+                `<td class="py-2 px-2 font-mono font-bold text-blue-400">${s.symbol}</td>`,
+                `<td class="py-2 px-2 text-gray-300">${s.date}</td>`
+            ];
+            
+            if (cols.price) cells.push(`<td class="py-2 px-2">${s.price}</td>`);
+            if (cols.score) cells.push(`<td class="py-2 px-2 font-bold text-lg">${s.score}</td>`);
+            if (cols.grade) cells.push(`<td class="py-2 px-2"><span class="px-2 py-1 rounded ${gradeColor}">${s.grade}${allWeekly}</span></td>`);
+            if (cols.screen1) cells.push(`<td class="py-2 px-2 text-center">${s.screen1_score}</td>`);
+            if (cols.screen2) cells.push(`<td class="py-2 px-2 text-center">${s.screen2_score}</td>`);
+            if (cols.macd_h) cells.push(`<td class="py-2 px-2 text-center ${s.macd_h_score > 0 ? 'text-green-400' : 'text-gray-500'}">${s.macd_h_score > 0 ? '+'+s.macd_h_score : '0'}</td>`);
+            if (cols.macd_line) cells.push(`<td class="py-2 px-2 text-center ${s.macd_line_score > 0 ? 'text-green-400' : 'text-gray-500'}">${s.macd_line_score > 0 ? '+'+s.macd_line_score : '0'}</td>`);
+            if (cols.ema) cells.push(`<td class="py-2 px-2 text-center ${s.ema_alignment_score > 0 ? 'text-green-400' : 'text-gray-500'}">${s.ema_alignment_score > 0 ? '+'+s.ema_alignment_score : '0'}</td>`);
+            if (cols.kc) cells.push(`<td class="py-2 px-2 text-center ${s.kc_score > 0 ? 'text-green-400' : 'text-gray-500'}">${s.kc_score > 0 ? '+'+s.kc_score : '0'}</td>`);
+            if (cols.fi) cells.push(`<td class="py-2 px-2 text-center ${s.fi_score > 0 ? 'text-green-400' : 'text-gray-500'}">${s.fi_score > 0 ? '+'+s.fi_score : '0'}</td>`);
+            if (cols.stoch) cells.push(`<td class="py-2 px-2 text-center ${s.stoch_score > 0 ? 'text-green-400' : 'text-gray-500'}">${s.stoch_score > 0 ? '+'+s.stoch_score : '0'}</td>`);
+            if (cols.pattern) cells.push(`<td class="py-2 px-2 text-center ${s.pattern_score > 0 ? 'text-green-400' : 'text-gray-500'}">${s.pattern_score > 0 ? '+'+s.pattern_score : '0'}</td>`);
+            if (cols.weekly_vals) {
+                cells.push(`<td class="py-2 px-2 text-xs">${s.weekly_macd_h}</td>`);
+                cells.push(`<td class="py-2 px-2 text-xs">${s.weekly_ema_20}/${s.weekly_ema_50}/${s.weekly_ema_100}</td>`);
+            }
+            if (cols.daily_vals) {
+                cells.push(`<td class="py-2 px-2 text-xs">${s.daily_force_index_2}</td>`);
+                cells.push(`<td class="py-2 px-2 text-xs">${s.daily_stochastic_k}</td>`);
+                cells.push(`<td class="py-2 px-2 text-xs">${s.daily_rsi}</td>`);
+            }
+            if (cols.entry) {
+                cells.push(`<td class="py-2 px-2 text-green-400">${s.entry}</td>`);
+                cells.push(`<td class="py-2 px-2 text-red-400">${s.stop_loss}</td>`);
+                cells.push(`<td class="py-2 px-2 text-blue-400">${s.target}</td>`);
+            }
+            
+            return `<tr class="hover:bg-[#1f2937]/50">${cells.join('')}</tr>`;
+        }).join('');
+        
+        document.getElementById('signals-body').innerHTML = rowsHtml || '<tr><td colspan="20" class="text-center py-8 text-gray-500">No signals found</td></tr>';
+        
+        // Pagination
+        if (totalPages > 1) {
+            let paginationHtml = '';
+            if (currentPage > 1) {
+                paginationHtml += `<button onclick="goToPage(${currentPage-1})" class="px-3 py-1 bg-gray-700 rounded hover:bg-gray-600">←</button>`;
+            }
+            paginationHtml += `<span class="px-3 py-1 text-gray-400">Page ${currentPage} of ${totalPages} (${filtered.length} signals)</span>`;
+            if (currentPage < totalPages) {
+                paginationHtml += `<button onclick="goToPage(${currentPage+1})" class="px-3 py-1 bg-gray-700 rounded hover:bg-gray-600">→</button>`;
+            }
+            document.getElementById('pagination').innerHTML = paginationHtml;
+        } else {
+            document.getElementById('pagination').innerHTML = `<span class="text-gray-500">${filtered.length} signals</span>`;
+        }
+    }
+    
+    function filterSignalsData() {
+        const symbolFilter = document.getElementById('signal-filter')?.value.toUpperCase() || '';
+        const gradeFilter = document.getElementById('grade-filter')?.value || '';
+        
+        return allSignals.filter(s => {
+            if (symbolFilter && !s.symbol.includes(symbolFilter)) return false;
+            if (gradeFilter && s.grade !== gradeFilter) return false;
+            return true;
+        });
+    }
+    
+    function filterSignals() {
+        currentPage = 1;
+        renderSignalsTable();
+    }
+    
+    function goToPage(page) {
+        currentPage = page;
+        renderSignalsTable();
+    }
+    
+    function resetHistoricalScreener() {
+        clearAllStocks();
+        document.getElementById('hs-lookback').value = '180';
+        document.getElementById('hs-min-score').value = '5';
+        document.getElementById('hs-results').style.display = 'none';
+        allSignals = [];
+        toast('Scanner reset', 'info');
+    }
+    
+    function exportToCSV() {
+        if (allSignals.length === 0) {
+            toast('No data to export', 'warning');
+            return;
+        }
+        
+        // Build CSV
+        const headers = ['Symbol','Date','Price','Score','Grade','Screen1','Screen2',
+                        'MACD_H_Score','MACD_Line_Score','EMA_Score','KC_Score','FI_Score','Stoch_Score','Pattern_Score',
+                        'All_Weekly','Weekly_MACD_H','Weekly_EMA_20','Weekly_EMA_50','Weekly_EMA_100',
+                        'Daily_FI2','Daily_Stoch_K','Daily_RSI','Pattern','Entry','Stop','Target'];
+        
+        const rows = allSignals.map(s => [
+            s.symbol, s.date, s.price, s.score, s.grade, s.screen1_score, s.screen2_score,
+            s.macd_h_score, s.macd_line_score, s.ema_alignment_score, s.kc_score, s.fi_score, s.stoch_score, s.pattern_score,
+            s.all_weekly_filters ? 'Yes' : 'No', s.weekly_macd_h, s.weekly_ema_20, s.weekly_ema_50, s.weekly_ema_100,
+            s.daily_force_index_2, s.daily_stochastic_k, s.daily_rsi, s.pattern, s.entry, s.stop_loss, s.target
+        ].join(','));
+        
+        const csv = [headers.join(','), ...rows].join('\n');
+        const blob = new Blob([csv], {type: 'text/csv'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `elder_signals_${new Date().toISOString().slice(0,10)}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+        toast('CSV exported!', 'success');
+    }
+    
+    // Add event listener for column toggles
+    document.addEventListener('change', function(e) {
+        if (e.target.classList.contains('col-toggle')) {
+            if (allSignals.length > 0) {
+                renderSignalsTable();
+            }
+        }
+    });
+
+    // ========== CHECKLIST ==========
+    function checklistView() {
+        const steps = [
+            {id:'step1', title:'Check Positions & Orders', time:'5 min'},
+            {id:'step2', title:'Weekly Chart Scan', time:'10 min'},
+            {id:'step3', title:'Daily Chart Analysis', time:'15 min'},
+            {id:'step4', title:'Calculate Entry/Stop/Target', time:'10 min'},
+            {id:'step5', title:'Position Size', time:'5 min'},
+            {id:'step6', title:'Place Orders', time:'5 min'},
+            {id:'step7', title:'Update Trade Log', time:'5 min'}
+        ];
+        const done = Object.values(checklist).filter(Boolean).length;
+        return `
+            <div class="space-y-6">
+                <div class="flex justify-between items-center">
+                    <h2 class="text-xl font-bold">✅ Evening Checklist</h2>
+                    <span class="text-sm text-gray-500">${done}/7 completed</span>
+                </div>
+                <div class="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
+                    <div class="h-full bg-green-500 transition-all" style="width:${done/7*100}%"></div>
+                </div>
+                <div class="space-y-2">
+                    ${steps.map(s => `
+                        <div onclick="toggleCheck('${s.id}')" class="p-4 bg-[#111827] rounded-lg border ${checklist[s.id]?'border-green-500/50 opacity-60':'border-gray-700'} cursor-pointer hover:border-blue-500/50 flex items-center gap-4">
+                            <div class="w-6 h-6 rounded-full border-2 ${checklist[s.id]?'bg-green-500 border-green-500':'border-gray-500'} flex items-center justify-center">
+                                ${checklist[s.id]?'<svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>':''}
+                            </div>
+                            <div class="flex-1">
+                                <div class="font-medium">${s.title}</div>
+                                <div class="text-xs text-gray-500">${s.time}</div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    }
+
+    async function toggleCheck(id) {
+        checklist[id] = !checklist[id];
+        await api('POST', '/checklist', {items:checklist});
+        await render();
+    }
+
+    // ========== SETTINGS ==========
+    function settingsView() {
+        const s = settings[0] || {account_name:'ISA', trading_capital:6000, risk_per_trade:2, max_monthly_drawdown:6, target_rr:2, currency:'GBP'};
+        return `
+            <div class="space-y-6 max-w-2xl">
+                <h2 class="text-xl font-bold">⚙️ Account Settings</h2>
+                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
+                    <div><label class="text-sm text-gray-400">Account Name</label><input id="s-name" value="${s.account_name||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg"></div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div><label class="text-sm text-gray-400">Trading Capital</label><input type="number" id="s-capital" value="${s.trading_capital}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Currency</label><select id="s-currency" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg">
+                            <option ${s.currency==='GBP'?'selected':''}>GBP</option>
+                            <option ${s.currency==='USD'?'selected':''}>USD</option>
+                            <option ${s.currency==='INR'?'selected':''}>INR</option>
+                        </select></div>
+                    </div>
+                    <div class="grid grid-cols-3 gap-4">
+                        <div><label class="text-sm text-gray-400">Risk % per Trade</label><input type="number" id="s-risk" value="${s.risk_per_trade}" step="0.5" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Max Monthly DD %</label><input type="number" id="s-dd" value="${s.max_monthly_drawdown}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Target R:R</label><input type="number" id="s-rr" value="${s.target_rr}" step="0.5" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                    </div>
+                    <button onclick="saveSettings()" class="w-full py-3 bg-blue-600 rounded-lg font-medium hover:bg-blue-700">💾 Save Settings</button>
+                </div>
+            </div>
+        `;
+    }
+
+    async function saveSettings() {
+        const data = {
+            account_name: document.getElementById('s-name').value,
+            trading_capital: parseFloat(document.getElementById('s-capital').value),
+            risk_per_trade: parseFloat(document.getElementById('s-risk').value),
+            max_monthly_drawdown: parseFloat(document.getElementById('s-dd').value),
+            target_rr: parseFloat(document.getElementById('s-rr').value),
+            currency: document.getElementById('s-currency').value,
+            market: document.getElementById('market').value
+        };
+        try {
+            await api('PUT', '/account/info', data);
+            // Reload settings
+            const response = await api('GET', '/account/info');
+            settings = [response];
+            renderHeader();
+            toast('Settings saved!', 'success');
+        } catch(e) {
+            toast('Error saving settings: ' + e.message, 'error');
+        }
+    }
+
+    // ========== INDICATOR CONFIG ==========
+    async function showIndicatorConfig() {
+        const catalog = await api('GET', '/indicators/catalog');
+        document.getElementById('modal').classList.remove('hidden');
+        document.getElementById('modal-body').innerHTML = `
+            <div class="p-6">
+                <div class="flex justify-between items-start mb-6">
+                    <h2 class="text-2xl font-bold">📊 Available Indicators</h2>
+                    <button onclick="closeModal()" class="text-gray-400 hover:text-white text-2xl">&times;</button>
+                </div>
+                <p class="text-gray-500 mb-6">These are all indicators available in each category. The <span class="text-green-400">★ recommended</span> ones are Elder's original choices.</p>
+                
+                ${Object.entries(catalog).map(([cat, data]) => `
+                    <div class="mb-6">
+                        <h3 class="font-bold text-lg text-blue-400">${cat}</h3>
+                        <p class="text-gray-500 text-sm mb-2">${data.description} — ${data.usage}</p>
+                        <div class="grid grid-cols-2 gap-2">
+                            ${Object.entries(data.indicators).map(([id, ind]) => `
+                                <div class="bg-[#1f2937] p-3 rounded-lg ${ind.recommended ? 'border border-green-500/30' : ''}">
+                                    <div class="flex items-center gap-2">
+                                        ${ind.recommended ? '<span class="text-green-400">★</span>' : ''}
+                                        <span class="font-medium">${ind.name}</span>
+                                        ${ind.elder_original ? '<span class="text-xs bg-blue-500/20 text-blue-400 px-1 rounded">Elder</span>' : ''}
+                                    </div>
+                                    <p class="text-xs text-gray-500 mt-1">${ind.description}</p>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    }
+
+    // ========== IBKR STATUS ==========
+    async function checkIBKRStatus() {
+        try {
+            const status = await api('GET', '/ibkr/status');
+            const el = document.getElementById('ibkr-status');
+            if (status.connected) {
+                el.className = 'text-xs px-2 py-1 rounded bg-green-500/20 text-green-400';
+                el.textContent = '● IBKR Connected';
+            } else {
+                el.className = 'text-xs px-2 py-1 rounded bg-red-500/20 text-red-400 cursor-pointer';
+                el.textContent = '● IBKR Disconnected';
+                el.title = status.message;
+                el.onclick = () => alert(status.message + '\n\n' + (status.instructions || ''));
+            }
+        } catch(e) {
+            const el = document.getElementById('ibkr-status');
+            el.className = 'text-xs px-2 py-1 rounded bg-red-500/20 text-red-400';
+            el.textContent = '● Gateway Error';
+        }
+    }
+
+    // ========== INIT ==========
+    async function init() {
+        console.log('Starting initialization...');
+        try {
+            console.log('Loading account info...');
+            const account = await api('GET', '/account/info');
+            settings = [account];
+            console.log('Account loaded:', account);
+        } catch(e) {
+            console.log('Could not load account info:', e);
+            settings = [{trading_capital:6000, risk_per_trade:2, currency:'GBP'}];
+        }
+        
+        try {
+            console.log('Loading checklist...');
+            const cl = await api('GET', '/checklist');
+            checklist = cl.items || {};
+            console.log('Checklist loaded');
+        } catch(e) {
+            console.log('Could not load checklist:', e);
+            checklist = {};
+        }
+        
+        try {
+            console.log('Checking IBKR status...');
+            await checkIBKRStatus();
+        } catch(e) {
+            console.log('Could not check IBKR status:', e);
+        }
+        
+        console.log('Rendering navigation...');
+        renderNav();
+        console.log('Rendering header...');
+        renderHeader();
+        console.log('Rendering main content...');
+        await render();
+        console.log('Initialization complete!');
+        
+        // Check IBKR status every 30 seconds
+        setInterval(checkIBKRStatus, 30000);
+    }
+
+    console.log('About to call init()...');
+    init();
+    console.log('Init called, setting up modal click handler...');
+    document.getElementById('modal').onclick = e => { if(e.target.id==='modal') closeModal(); };
+    console.log('Setup complete!');
+    </script>
