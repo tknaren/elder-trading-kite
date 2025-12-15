@@ -10,12 +10,6 @@ from services.indicator_config import (
     get_indicator_info,
     get_config_summary
 )
-from services.ibkr_client import (
-    IBKRClient,
-    get_client,
-    fetch_stock_data,
-    check_connection
-)
 from services.backtesting import (
     run_backtest,
     run_portfolio_backtest,

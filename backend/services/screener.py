@@ -31,7 +31,9 @@ ENTRY/STOP/TARGET (Elder Method):
 - Target: Keltner Channel Upper Band
 - Stop: Below deepest historical EMA-22 penetration
 
-Data Source: IBKR Client Portal API
+Data Source: Kite Connect API (Zerodha)
+Market: NSE (NIFTY 100)
+Symbol Format: NSE:SYMBOL (e.g., NSE:RELIANCE, NSE:TCS)
 """
 
 # Import v2 functions as the default implementation
@@ -67,5 +69,3 @@ __all__ = [
     'NIFTY_100',
     'DEFAULT_STOCKS'
 ]
-
-

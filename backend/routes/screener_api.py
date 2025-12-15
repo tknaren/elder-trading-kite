@@ -2,6 +2,9 @@
 Elder Trading System - Additional Screener API Routes
 Routes for Candlestick Pattern and RSI+MACD Screeners
 
+Data Source: Kite Connect API (Zerodha)
+Market: NSE (NIFTY 100)
+
 Endpoints:
 1. Candlestick Pattern Screener
    - POST /api/v2/screener/candlestick/run
@@ -25,23 +28,23 @@ screener_routes = Blueprint('screener_routes', __name__)
 
 def fetch_historical_data(symbols: List[str], lookback_days: int = 180) -> Dict[str, pd.DataFrame]:
     """
-    Fetch historical OHLCV data for multiple symbols from IBKR or cache
+    Fetch historical OHLCV data for multiple symbols from Kite Connect or cache
     Uses the same data source as the live screener
 
     Args:
-        symbols: List of stock tickers
+        symbols: List of stock tickers (NSE format: NSE:SYMBOL)
         lookback_days: Number of days of history to fetch
 
     Returns:
         Dict mapping symbol to DataFrame
     """
-    from services.ibkr_client import fetch_stock_data
+    from services.kite_client import fetch_stock_data
 
     hist_data = {}
 
     for symbol in symbols:
         try:
-            # Fetch from IBKR (handles caching internally)
+            # Fetch from Kite Connect (handles caching internally)
             data = fetch_stock_data(symbol, period='2y')
 
             if data is not None and 'history' in data:
@@ -278,7 +281,8 @@ def scan_single_candlestick(symbol):
     # Parse selected_patterns
     selected_patterns = None
     if selected_patterns_param:
-        selected_patterns = [p.strip() for p in selected_patterns_param.split(',')]
+        selected_patterns = [p.strip()
+                             for p in selected_patterns_param.split(',')]
 
     from services.candlestick_screener import scan_stock_candlestick_historical
 

@@ -2,7 +2,9 @@
 
 A local trading analysis application implementing Dr. Alexander Elder's Triple Screen methodology.
 
-**Data Source: IBKR Client Portal API**
+**Data Source: Kite Connect API (Zerodha)**
+**Market: NSE (NIFTY 100)**
+**Currency: ₹ (INR)**
 
 ## Features
 
@@ -12,28 +14,21 @@ A local trading analysis application implementing Dr. Alexander Elder's Triple S
 - **Signal Strength Scoring**: 0-10 score with detailed breakdown
 - **Trade Journal**: Track your trades with P&L statistics
 - **Position Sizing Calculator**: Based on your risk parameters
+- **Kite Connect Integration**: Place orders directly from Trade Bills
+- **NSE Charges Calculator**: STT, GST, and all NSE charges included
 
 ## Prerequisites
 
-### IBKR Client Portal Gateway
+### Kite Connect API
 
-1. **Download** Client Portal Gateway from [IBKR API page](https://www.interactivebrokers.com/en/trading/ib-api.php)
-   - Scroll to "Client Portal API" section
-   - Download `clientportal.gw.zip`
+1. **Create Kite Connect App** at [Kite Connect](https://kite.trade/)
+   - Login with your Zerodha credentials
+   - Create a new app
+   - Note down your API Key and API Secret
 
-2. **Extract** the zip file to a folder (e.g., `C:\ibkr-gateway`)
-
-3. **Start Gateway**:
-   ```cmd
-   cd C:\ibkr-gateway
-   bin\run.bat root\conf.yaml
-   ```
-
-4. **Authenticate**:
-   - Open browser: `https://localhost:5000`
-   - Accept SSL certificate warning
-   - Login with your IBKR credentials
-   - You'll see "Client login succeeds"
+2. **Configure API Credentials**:
+   - Set your API credentials in the application settings
+   - You'll need to authorize the app on first use
 
 ## Quick Start
 
@@ -46,26 +41,17 @@ venv\Scripts\activate       # Windows
 pip install -r requirements.txt
 ```
 
-### 2. Start IBKR Gateway (in separate terminal)
-
-```cmd
-cd C:\ibkr-gateway
-bin\run.bat root\conf.yaml
-```
-
-Login at `https://localhost:5000`
-
-### 3. Run Elder Trading System
+### 2. Run Elder Trading System
 
 ```bash
 python app.py
 ```
 
-### 4. Open Browser
+### 3. Open Browser
 
-Go to: **http://localhost:5000**
+Go to: **<http://localhost:5001>**
 
-The header will show **● IBKR Connected** when ready.
+The application will connect to Kite Connect API for NSE market data.
 
 ## Project Structure
 
@@ -130,15 +116,18 @@ elder-trading-system/
 ## Candlestick Patterns Detected
 
 ### High Reliability (5/5)
+
 - Morning Star / Evening Star
 - Three White Soldiers / Three Black Crows
 
 ### Good Reliability (4/5)
+
 - Bullish/Bearish Engulfing
 - Three Inside Up/Down
 - Marubozu
 
 ### Moderate Reliability (3/5)
+
 - Hammer / Shooting Star
 - Piercing Line / Dark Cloud Cover
 - Tweezer Top/Bottom
@@ -147,30 +136,36 @@ elder-trading-system/
 ## API Endpoints
 
 ### Screener
+
 - `POST /api/screener/weekly` - Run weekly scan
 - `POST /api/screener/daily` - Run daily scan
 - `GET /api/screener/criteria` - Get grading criteria
 
 ### Indicators
+
 - `GET /api/indicators/catalog` - All available indicators
 - `GET /api/indicators/recommended` - Elder's recommendations
 
 ### Patterns
+
 - `GET /api/patterns/catalog` - All candlestick patterns
 - `GET /api/patterns/bullish` - Bullish patterns only
 
 ### Trading
+
 - `GET /api/settings` - Account settings
 - `GET /api/journal` - Trade journal entries
 - `POST /api/journal` - Create journal entry
 
 ## Watchlists
 
-### US Market (NASDAQ 100)
-AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA, etc.
+### Indian Market (NIFTY 100)
 
-### Indian Market (Nifty 50 + Next 50)
-RELIANCE.NS, TCS.NS, INFY.NS, HDFCBANK.NS, etc.
+RELIANCE, TCS, INFY, HDFCBANK, ICICIBANK, KOTAKBANK, HINDUNILVR, SBIN, BHARTIARTL, ITC, LT, AXISBANK, ASIANPAINT, MARUTI, TITAN, BAJFINANCE, NESTLEIND, ULTRACEMCO, SUNPHARMA, WIPRO, and 80 more...
+
+**Total: 100 NSE stocks from NIFTY 100 index**  
+**Symbol Format: NSE:SYMBOL (e.g., NSE:RELIANCE, NSE:TCS)**  
+**Currency: ₹ (INR)**
 
 ## Tips
 
@@ -183,17 +178,20 @@ RELIANCE.NS, TCS.NS, INFY.NS, HDFCBANK.NS, etc.
 ## Troubleshooting
 
 ### "Module not found" error
+
 ```bash
 pip install -r requirements.txt
 ```
 
 ### "Port already in use"
+
 ```bash
 # Change port in app.py or kill existing process
 python app.py  # Uses port 5000 by default
 ```
 
 ### Yahoo Finance rate limiting
+
 - Wait a few minutes between scans
 - Reduce watchlist size for testing
 

@@ -18,7 +18,6 @@ from services.indicator_config import (
     get_config_summary
 )
 from services.candlestick_patterns import CANDLESTICK_PATTERNS
-from services.ibkr_client import check_connection, get_client
 
 api = Blueprint('api', __name__, url_prefix='/api')
 
@@ -59,19 +58,9 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.utcnow().isoformat(),
-        'version': '2.0.0'
-    })
-
-
-@api.route('/ibkr/status', methods=['GET'])
-def ibkr_status():
-    """Check IBKR Gateway connection status"""
-    connected, message = check_connection()
-    return jsonify({
-        'connected': connected,
-        'message': message,
-        'gateway_url': 'https://localhost:5000',
-        'instructions': 'Start Client Portal Gateway and login at https://localhost:5000' if not connected else None
+        'version': '2.0.0',
+        'market': 'NSE',
+        'broker': 'Kite Connect'
     })
 
 
@@ -1275,5 +1264,3 @@ def get_backtest_stocks():
         'stocks': [s['symbol'] for s in stocks],
         'count': len(stocks)
     })
-
-
