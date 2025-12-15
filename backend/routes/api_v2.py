@@ -119,6 +119,66 @@ def analyze_stock_v2(symbol):
     return jsonify({'error': f'Could not analyze {symbol}'}), 404
 
 
+@api_v2.route('/stock/quote/<symbol>', methods=['GET'])
+def get_stock_quote(symbol):
+    """
+    Get stock quote with KCB(20,10,1) channel data for Trade Bill
+
+    Returns:
+    - Current market price (LTP)
+    - Keltner Channel Upper (+3 ATR)
+    - Keltner Channel Lower (-3 ATR)
+    - ATR value
+    - Entry suggestion (EMA-22)
+    - Stop Loss suggestion (below KC Lower)
+    """
+    result = scan_stock_v2(symbol)
+    if not result:
+        return jsonify({'error': f'Could not fetch data for {symbol}'}), 404
+
+    # Get KCB(20,10,1) values with ±3 ATR extensions
+    price = result.get('price', 0)
+    kc_middle = result.get('kc_middle', price)
+    atr = result.get('atr', 0)
+
+    # Calculate extended Keltner channels (±3 ATR)
+    kc_upper_3 = round(kc_middle + 3 * atr, 2) if atr else price * 1.03
+    kc_lower_3 = round(kc_middle - 3 * atr, 2) if atr else price * 0.97
+
+    # Entry at EMA-22, Stop below lower channel
+    entry_price = result.get('ema_22', price)
+    stop_loss = round(kc_lower_3 - atr, 2) if atr else price * 0.95
+
+    return jsonify({
+        'symbol': symbol,
+        'name': result.get('name', symbol),
+        'price': price,
+        'change': result.get('change', 0),
+        'change_percent': result.get('change_percent', 0),
+        # Keltner Channel (KC 20,10,1)
+        'kc_upper': result.get('kc_upper', price * 1.02),
+        'kc_lower': result.get('kc_lower', price * 0.98),
+        'kc_middle': kc_middle,
+        # Extended channels (±3 ATR)
+        'kc_upper_3': kc_upper_3,
+        'kc_lower_3': kc_lower_3,
+        'channel_height': round(kc_upper_3 - kc_lower_3, 2),
+        # ATR and EMAs
+        'atr': round(atr, 2) if atr else 0,
+        'ema_22': round(entry_price, 2),
+        'ema_13': result.get('ema_13', price),
+        # Suggestions for Trade Bill
+        'suggested_entry': round(entry_price, 2),
+        'suggested_stop': stop_loss,
+        'suggested_target': kc_upper_3,
+        # Additional indicators for reference
+        'rsi': result.get('rsi', 50),
+        'stochastic': result.get('stochastic', 50),
+        'impulse_color': result.get('impulse_color', 'BLUE'),
+        'grade': result.get('grade', 'C')
+    })
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # KITE CONNECT API - Authentication & Status
 # ══════════════════════════════════════════════════════════════════════════════

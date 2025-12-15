@@ -373,8 +373,41 @@ class Database:
         conn.commit()
         conn.close()
 
+        # Run schema migrations
+        self._run_migrations()
+
         # Initialize default data
         self._init_defaults()
+
+    def _run_migrations(self):
+        """Run database schema migrations"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        # Check if max_risk column exists in trade_bills
+        cursor.execute("PRAGMA table_info(trade_bills)")
+        columns = [col[1] for col in cursor.fetchall()]
+
+        # Migration 1: Add max_risk column to trade_bills
+        if 'max_risk' not in columns:
+            try:
+                cursor.execute('ALTER TABLE trade_bills ADD COLUMN max_risk REAL')
+                print("Migration: Added max_risk column to trade_bills")
+            except Exception as e:
+                print(f"Migration warning (max_risk): {e}")
+
+        # Migration 2: Add other_charges column (keeping overnight_charges for backward compatibility)
+        if 'other_charges' not in columns:
+            try:
+                cursor.execute('ALTER TABLE trade_bills ADD COLUMN other_charges REAL DEFAULT 0')
+                # Copy existing overnight_charges values to other_charges
+                cursor.execute('UPDATE trade_bills SET other_charges = overnight_charges WHERE overnight_charges IS NOT NULL')
+                print("Migration: Added other_charges column to trade_bills")
+            except Exception as e:
+                print(f"Migration warning (other_charges): {e}")
+
+        conn.commit()
+        conn.close()
 
     def _init_defaults(self):
         """Initialize default user, strategies, and watchlists"""

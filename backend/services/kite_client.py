@@ -48,6 +48,10 @@ def convert_to_native(obj: Any) -> Any:
 # NSE Trading Hours (IST)
 NSE_MARKET_OPEN = time(9, 15)  # 9:15 AM IST
 NSE_MARKET_CLOSE = time(15, 30)  # 3:30 PM IST
+
+# In-memory session cache for OHLCV data (avoids repeated DB reads)
+_session_ohlcv_cache = {}
+_session_cache_date = None  # Track when cache was created
 IST = pytz.timezone('Asia/Kolkata')
 
 
@@ -112,7 +116,8 @@ class KiteClient:
     def _init_kite(self):
         """Initialize Kite Connect client"""
         if KiteConnect is None:
-            raise ImportError("kiteconnect package not installed. Run: pip install kiteconnect")
+            raise ImportError(
+                "kiteconnect package not installed. Run: pip install kiteconnect")
 
         self.kite = KiteConnect(api_key=self.api_key)
 
@@ -140,7 +145,8 @@ class KiteClient:
             self._init_kite()
 
         try:
-            data = self.kite.generate_session(request_token, api_secret=self.api_secret)
+            data = self.kite.generate_session(
+                request_token, api_secret=self.api_secret)
             self.access_token = data['access_token']
             self.kite.set_access_token(self.access_token)
             self._authenticated = True
@@ -231,7 +237,7 @@ class KiteClient:
         return 'NSE', symbol
 
     def get_historical_data(self, symbol: str, interval: str = 'day',
-                           days: int = 365) -> Optional[pd.DataFrame]:
+                            days: int = 365) -> Optional[pd.DataFrame]:
         """
         Get historical OHLCV data
 
@@ -293,7 +299,8 @@ class KiteClient:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
 
             if 'Volume' in df.columns:
-                df['Volume'] = pd.to_numeric(df['Volume'], errors='coerce').fillna(0).astype(int)
+                df['Volume'] = pd.to_numeric(
+                    df['Volume'], errors='coerce').fillna(0).astype(int)
 
             return df
 
@@ -378,7 +385,7 @@ class KiteClient:
                     'close': ohlc.get('close'),  # Previous close
                     'volume': q.get('volume'),
                     'change': q.get('change'),
-                    'change_percent': q.get('change') / ohlc.get('close', 1) * 100 if ohlc.get('close') else 0
+                    'change_percent': (q.get('change') / ohlc.get('close', 1) * 100) if (q.get('change') is not None and ohlc.get('close')) else 0
                 }
             return None
         except Exception as e:
@@ -426,8 +433,10 @@ def check_connection() -> Tuple[bool, str]:
 
 def fetch_stock_data(symbol: str, period: str = '2y') -> Optional[Dict]:
     """
-    Fetch stock data with OHLCV caching.
-    Indicators are calculated and cached separately by screener_v2.
+    Fetch stock data with multi-layer caching:
+    1. In-memory session cache (fastest - no DB hit)
+    2. Database cache (persisted across sessions)
+    3. Kite API (only if cache miss)
 
     Args:
         symbol: Stock symbol in format 'NSE:RELIANCE' or 'RELIANCE'
@@ -437,6 +446,7 @@ def fetch_stock_data(symbol: str, period: str = '2y') -> Optional[Dict]:
         Dict with symbol, name, sector, history DataFrame, snapshot
     """
     from models.database import get_database
+    global _session_ohlcv_cache, _session_cache_date
 
     client = get_client()
 
@@ -455,6 +465,27 @@ def fetch_stock_data(symbol: str, period: str = '2y') -> Optional[Dict]:
     exchange, tradingsymbol = client.parse_symbol(symbol)
     full_symbol = f"{exchange}:{tradingsymbol}"
 
+    # Check if session cache is stale (new day)
+    today = datetime.now().strftime('%Y-%m-%d')
+    if _session_cache_date != today:
+        _session_ohlcv_cache = {}
+        _session_cache_date = today
+
+    # Check in-memory session cache first (fastest)
+    if full_symbol in _session_ohlcv_cache:
+        cached = _session_ohlcv_cache[full_symbol]
+        # Return cached data with fresh snapshot
+        snapshot = client.get_market_snapshot(full_symbol)
+        return {
+            'symbol': full_symbol,
+            'name': cached['name'],
+            'sector': cached['sector'],
+            'history': cached['history'].copy(),
+            'info': {},
+            'snapshot': snapshot,
+            'instrument_token': client.get_instrument_token(tradingsymbol, exchange)
+        }
+
     db = get_database().get_connection()
 
     # Check if we have fresh OHLCV cache (< 1 day old)
@@ -465,12 +496,15 @@ def fetch_stock_data(symbol: str, period: str = '2y') -> Optional[Dict]:
 
     use_cache = False
     hist = None
+    today_str = datetime.now().strftime('%Y-%m-%d')
 
     if sync_row:
         last_updated = datetime.fromisoformat(sync_row['last_updated'])
+        latest_date = sync_row['latest_date']
+
+        # Use cache if updated within 24 hours AND has today's date (or market is closed)
         if datetime.now() - last_updated < timedelta(hours=24):
             use_cache = True
-            print(f"📦 {full_symbol}: Using cached OHLCV data")
 
     # Try to use cached data
     if use_cache:
@@ -495,34 +529,44 @@ def fetch_stock_data(symbol: str, period: str = '2y') -> Optional[Dict]:
             ])
             hist['Date'] = pd.to_datetime(hist['Date'])
             hist.set_index('Date', inplace=True)
-            print(f"✓ {full_symbol}: Loaded {len(hist)} cached bars")
+            # Silent cache hit - no logging needed
 
     # If cache miss or insufficient data, fetch from Kite
     if hist is None or hist.empty or len(hist) < 30:
-        print(f"🔄 {full_symbol}: Fetching fresh data from Kite Connect...")
-        hist = client.get_historical_data(full_symbol, interval='day', days=days)
+        print(f"🔄 {full_symbol}: Fetching from Kite...")
+        hist = client.get_historical_data(
+            full_symbol, interval='day', days=days)
 
         if hist is None or hist.empty or len(hist) < 30:
-            print(f"❌ {full_symbol}: Insufficient historical data")
+            print(f"❌ {full_symbol}: Insufficient data")
             db.close()
             return None
 
-        # Cache the OHLCV data
-        print(f"💾 {full_symbol}: Caching {len(hist)} OHLCV records...")
+        # Cache the OHLCV data - only new rows
+        new_cached = 0
         for date, row in hist.iterrows():
-            db.execute('''
-                INSERT OR REPLACE INTO stock_historical_data
-                (symbol, date, open, high, low, close, volume)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                full_symbol,
-                date.strftime('%Y-%m-%d'),
-                float(row['Open']),
-                float(row['High']),
-                float(row['Low']),
-                float(row['Close']),
-                int(row['Volume'])
-            ))
+            date_str = date.strftime('%Y-%m-%d')
+            # Check if already exists
+            existing = db.execute(
+                'SELECT 1 FROM stock_historical_data WHERE symbol = ? AND date = ?',
+                (full_symbol, date_str)
+            ).fetchone()
+
+            if not existing:
+                db.execute('''
+                    INSERT INTO stock_historical_data
+                    (symbol, date, open, high, low, close, volume)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    full_symbol,
+                    date_str,
+                    float(row['Open']),
+                    float(row['High']),
+                    float(row['Low']),
+                    float(row['Close']),
+                    int(row['Volume'])
+                ))
+                new_cached += 1
 
         earliest_date = hist.index.min().strftime('%Y-%m-%d')
         latest_date = hist.index.max().strftime('%Y-%m-%d')
@@ -533,7 +577,9 @@ def fetch_stock_data(symbol: str, period: str = '2y') -> Optional[Dict]:
             VALUES (?, ?, ?, ?, ?)
         ''', (full_symbol, datetime.now().isoformat(), earliest_date, latest_date, len(hist)))
         db.commit()
-        print(f"✓ {full_symbol}: OHLCV data cached successfully")
+
+        if new_cached > 0:
+            print(f"✓ {full_symbol}: Cached {new_cached} new bars")
 
     # Get current snapshot
     snapshot = client.get_market_snapshot(full_symbol)

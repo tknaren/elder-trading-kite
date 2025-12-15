@@ -727,34 +727,25 @@ def create_trade_bill():
             INSERT INTO trade_bills (
                 user_id, ticker, current_market_price, entry_price, stop_loss, target_price,
                 quantity, upper_channel, lower_channel, target_pips, stop_loss_pips,
-                max_qty_for_risk, overnight_charges, risk_per_share, position_size,
+                max_qty_for_risk, other_charges, max_risk, risk_per_share, position_size,
                 risk_percent, channel_height, potential_gain, target_1_1_c, target_1_2_b,
                 target_1_3_a, risk_amount_currency, reward_amount_currency, risk_reward_ratio,
                 break_even, trailing_stop, is_filled, stop_entered, target_entered,
                 journal_entered, comments, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             user_id, data.get('ticker'), data.get('current_market_price'),
-            data.get('entry_price'), data.get(
-                'stop_loss'), data.get('target_price'),
-            data.get('quantity'), data.get(
-                'upper_channel'), data.get('lower_channel'),
-            data.get('target_pips'), data.get(
-                'stop_loss_pips'), data.get('max_qty_for_risk'),
-            data.get('overnight_charges'), data.get(
-                'risk_per_share'), data.get('position_size'),
-            data.get('risk_percent'), data.get(
-                'channel_height'), data.get('potential_gain'),
-            data.get('target_1_1_c'), data.get(
-                'target_1_2_b'), data.get('target_1_3_a'),
-            data.get('risk_amount_currency'), data.get(
-                'reward_amount_currency'),
-            data.get('risk_reward_ratio'), data.get(
-                'break_even'), data.get('trailing_stop'),
-            1 if data.get('is_filled') else 0, 1 if data.get(
-                'stop_entered') else 0,
-            1 if data.get('target_entered') else 0, 1 if data.get(
-                'journal_entered') else 0,
+            data.get('entry_price'), data.get('stop_loss'), data.get('target_price'),
+            data.get('quantity'), data.get('upper_channel'), data.get('lower_channel'),
+            data.get('target_pips'), data.get('stop_loss_pips'), data.get('max_qty_for_risk'),
+            data.get('other_charges', 0), data.get('max_risk'),
+            data.get('risk_per_share'), data.get('position_size'),
+            data.get('risk_percent'), data.get('channel_height'), data.get('potential_gain'),
+            data.get('target_1_1_c'), data.get('target_1_2_b'), data.get('target_1_3_a'),
+            data.get('risk_amount_currency'), data.get('reward_amount_currency'),
+            data.get('risk_reward_ratio'), data.get('break_even'), data.get('trailing_stop'),
+            1 if data.get('is_filled') else 0, 1 if data.get('stop_entered') else 0,
+            1 if data.get('target_entered') else 0, 1 if data.get('journal_entered') else 0,
             data.get('comments', ''), 'active', datetime.now().isoformat()
         ))
         conn.commit()
