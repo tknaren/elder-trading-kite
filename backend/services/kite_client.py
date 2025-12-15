@@ -590,6 +590,13 @@ def fetch_stock_data(symbol: str, period: str = '2y') -> Optional[Dict]:
 
     db.close()
 
+    # Save to in-memory session cache for fast subsequent access
+    _session_ohlcv_cache[full_symbol] = {
+        'name': name,
+        'sector': sector,
+        'history': hist.copy()
+    }
+
     return {
         'symbol': full_symbol,
         'name': name,
@@ -598,6 +605,23 @@ def fetch_stock_data(symbol: str, period: str = '2y') -> Optional[Dict]:
         'info': {},
         'snapshot': snapshot,
         'instrument_token': client.get_instrument_token(tradingsymbol, exchange)
+    }
+
+
+def clear_session_cache():
+    """Clear the in-memory session cache (useful for forcing fresh data)"""
+    global _session_ohlcv_cache, _session_cache_date
+    _session_ohlcv_cache = {}
+    _session_cache_date = None
+    print("✓ Session cache cleared")
+
+
+def get_session_cache_stats() -> Dict:
+    """Get statistics about the session cache"""
+    return {
+        'symbols_cached': len(_session_ohlcv_cache),
+        'cache_date': _session_cache_date,
+        'symbols': list(_session_ohlcv_cache.keys())
     }
 
 
