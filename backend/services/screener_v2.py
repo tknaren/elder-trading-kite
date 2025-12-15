@@ -22,7 +22,8 @@ ENTRY/STOP/TARGET CALCULATION (Elder's Method):
 - TARGET: Keltner Channel Upper Band
 - STOP: Deepest historical EMA-22 penetration
 
-Data Source: IBKR Client Portal API
+Data Source: Kite Connect API (NSE)
+Symbol Format: NSE:SYMBOL (e.g., NSE:RELIANCE, NSE:TCS)
 """
 
 import pandas as pd
@@ -44,57 +45,39 @@ from services.indicator_config import (
     get_indicator_info,
     get_config_summary
 )
-from services.ibkr_client import fetch_stock_data, check_connection, get_client, convert_to_native
+from services.kite_client import fetch_stock_data, check_connection, get_client, convert_to_native
 
 
-# Default watchlists
-# Full NASDAQ 100 stocks
-NASDAQ_100 = [
-    # Top 50 by market cap
-    'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'AMD', 'AVGO', 'NFLX',
-    'COST', 'PEP', 'ADBE', 'CSCO', 'INTC', 'QCOM', 'TXN', 'INTU', 'AMAT', 'MU',
-    'LRCX', 'KLAC', 'SNPS', 'CDNS', 'MRVL', 'ON', 'NXPI', 'ADI', 'MCHP', 'FTNT',
-    'VRTX', 'CHTR', 'ASML', 'CRWD', 'PANW', 'MNST', 'TEAM', 'PAYX', 'AEP', 'REGN',
-    'DXCM', 'CPRT', 'PCAR', 'ALGN', 'AMGN', 'MRNA', 'XEL', 'WDAY', 'ABNB', 'MDLZ',
-    # Next 50
-    'GILD', 'ISRG', 'BKNG', 'ADP', 'SBUX', 'PYPL', 'CME', 'ORLY', 'IDXX', 'CTAS',
-    'MAR', 'CSX', 'ODFL', 'FAST', 'ROST', 'KDP', 'EXC', 'DLTR', 'BIIB', 'EA',
-    'VRSK', 'ANSS', 'ILMN', 'SIRI', 'ZS', 'DDOG', 'CTSH', 'WBD', 'EBAY', 'FANG',
-    'GFS', 'LCID', 'RIVN', 'CEG', 'TTD', 'GEHC', 'ZM', 'ROKU', 'OKTA', 'SPLK',
-    'DOCU', 'BILL', 'ENPH', 'SEDG', 'DASH', 'COIN', 'HOOD', 'SOFI', 'PLTR', 'NET'
-]
-
-# Keep backward compatibility
-NASDAQ_100_TOP = NASDAQ_100
-
-# NIFTY 50 + NIFTY NEXT 50 = 100 stocks
+# Default watchlist - NIFTY 100 with NSE:SYMBOL format
+# All symbols use exchange:tradingsymbol format required by Kite Connect
 NIFTY_100 = [
     # NIFTY 50
-    'RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'ICICIBANK.NS',
-    'HINDUNILVR.NS', 'SBIN.NS', 'BHARTIARTL.NS', 'ITC.NS', 'KOTAKBANK.NS',
-    'LT.NS', 'AXISBANK.NS', 'ASIANPAINT.NS', 'MARUTI.NS', 'TITAN.NS',
-    'SUNPHARMA.NS', 'ULTRACEMCO.NS', 'BAJFINANCE.NS', 'WIPRO.NS', 'HCLTECH.NS',
-    'TATAMOTORS.NS', 'POWERGRID.NS', 'NTPC.NS', 'M&M.NS', 'JSWSTEEL.NS',
-    'BAJAJFINSV.NS', 'ONGC.NS', 'TATASTEEL.NS', 'ADANIENT.NS', 'COALINDIA.NS',
-    'GRASIM.NS', 'TECHM.NS', 'HINDALCO.NS', 'INDUSINDBK.NS', 'DRREDDY.NS',
-    'APOLLOHOSP.NS', 'CIPLA.NS', 'EICHERMOT.NS', 'NESTLEIND.NS', 'DIVISLAB.NS',
-    'BRITANNIA.NS', 'BPCL.NS', 'ADANIPORTS.NS', 'TATACONSUM.NS', 'HEROMOTOCO.NS',
-    'SBILIFE.NS', 'HDFCLIFE.NS', 'BAJAJ-AUTO.NS', 'SHRIRAMFIN.NS', 'LTIM.NS',
+    'NSE:RELIANCE', 'NSE:TCS', 'NSE:HDFCBANK', 'NSE:INFY', 'NSE:ICICIBANK',
+    'NSE:HINDUNILVR', 'NSE:SBIN', 'NSE:BHARTIARTL', 'NSE:ITC', 'NSE:KOTAKBANK',
+    'NSE:LT', 'NSE:AXISBANK', 'NSE:ASIANPAINT', 'NSE:MARUTI', 'NSE:TITAN',
+    'NSE:SUNPHARMA', 'NSE:ULTRACEMCO', 'NSE:BAJFINANCE', 'NSE:WIPRO', 'NSE:HCLTECH',
+    'NSE:TATAMOTORS', 'NSE:POWERGRID', 'NSE:NTPC', 'NSE:M&M', 'NSE:JSWSTEEL',
+    'NSE:BAJAJFINSV', 'NSE:ONGC', 'NSE:TATASTEEL', 'NSE:ADANIENT', 'NSE:COALINDIA',
+    'NSE:GRASIM', 'NSE:TECHM', 'NSE:HINDALCO', 'NSE:INDUSINDBK', 'NSE:DRREDDY',
+    'NSE:APOLLOHOSP', 'NSE:CIPLA', 'NSE:EICHERMOT', 'NSE:NESTLEIND', 'NSE:DIVISLAB',
+    'NSE:BRITANNIA', 'NSE:BPCL', 'NSE:ADANIPORTS', 'NSE:TATACONSUM', 'NSE:HEROMOTOCO',
+    'NSE:SBILIFE', 'NSE:HDFCLIFE', 'NSE:BAJAJ-AUTO', 'NSE:SHRIRAMFIN', 'NSE:LTIM',
     # NIFTY NEXT 50
-    'ABB.NS', 'ACC.NS', 'ADANIGREEN.NS', 'ADANIPOWER.NS', 'AMBUJACEM.NS',
-    'ATGL.NS', 'AUROPHARMA.NS', 'BANKBARODA.NS', 'BEL.NS', 'BERGEPAINT.NS',
-    'BOSCHLTD.NS', 'CANBK.NS', 'CHOLAFIN.NS', 'COLPAL.NS', 'DLF.NS',
-    'GAIL.NS', 'GODREJCP.NS', 'HAL.NS', 'HAVELLS.NS', 'ICICIPRULI.NS',
-    'IDEA.NS', 'IGL.NS', 'INDHOTEL.NS', 'INDIGO.NS', 'IOC.NS',
-    'IRCTC.NS', 'JINDALSTEL.NS', 'JSWENERGY.NS', 'LICI.NS', 'LUPIN.NS',
-    'MARICO.NS', 'MAXHEALTH.NS', 'MPHASIS.NS', 'NAUKRI.NS', 'NHPC.NS',
-    'OBEROIRLTY.NS', 'OFSS.NS', 'PAGEIND.NS', 'PFC.NS', 'PIDILITIND.NS',
-    'PNB.NS', 'POLYCAB.NS', 'RECLTD.NS', 'SRF.NS', 'TATAPOWER.NS',
-    'TORNTPHARM.NS', 'TRENT.NS', 'UNIONBANK.NS', 'VBL.NS', 'ZOMATO.NS'
+    'NSE:ABB', 'NSE:ACC', 'NSE:ADANIGREEN', 'NSE:ADANIPOWER', 'NSE:AMBUJACEM',
+    'NSE:ATGL', 'NSE:AUROPHARMA', 'NSE:BANKBARODA', 'NSE:BEL', 'NSE:BERGEPAINT',
+    'NSE:BOSCHLTD', 'NSE:CANBK', 'NSE:CHOLAFIN', 'NSE:COLPAL', 'NSE:DLF',
+    'NSE:GAIL', 'NSE:GODREJCP', 'NSE:HAL', 'NSE:HAVELLS', 'NSE:ICICIPRULI',
+    'NSE:IDEA', 'NSE:IGL', 'NSE:INDHOTEL', 'NSE:INDIGO', 'NSE:IOC',
+    'NSE:IRCTC', 'NSE:JINDALSTEL', 'NSE:JSWENERGY', 'NSE:LICI', 'NSE:LUPIN',
+    'NSE:MARICO', 'NSE:MAXHEALTH', 'NSE:MPHASIS', 'NSE:NAUKRI', 'NSE:NHPC',
+    'NSE:OBEROIRLTY', 'NSE:OFSS', 'NSE:PAGEIND', 'NSE:PFC', 'NSE:PIDILITIND',
+    'NSE:PNB', 'NSE:POLYCAB', 'NSE:RECLTD', 'NSE:SRF', 'NSE:TATAPOWER',
+    'NSE:TORNTPHARM', 'NSE:TRENT', 'NSE:UNIONBANK', 'NSE:VBL', 'NSE:ZOMATO'
 ]
 
-# Keep backward compatibility
-NIFTY_50 = NIFTY_100
+# Backward compatibility aliases
+NIFTY_50 = NIFTY_100[:50]  # First 50 are NIFTY 50
+DEFAULT_STOCKS = NIFTY_100  # Default to NIFTY 100
 
 
 def analyze_weekly_trend(hist: pd.DataFrame) -> Dict:
@@ -961,10 +944,10 @@ def scan_stock_v2(symbol: str, config: Dict = None) -> Optional[Dict]:
     return convert_to_native(result)
 
 
-def run_weekly_screen_v2(market: str = 'US', symbols: List[str] = None) -> Dict:
-    """Run weekly screener v2 with corrected logic - Full 100 stocks"""
+def run_weekly_screen_v2(market: str = 'IN', symbols: List[str] = None) -> Dict:
+    """Run weekly screener v2 with corrected logic - NIFTY 100 stocks"""
     if symbols is None:
-        symbols = NASDAQ_100 if market == 'US' else NIFTY_100
+        symbols = NIFTY_100  # Always use NIFTY 100 (NSE market)
 
     results = []
     passed = []

@@ -1,6 +1,9 @@
 """
 Elder Trading System - Enhanced API Routes v2
-New endpoints for connected workflow: Screener → Trade Bill → IBKR → Trade Log → Position Management
+New endpoints for connected workflow: Screener → Trade Bill → Kite Connect → Trade Log → Position Management
+
+Data Source: Kite Connect API (NSE)
+Symbol Format: NSE:SYMBOL (e.g., NSE:RELIANCE, NSE:TCS)
 """
 
 from flask import Blueprint, request, jsonify, g
@@ -15,20 +18,37 @@ from services.screener_v2 import (
     calculate_elder_trade_levels
 )
 from services.indicators import get_grading_criteria
-from services.ibkr_orders import (
-    check_ibkr_connection,
-    get_account_id,
-    place_bracket_order,
-    place_single_order,
+from services.kite_orders import (
+    check_kite_connection,
+    get_account_info,
+    place_order,
+    place_gtt_order,
+    place_gtt_oco,
+    get_gtt_orders,
+    cancel_gtt,
     get_open_orders,
     cancel_order,
+    modify_order,
     get_positions,
+    get_holdings,
     get_position_alerts,
     get_filled_trades,
     create_trade_from_bill,
-    get_account_summary,
-    modify_order,
-    get_market_data
+    check_trading_hours,
+    TRANSACTION_BUY,
+    TRANSACTION_SELL,
+    ORDER_TYPE_LIMIT,
+    ORDER_TYPE_MARKET,
+    PRODUCT_CNC
+)
+from services.kite_client import (
+    get_client,
+    init_client,
+    get_market_status
+)
+from services.nse_charges import (
+    estimate_trade_charges,
+    calculate_break_even
 )
 
 api_v2 = Blueprint('api_v2', __name__, url_prefix='/api/v2')
@@ -100,61 +120,150 @@ def analyze_stock_v2(symbol):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# IBKR ORDER PLACEMENT
+# KITE CONNECT API - Authentication & Status
 # ══════════════════════════════════════════════════════════════════════════════
 
-@api_v2.route('/ibkr/status', methods=['GET'])
-def ibkr_status_v2():
-    """Check IBKR Gateway connection status"""
-    connected, message = check_ibkr_connection()
-    account_id = get_account_id() if connected else None
+@api_v2.route('/kite/status', methods=['GET'])
+def kite_status():
+    """Check Kite Connect connection status"""
+    connected, message = check_kite_connection()
+    market_status = get_market_status()
 
     return jsonify({
         'connected': connected,
         'message': message,
-        'account_id': account_id,
-        'gateway_url': 'https://localhost:5000'
+        'market': market_status,
+        'broker': 'Zerodha'
     })
 
 
-@api_v2.route('/ibkr/account', methods=['GET'])
-def get_account():
-    """Get IBKR account summary"""
-    result = get_account_summary()
+@api_v2.route('/kite/login-url', methods=['GET'])
+def get_kite_login_url():
+    """Get Kite login URL for authentication"""
+    db = get_db()
+    user_id = get_user_id()
+
+    # Get API key from settings
+    settings = db.execute('''
+        SELECT kite_api_key FROM account_settings WHERE user_id = ?
+    ''', (user_id,)).fetchone()
+
+    if not settings or not settings['kite_api_key']:
+        return jsonify({
+            'success': False,
+            'error': 'API Key not configured. Please add your Kite API Key in Settings.'
+        }), 400
+
+    client = init_client(settings['kite_api_key'], None)
+    login_url = client.get_login_url()
+
+    return jsonify({
+        'success': True,
+        'login_url': login_url
+    })
+
+
+@api_v2.route('/kite/authenticate', methods=['POST'])
+def kite_authenticate():
+    """
+    Exchange request token for access token
+
+    Body:
+    {
+        "request_token": "xxx"
+    }
+    """
+    data = request.get_json()
+    request_token = data.get('request_token')
+
+    if not request_token:
+        return jsonify({'success': False, 'error': 'Request token required'}), 400
+
+    db = get_db()
+    user_id = get_user_id()
+
+    # Get API credentials from settings
+    settings = db.execute('''
+        SELECT kite_api_key, kite_api_secret FROM account_settings WHERE user_id = ?
+    ''', (user_id,)).fetchone()
+
+    if not settings or not settings['kite_api_key'] or not settings['kite_api_secret']:
+        return jsonify({
+            'success': False,
+            'error': 'API Key and Secret not configured. Please add them in Settings.'
+        }), 400
+
+    client = init_client(settings['kite_api_key'], settings['kite_api_secret'])
+    result = client.generate_session(request_token)
+
+    if result['success']:
+        # Save access token to database
+        db.execute('''
+            UPDATE account_settings
+            SET kite_access_token = ?, kite_token_expiry = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+        ''', (result['access_token'], datetime.now().strftime('%Y-%m-%d'), user_id))
+        db.commit()
+
+        return jsonify({
+            'success': True,
+            'message': f"Logged in as {result.get('user_name', 'User')}",
+            'user_id': result.get('user_id'),
+            'user_name': result.get('user_name'),
+            'email': result.get('email')
+        })
+
+    return jsonify(result), 400
+
+
+@api_v2.route('/kite/account', methods=['GET'])
+def get_kite_account():
+    """Get Kite account summary"""
+    result = get_account_info()
     return jsonify(result)
 
 
-@api_v2.route('/ibkr/orders', methods=['GET'])
+# ══════════════════════════════════════════════════════════════════════════════
+# KITE CONNECT API - Regular Orders
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_v2.route('/kite/orders', methods=['GET'])
 def get_orders():
     """Get all open/pending orders"""
     result = get_open_orders()
     return jsonify(result)
 
 
-@api_v2.route('/ibkr/orders', methods=['POST'])
+@api_v2.route('/kite/orders', methods=['POST'])
 def create_order():
     """
     Place a new order
 
     Body:
     {
-        "symbol": "AAPL",
-        "side": "BUY",
+        "symbol": "RELIANCE",
+        "transaction_type": "BUY",
         "quantity": 10,
-        "price": 150.00,
-        "order_type": "LMT",  // LMT, MKT, STP
-        "tif": "GTC"  // GTC, DAY
+        "price": 2500.00,
+        "order_type": "LIMIT",  // LIMIT, MARKET, SL, SL-M
+        "product": "CNC"  // CNC (delivery), MIS (intraday)
     }
     """
     data = request.get_json()
 
-    result = place_single_order(
+    # Ensure whole shares (no fractional)
+    quantity = int(data.get('quantity', 0))
+    if quantity <= 0:
+        return jsonify({'success': False, 'error': 'Quantity must be a positive integer'}), 400
+
+    result = place_order(
         symbol=data['symbol'],
-        side=data['side'],
-        quantity=data['quantity'],
-        price=data['price'],
-        order_type=data.get('order_type', 'LMT'),
-        tif=data.get('tif', 'GTC')
+        transaction_type=data.get('transaction_type', TRANSACTION_BUY),
+        quantity=quantity,
+        price=data.get('price'),
+        order_type=data.get('order_type', ORDER_TYPE_LIMIT),
+        product=data.get('product', PRODUCT_CNC),
+        trigger_price=data.get('trigger_price')
     )
 
     if result['success']:
@@ -162,36 +271,7 @@ def create_order():
     return jsonify(result), 400
 
 
-@api_v2.route('/ibkr/orders/bracket', methods=['POST'])
-def create_bracket_order():
-    """
-    Place bracket order (Entry + Stop + Target)
-
-    Body:
-    {
-        "symbol": "AAPL",
-        "quantity": 10,
-        "entry_price": 150.00,
-        "stop_loss": 145.00,
-        "take_profit": 160.00
-    }
-    """
-    data = request.get_json()
-
-    result = place_bracket_order(
-        symbol=data['symbol'],
-        quantity=data['quantity'],
-        entry_price=data['entry_price'],
-        stop_loss=data['stop_loss'],
-        take_profit=data['take_profit']
-    )
-
-    if result['success']:
-        return jsonify(result), 201
-    return jsonify(result), 400
-
-
-@api_v2.route('/ibkr/orders/<order_id>', methods=['DELETE'])
+@api_v2.route('/kite/orders/<order_id>', methods=['DELETE'])
 def cancel_order_endpoint(order_id):
     """Cancel an order"""
     result = cancel_order(order_id)
@@ -200,18 +280,178 @@ def cancel_order_endpoint(order_id):
     return jsonify(result), 400
 
 
-@api_v2.route('/ibkr/orders/<order_id>', methods=['PUT'])
+@api_v2.route('/kite/orders/<order_id>', methods=['PUT'])
 def modify_order_endpoint(order_id):
     """Modify an existing order"""
     data = request.get_json()
     result = modify_order(
         order_id,
-        new_price=data.get('price'),
-        new_quantity=data.get('quantity')
+        quantity=data.get('quantity'),
+        price=data.get('price'),
+        trigger_price=data.get('trigger_price'),
+        order_type=data.get('order_type')
     )
     if result['success']:
         return jsonify(result)
     return jsonify(result), 400
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# KITE CONNECT API - GTT Orders (Good Till Triggered)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_v2.route('/kite/gtt', methods=['GET'])
+def get_all_gtt():
+    """Get all GTT orders"""
+    result = get_gtt_orders()
+    return jsonify(result)
+
+
+@api_v2.route('/kite/gtt', methods=['POST'])
+def create_gtt():
+    """
+    Place a GTT single-trigger order
+
+    Body:
+    {
+        "symbol": "RELIANCE",
+        "transaction_type": "BUY",
+        "quantity": 10,
+        "trigger_price": 2400.00,
+        "limit_price": 2410.00
+    }
+    """
+    data = request.get_json()
+
+    quantity = int(data.get('quantity', 0))
+    if quantity <= 0:
+        return jsonify({'success': False, 'error': 'Quantity must be a positive integer'}), 400
+
+    result = place_gtt_order(
+        symbol=data['symbol'],
+        transaction_type=data.get('transaction_type', TRANSACTION_BUY),
+        quantity=quantity,
+        trigger_price=data['trigger_price'],
+        limit_price=data['limit_price']
+    )
+
+    if result['success']:
+        return jsonify(result), 201
+    return jsonify(result), 400
+
+
+@api_v2.route('/kite/gtt/oco', methods=['POST'])
+def create_gtt_oco():
+    """
+    Place a GTT-OCO order (Stop Loss + Target)
+
+    This is the primary bracket strategy for NSE.
+    Use after buying to set both stop loss and target.
+
+    Body:
+    {
+        "symbol": "RELIANCE",
+        "quantity": 10,
+        "stop_loss_trigger": 2400.00,
+        "stop_loss_price": 2390.00,
+        "target_trigger": 2700.00,
+        "target_price": 2690.00
+    }
+    """
+    data = request.get_json()
+
+    quantity = int(data.get('quantity', 0))
+    if quantity <= 0:
+        return jsonify({'success': False, 'error': 'Quantity must be a positive integer'}), 400
+
+    result = place_gtt_oco(
+        symbol=data['symbol'],
+        quantity=quantity,
+        stop_loss_trigger=data['stop_loss_trigger'],
+        stop_loss_price=data['stop_loss_price'],
+        target_trigger=data['target_trigger'],
+        target_price=data['target_price']
+    )
+
+    if result['success']:
+        return jsonify(result), 201
+    return jsonify(result), 400
+
+
+@api_v2.route('/kite/gtt/<int:trigger_id>', methods=['DELETE'])
+def delete_gtt(trigger_id):
+    """Cancel a GTT order"""
+    result = cancel_gtt(trigger_id)
+    if result['success']:
+        return jsonify(result)
+    return jsonify(result), 400
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NSE TRADE CHARGES CALCULATOR
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_v2.route('/charges/estimate', methods=['POST'])
+def estimate_charges():
+    """
+    Estimate NSE trade charges
+
+    Body:
+    {
+        "entry_price": 2500.00,
+        "stop_loss": 2400.00,
+        "target": 2700.00,
+        "quantity": 10,
+        "is_intraday": false
+    }
+    """
+    data = request.get_json()
+
+    quantity = int(data.get('quantity', 0))
+    if quantity <= 0:
+        return jsonify({'success': False, 'error': 'Quantity must be a positive integer'}), 400
+
+    result = estimate_trade_charges(
+        entry_price=data['entry_price'],
+        stop_loss=data['stop_loss'],
+        target=data['target'],
+        quantity=quantity,
+        is_intraday=data.get('is_intraday', False)
+    )
+
+    return jsonify(result)
+
+
+@api_v2.route('/charges/break-even', methods=['POST'])
+def get_break_even():
+    """
+    Calculate break-even price after charges
+
+    Body:
+    {
+        "entry_price": 2500.00,
+        "quantity": 10,
+        "is_intraday": false
+    }
+    """
+    data = request.get_json()
+
+    quantity = int(data.get('quantity', 0))
+    if quantity <= 0:
+        return jsonify({'success': False, 'error': 'Quantity must be a positive integer'}), 400
+
+    break_even = calculate_break_even(
+        entry_price=data['entry_price'],
+        quantity=quantity,
+        is_intraday=data.get('is_intraday', False)
+    )
+
+    return jsonify({
+        'entry_price': data['entry_price'],
+        'break_even': break_even,
+        'difference': round(break_even - data['entry_price'], 2),
+        'difference_percent': round((break_even - data['entry_price']) / data['entry_price'] * 100, 3)
+    })
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -222,7 +462,7 @@ def modify_order_endpoint(order_id):
 def get_all_positions():
     """
     Get all open positions with current P/L
-    Returns positions from IBKR with real-time market prices
+    Returns positions from Kite Connect with real-time market prices
     """
     result = get_positions()
 
@@ -275,7 +515,7 @@ def close_position(symbol):
 
     Body (optional):
     {
-        "quantity": 50  // Partial close
+        "quantity": 50  // Partial close (whole shares only)
     }
     """
     data = request.get_json() or {}
@@ -294,16 +534,15 @@ def close_position(symbol):
     if not position:
         return jsonify({'success': False, 'error': f'No position found for {symbol}'}), 404
 
-    quantity = data.get('quantity', position['quantity'])
+    quantity = int(data.get('quantity', position['quantity']))
 
-    # Place market sell order
-    result = place_single_order(
+    # Place market sell order via Kite
+    result = place_order(
         symbol=symbol,
-        side='SELL',
+        transaction_type=TRANSACTION_SELL,
         quantity=quantity,
-        price=0,  # Market order
-        order_type='MKT',
-        tif='DAY'
+        order_type=ORDER_TYPE_MARKET,
+        product=PRODUCT_CNC
     )
 
     if result['success']:
@@ -312,23 +551,30 @@ def close_position(symbol):
     return jsonify(result)
 
 
+@api_v2.route('/holdings', methods=['GET'])
+def get_all_holdings():
+    """Get all holdings (delivery positions) from Kite"""
+    result = get_holdings()
+    return jsonify(result)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-# CONNECTED WORKFLOW: Trade Bill → IBKR Order
+# CONNECTED WORKFLOW: Trade Bill → Kite Order
 # ══════════════════════════════════════════════════════════════════════════════
 
 @api_v2.route('/trade-bills/<int:bill_id>/place-order', methods=['POST'])
 def place_order_from_bill(bill_id):
     """
-    Place IBKR order directly from Trade Bill
+    Place Kite order directly from Trade Bill
 
     This is the key connection in the workflow:
-    Screener → Trade Bill → IBKR Order
+    Screener → Trade Bill → Kite Order → GTT-OCO for SL/Target
 
     The Trade Bill contains:
     - Entry price (EMA-22)
     - Stop loss (deepest penetration)
     - Target (KC upper)
-    - Quantity (calculated from risk)
+    - Quantity (calculated from risk, whole shares only)
     """
     db = get_db()
     user_id = get_user_id()

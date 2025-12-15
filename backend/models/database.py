@@ -58,14 +58,18 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 account_name TEXT NOT NULL,
-                market TEXT NOT NULL,
+                market TEXT DEFAULT 'IN',
                 trading_capital REAL NOT NULL,
                 risk_per_trade REAL DEFAULT 2.0,
                 max_monthly_drawdown REAL DEFAULT 6.0,
                 target_rr REAL DEFAULT 2.0,
                 max_open_positions INTEGER DEFAULT 5,
-                currency TEXT DEFAULT 'USD',
-                broker TEXT,
+                currency TEXT DEFAULT 'INR',
+                broker TEXT DEFAULT 'Zerodha',
+                kite_api_key TEXT,
+                kite_api_secret TEXT,
+                kite_access_token TEXT,
+                kite_token_expiry TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id)
@@ -445,48 +449,43 @@ class Database:
                     VALUES (?, ?, ?, ?, ?)
                 ''', (strategy_id, name, label, json.dumps(options), i))
 
-            # Default watchlists
-            nasdaq_100 = [
-                # Top 50 by market cap
-                'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'AMD', 'AVGO', 'NFLX',
-                'COST', 'PEP', 'ADBE', 'CSCO', 'INTC', 'QCOM', 'TXN', 'INTU', 'AMAT', 'MU',
-                'LRCX', 'KLAC', 'SNPS', 'CDNS', 'MRVL', 'ON', 'NXPI', 'ADI', 'MCHP', 'FTNT',
-                'VRTX', 'CHTR', 'ASML', 'CRWD', 'PANW', 'MNST', 'TEAM', 'PAYX', 'AEP', 'REGN',
-                'DXCM', 'CPRT', 'PCAR', 'ALGN', 'AMGN', 'MRNA', 'XEL', 'WDAY', 'ABNB', 'MDLZ',
-                # Next 50
-                'GILD', 'ISRG', 'BKNG', 'ADP', 'SBUX', 'PYPL', 'CME', 'ORLY', 'IDXX', 'CTAS',
-                'MAR', 'CSX', 'ODFL', 'FAST', 'ROST', 'KDP', 'EXC', 'DLTR', 'BIIB', 'EA',
-                'VRSK', 'ANSS', 'ILMN', 'SIRI', 'ZS', 'DDOG', 'CTSH', 'WBD', 'EBAY', 'FANG',
-                'GFS', 'LCID', 'RIVN', 'CEG', 'TTD', 'GEHC', 'ZM', 'ROKU', 'OKTA', 'SPLK',
-                'DOCU', 'BILL', 'ENPH', 'SEDG', 'DASH', 'COIN', 'HOOD', 'SOFI', 'PLTR', 'NET'
+            # Default watchlist - NIFTY 100 with NSE: format
+            nifty_100 = [
+                # NIFTY 50
+                'NSE:RELIANCE', 'NSE:TCS', 'NSE:HDFCBANK', 'NSE:INFY', 'NSE:ICICIBANK',
+                'NSE:HINDUNILVR', 'NSE:SBIN', 'NSE:BHARTIARTL', 'NSE:ITC', 'NSE:KOTAKBANK',
+                'NSE:LT', 'NSE:AXISBANK', 'NSE:ASIANPAINT', 'NSE:MARUTI', 'NSE:TITAN',
+                'NSE:SUNPHARMA', 'NSE:ULTRACEMCO', 'NSE:BAJFINANCE', 'NSE:WIPRO', 'NSE:HCLTECH',
+                'NSE:TATAMOTORS', 'NSE:POWERGRID', 'NSE:NTPC', 'NSE:M&M', 'NSE:JSWSTEEL',
+                'NSE:BAJAJFINSV', 'NSE:ONGC', 'NSE:TATASTEEL', 'NSE:ADANIENT', 'NSE:COALINDIA',
+                'NSE:GRASIM', 'NSE:TECHM', 'NSE:HINDALCO', 'NSE:INDUSINDBK', 'NSE:DRREDDY',
+                'NSE:APOLLOHOSP', 'NSE:CIPLA', 'NSE:EICHERMOT', 'NSE:NESTLEIND', 'NSE:DIVISLAB',
+                'NSE:BRITANNIA', 'NSE:BPCL', 'NSE:ADANIPORTS', 'NSE:TATACONSUM', 'NSE:HEROMOTOCO',
+                'NSE:SBILIFE', 'NSE:HDFCLIFE', 'NSE:BAJAJ-AUTO', 'NSE:SHRIRAMFIN', 'NSE:LTIM',
+                # NIFTY NEXT 50
+                'NSE:ABB', 'NSE:ACC', 'NSE:ADANIGREEN', 'NSE:ADANIPOWER', 'NSE:AMBUJACEM',
+                'NSE:ATGL', 'NSE:AUROPHARMA', 'NSE:BANKBARODA', 'NSE:BEL', 'NSE:BERGEPAINT',
+                'NSE:BOSCHLTD', 'NSE:CANBK', 'NSE:CHOLAFIN', 'NSE:COLPAL', 'NSE:DLF',
+                'NSE:GAIL', 'NSE:GODREJCP', 'NSE:HAL', 'NSE:HAVELLS', 'NSE:ICICIPRULI',
+                'NSE:IDEA', 'NSE:IGL', 'NSE:INDHOTEL', 'NSE:INDIGO', 'NSE:IOC',
+                'NSE:IRCTC', 'NSE:JINDALSTEL', 'NSE:JSWENERGY', 'NSE:LICI', 'NSE:LUPIN',
+                'NSE:MARICO', 'NSE:MAXHEALTH', 'NSE:MPHASIS', 'NSE:NAUKRI', 'NSE:NHPC',
+                'NSE:OBEROIRLTY', 'NSE:OFSS', 'NSE:PAGEIND', 'NSE:PFC', 'NSE:PIDILITIND',
+                'NSE:PNB', 'NSE:POLYCAB', 'NSE:RECLTD', 'NSE:SRF', 'NSE:TATAPOWER',
+                'NSE:TORNTPHARM', 'NSE:TRENT', 'NSE:UNIONBANK', 'NSE:VBL', 'NSE:ZOMATO'
             ]
 
-            nifty_50 = ['RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS',
-                        'ICICIBANK.NS', 'HINDUNILVR.NS', 'SBIN.NS', 'BHARTIARTL.NS',
-                        'ITC.NS', 'KOTAKBANK.NS', 'LT.NS', 'AXISBANK.NS']
-
             conn.execute('''
                 INSERT INTO watchlists (user_id, name, market, symbols, is_default)
                 VALUES (?, ?, ?, ?, ?)
-            ''', (user_id, 'NASDAQ 100', 'US', json.dumps(nasdaq_100), 1))
+            ''', (user_id, 'NIFTY 100', 'IN', json.dumps(nifty_100), 1))
 
+            # Default account settings - NSE/Zerodha only
             conn.execute('''
-                INSERT INTO watchlists (user_id, name, market, symbols, is_default)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (user_id, 'NIFTY 50', 'IN', json.dumps(nifty_50), 1))
-
-            # Default account settings
-            conn.execute('''
-                INSERT INTO account_settings 
+                INSERT INTO account_settings
                 (user_id, account_name, market, trading_capital, currency, broker)
                 VALUES (?, ?, ?, ?, ?, ?)
-            ''', (user_id, 'ISA Account', 'US', 6000, 'GBP', 'Trading212'))
-
-            conn.execute('''
-                INSERT INTO account_settings 
-                (user_id, account_name, market, trading_capital, currency, broker)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (user_id, 'Zerodha Account', 'IN', 570749, 'INR', 'Zerodha'))
+            ''', (user_id, 'Trading Account', 'IN', 500000, 'INR', 'Zerodha'))
 
             conn.commit()
 

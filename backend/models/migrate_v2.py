@@ -1,6 +1,6 @@
 """
 Elder Trading System - Database Migration v2
-Adds new columns for connected workflow: Screener → Trade Bill → IBKR → Trade Log → Positions
+Adds new columns for connected workflow: Screener → Trade Bill → Kite Connect → Trade Log → Positions
 """
 
 import sqlite3
@@ -144,9 +144,72 @@ def migrate_database(db_path: str = None):
     migrations.append("""
         ALTER TABLE weekly_scans ADD COLUMN screener_version TEXT DEFAULT '1.0';
     """)
-    
+
     migrations.append("""
         ALTER TABLE daily_scans ADD COLUMN screener_version TEXT DEFAULT '1.0';
+    """)
+
+    # Migration 7: Add Kite Connect credentials to account_settings
+    migrations.append("""
+        ALTER TABLE account_settings ADD COLUMN kite_api_key TEXT;
+    """)
+
+    migrations.append("""
+        ALTER TABLE account_settings ADD COLUMN kite_api_secret TEXT;
+    """)
+
+    migrations.append("""
+        ALTER TABLE account_settings ADD COLUMN kite_access_token TEXT;
+    """)
+
+    migrations.append("""
+        ALTER TABLE account_settings ADD COLUMN kite_token_expiry TEXT;
+    """)
+
+    # Migration 8: Create Kite orders tracking table
+    migrations.append("""
+        CREATE TABLE IF NOT EXISTS kite_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            order_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            exchange TEXT DEFAULT 'NSE',
+            transaction_type TEXT NOT NULL,
+            order_type TEXT NOT NULL,
+            quantity INTEGER NOT NULL,
+            price REAL,
+            trigger_price REAL,
+            product TEXT DEFAULT 'CNC',
+            status TEXT DEFAULT 'pending',
+            trade_bill_id INTEGER,
+            filled_quantity INTEGER DEFAULT 0,
+            filled_price REAL,
+            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            filled_at TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (trade_bill_id) REFERENCES trade_bills(id)
+        );
+    """)
+
+    # Migration 9: Create GTT orders tracking table
+    migrations.append("""
+        CREATE TABLE IF NOT EXISTS kite_gtt_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            trigger_id INTEGER NOT NULL,
+            symbol TEXT NOT NULL,
+            exchange TEXT DEFAULT 'NSE',
+            trigger_type TEXT NOT NULL,
+            trigger_values TEXT,
+            quantity INTEGER NOT NULL,
+            status TEXT DEFAULT 'active',
+            trade_bill_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            triggered_at TIMESTAMP,
+            expires_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (trade_bill_id) REFERENCES trade_bills(id)
+        );
     """)
     
     # Run migrations

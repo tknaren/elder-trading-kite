@@ -29,12 +29,12 @@
             <header class="h-14 bg-[#111827] border-b border-gray-700 px-6 flex items-center justify-between sticky top-0 z-10">
                 <div id="header-stats" class="flex gap-6 text-sm"></div>
                 <div class="flex items-center gap-4">
-                    <div id="ibkr-status" class="text-xs px-2 py-1 rounded"></div>
-                    <select id="market" class="bg-[#1f2937] border border-gray-600 rounded px-3 py-1.5 text-sm">
-                        <option value="US">🇺🇸 NASDAQ</option>
-                        <option value="IN">🇮🇳 NSE</option>
-                    </select>
+                    <div id="market-status" class="text-xs px-2 py-1 rounded bg-gray-700 text-gray-400"></div>
+                    <div id="kite-status" class="text-xs px-2 py-1 rounded cursor-pointer"></div>
+                    <span class="text-xs text-gray-500">🇮🇳 NIFTY 100</span>
                 </div>
+                <!-- Hidden market field for backward compatibility -->
+                <input type="hidden" id="market" value="IN">
             </header>
             <div class="p-6" id="content"></div>
         </main>
@@ -129,8 +129,8 @@
     }
 
     function renderHeader() {
-        const s = settings[0] || {trading_capital:6000, risk_per_trade:2, currency:'GBP'};
-        const sym = s.currency==='GBP'?'£':s.currency==='INR'?'₹':'$';
+        const s = settings[0] || {trading_capital:500000, risk_per_trade:2, currency:'INR'};
+        const sym = '₹';  // Always INR for NSE
         document.getElementById('header-stats').innerHTML = `
             <div><span class="text-gray-500">Capital:</span> <span class="font-mono text-blue-400">${sym}${s.trading_capital?.toLocaleString()}</span></div>
             <div><span class="text-gray-500">Max Risk:</span> <span class="font-mono text-red-400">${sym}${(s.trading_capital*s.risk_per_trade/100).toFixed(0)}</span></div>
@@ -226,7 +226,7 @@
                                                 <div class="font-mono font-bold">${r.symbol}</div>
                                                 <div class="text-xs text-gray-500 truncate max-w-[100px]">${r.name||''}</div>
                                             </td>
-                                            <td class="p-3 font-mono">$${r.price?.toFixed(2)}</td>
+                                            <td class="p-3 font-mono">₹${r.price?.toFixed(2)}</td>
                                             <td class="p-3 font-mono ${r.change>=0?'text-green-400':'text-red-400'}">${r.change>=0?'+':''}${r.change?.toFixed(2)}</td>
                                             <td class="p-3 text-center">
                                                 <span class="px-2 py-1 rounded text-xs font-bold ${
@@ -366,14 +366,14 @@
                     <div>
                         <h3 class="font-bold text-lg mb-3 text-blue-400">📊 Indicator Values</h3>
                         <div class="space-y-2 bg-[#1f2937] rounded-lg p-4">
-                            <div class="flex justify-between"><span class="text-gray-400">Price</span><span class="font-mono">$${stock.price?.toFixed(2)}</span></div>
-                            <div class="flex justify-between"><span class="text-gray-400">EMA 22</span><span class="font-mono">$${stock.ema_22?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Price</span><span class="font-mono">₹${stock.price?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">EMA 22</span><span class="font-mono">₹${stock.ema_22?.toFixed(2)}</span></div>
                             <div class="flex justify-between"><span class="text-gray-400">Price vs EMA</span><span class="font-mono ${stock.price_vs_ema<=0?'text-green-400':'text-red-400'}">${stock.price_vs_ema?.toFixed(1)}%</span></div>
                             <div class="flex justify-between"><span class="text-gray-400">MACD Histogram</span><span class="font-mono">${stock.macd_histogram?.toFixed(4)}</span></div>
                             <div class="flex justify-between"><span class="text-gray-400">Force Index</span><span class="font-mono ${stock.force_index<0?'text-green-400':'text-red-400'}">${stock.force_index?.toFixed(0)}</span></div>
                             <div class="flex justify-between"><span class="text-gray-400">Stochastic</span><span class="font-mono">${stock.stochastic?.toFixed(1)}</span></div>
                             <div class="flex justify-between"><span class="text-gray-400">RSI</span><span class="font-mono">${stock.rsi?.toFixed(1)}</span></div>
-                            <div class="flex justify-between"><span class="text-gray-400">ATR</span><span class="font-mono">$${stock.atr?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">ATR</span><span class="font-mono">₹${stock.atr?.toFixed(2)}</span></div>
                         </div>
 
                         <h3 class="font-bold text-lg mb-3 mt-6 text-purple-400">🕯️ Candlestick Patterns</h3>
@@ -411,10 +411,10 @@
 
                         <h3 class="font-bold text-lg mb-3 mt-6 text-yellow-400">🎯 Trade Levels</h3>
                         <div class="space-y-2 bg-[#1f2937] rounded-lg p-4">
-                            <div class="flex justify-between"><span class="text-gray-400">Entry</span><span class="font-mono text-blue-400">$${stock.entry?.toFixed(2)}</span></div>
-                            <div class="flex justify-between"><span class="text-gray-400">Stop Loss</span><span class="font-mono text-red-400">$${stock.stop_loss?.toFixed(2)}</span></div>
-                            <div class="flex justify-between"><span class="text-gray-400">Target 1</span><span class="font-mono text-green-400">$${stock.target_b?.toFixed(2)}</span></div>
-                            <div class="flex justify-between"><span class="text-gray-400">Target 2</span><span class="font-mono text-green-400">$${stock.target_a?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Entry</span><span class="font-mono text-blue-400">₹${stock.entry?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Stop Loss</span><span class="font-mono text-red-400">₹${stock.stop_loss?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Target 1</span><span class="font-mono text-green-400">₹${stock.target_b?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Target 2</span><span class="font-mono text-green-400">₹${stock.target_a?.toFixed(2)}</span></div>
                             <div class="flex justify-between"><span class="text-gray-400">Risk</span><span class="font-mono">${stock.risk_percent?.toFixed(1)}%</span></div>
                         </div>
                     </div>
@@ -652,7 +652,7 @@
             list.innerHTML = matches.map(s => `
                 <div onclick="selectStock('${s.symbol}')" class="px-3 py-2 hover:bg-[#1f2937] cursor-pointer text-sm">
                     <div class="font-mono font-bold text-blue-400">${s.symbol}</div>
-                    <div class="text-xs text-gray-500">${s.name} - $${s.price?.toFixed(2)}</div>
+                    <div class="text-xs text-gray-500">${s.name} - ₹${s.price?.toFixed(2)}</div>
                 </div>
             `).join('');
         } catch(e) {
@@ -997,7 +997,7 @@
                                 <tr class="hover:bg-gray-700/50 ${s.filters_match ? 'bg-green-900/20' : ''}">
                                     <td class="px-3 py-2 font-medium text-blue-400">${s.symbol}</td>
                                     <td class="px-3 py-2">${s.date}</td>
-                                    <td class="px-3 py-2 text-right">$${s.close}</td>
+                                    <td class="px-3 py-2 text-right">₹${s.close}</td>
                                     <td class="px-3 py-2">
                                         ${(s.patterns || []).map(p => `<span class="px-2 py-0.5 text-xs rounded ${p.includes('Hammer') ? 'bg-green-600/30 text-green-400' : p.includes('Engulfing') ? 'bg-blue-600/30 text-blue-400' : 'bg-purple-600/30 text-purple-400'}">${p}</span>`).join(' ')}
                                     </td>
@@ -1157,7 +1157,7 @@
                                 <tr class="hover:bg-gray-700/50 ${s.conditions?.macd_crossing_up ? 'bg-green-900/20' : ''}">
                                     <td class="px-3 py-2 font-medium text-blue-400">${s.symbol}</td>
                                     <td class="px-3 py-2">${s.date}</td>
-                                    <td class="px-3 py-2 text-right">$${s.close}</td>
+                                    <td class="px-3 py-2 text-right">₹${s.close}</td>
                                     <td class="px-3 py-2">
                                         <span class="px-2 py-0.5 text-xs rounded ${s.conditions?.macd_crossing_up ? 'bg-green-600/30 text-green-400' : 'bg-blue-600/30 text-blue-400'}">
                                             ${s.signal_type || 'RSI+MACD'}
@@ -1263,9 +1263,9 @@
     // ========== TRADE BILL ==========
     function tradeBillView() {
         const tb = window.tradeBillTemplate || {};
-        const s = settings[0] || {trading_capital:6000, risk_per_trade:2, currency:'GBP'};
-        const sym = '$';  // Always use $ for clarity
-        
+        const s = settings[0] || {trading_capital:500000, risk_per_trade:2, currency:'INR'};
+        const sym = '₹';  // Always INR for NSE
+
         return `
             <div class="space-y-6 max-w-5xl">
                 <div class="flex justify-between items-center">
@@ -1281,7 +1281,7 @@
                     </div>
                     <div>
                         <span class="text-gray-400">Max Risk (${s.risk_per_trade}%):</span>
-                        <span class="font-mono font-bold text-red-400 ml-2">${sym}${(s.trading_capital * s.risk_per_trade / 100).toFixed(2)}</span>
+                        <span class="font-mono font-bold text-red-400 ml-2">${sym}${(s.trading_capital * s.risk_per_trade / 100).toFixed(0)}</span>
                     </div>
                 </div>
 
@@ -1290,17 +1290,17 @@
                     <h3 class="font-bold text-lg text-blue-400">Trade Info</h3>
                     <div class="grid grid-cols-3 gap-4">
                         <div>
-                            <label class="text-sm text-gray-400">Ticker</label>
-                            <input id="tb-ticker" value="${tb.ticker||''}" placeholder="AAPL" onkeyup="handleTickerTypeahead(event)" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono">
+                            <label class="text-sm text-gray-400">Ticker (NSE)</label>
+                            <input id="tb-ticker" value="${tb.ticker||''}" placeholder="NSE:RELIANCE" onkeyup="handleTickerTypeahead(event)" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono">
                             <div id="ticker-suggestions" class="mt-1 bg-[#1f2937] rounded-lg border border-gray-600 max-h-40 overflow-y-auto"></div>
                         </div>
-                        <div><label class="text-sm text-gray-400">Current Market Price (${sym})</label><input id="tb-cmp" type="number" value="${tb.current_market_price||''}" step="0.01" placeholder="150.25" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
-                        <div><label class="text-sm text-gray-400">Entry Price (${sym})</label><input id="tb-entry" type="number" value="${tb.entry_price||''}" step="0.01" placeholder="148.50" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Current Market Price (${sym})</label><input id="tb-cmp" type="number" value="${tb.current_market_price||''}" step="0.05" placeholder="2500.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Entry Price (${sym})</label><input id="tb-entry" type="number" value="${tb.entry_price||''}" step="0.05" placeholder="2450.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                     </div>
                     <div class="grid grid-cols-3 gap-4">
-                        <div><label class="text-sm text-gray-400">Stop Loss (${sym})</label><input id="tb-sl" type="number" value="${tb.stop_loss||''}" step="0.01" placeholder="145.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
-                        <div><label class="text-sm text-gray-400">Target (${sym})</label><input id="tb-target" type="number" value="${tb.target_price||''}" step="0.01" placeholder="155.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
-                        <div><label class="text-sm text-gray-400">Quantity (shares)</label><input id="tb-qty" type="number" value="${tb.quantity||''}" step="0.01" placeholder="auto" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Stop Loss (${sym})</label><input id="tb-sl" type="number" value="${tb.stop_loss||''}" step="0.05" placeholder="2400.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Target (${sym})</label><input id="tb-target" type="number" value="${tb.target_price||''}" step="0.05" placeholder="2600.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Quantity (whole shares)</label><input id="tb-qty" type="number" value="${tb.quantity||''}" step="1" min="1" placeholder="auto" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                     </div>
                     <div class="grid grid-cols-4 gap-4">
                         <div><label class="text-sm text-gray-400">Upper Channel (${sym})</label><input id="tb-uc" type="number" value="${tb.upper_channel||''}" step="0.01" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
@@ -1432,46 +1432,47 @@
         const cmp = parseFloat(document.getElementById('tb-cmp').value) || 0;
         const upperChannel = parseFloat(document.getElementById('tb-uc').value) || 0;
         const lowerChannel = parseFloat(document.getElementById('tb-lc').value) || 0;
-        const manualQty = parseFloat(document.getElementById('tb-qty').value) || 0;
+        const manualQty = parseInt(document.getElementById('tb-qty').value) || 0;  // Whole shares only
         const overnightCharges = parseFloat(document.getElementById('tb-oc').value) || 0;
-        
-        const s = settings[0] || {trading_capital: 6000, risk_per_trade: 2, currency: 'GBP'};
+
+        const s = settings[0] || {trading_capital: 500000, risk_per_trade: 2, currency: 'INR'};
         const acSize = s.trading_capital;
         const riskPerTradePercent = s.risk_per_trade;
 
         // Need at least entry and stop loss
         if (!entry || !sl) return;
 
-        // === CALCULATIONS MATCHING .NET APP (LONG direction) ===
-        
+        // === CALCULATIONS FOR NSE (LONG direction) ===
+        // NSE requires whole shares - no fractional trading
+
         // Risk per Share = Entry - Stop Loss
         const riskPerShare = Math.round((entry - sl) * 100) / 100;
         if (riskPerShare <= 0) return;  // Invalid stop loss
-        
+
         // Risk per Share % = (Risk per Share / Entry) × 100
         const riskPerSharePercent = Math.round((riskPerShare / entry) * 100 * 100) / 100;
-        
+
         // Max Risk = Account Size × (Risk% / 100)
-        const maxRisk = Math.round(acSize * (riskPerTradePercent / 100) * 100) / 100;
-        
-        // Max Qty for Risk = Max Risk / Risk per Share
-        const maxQtyRisk = riskPerShare > 0 ? Math.round(maxRisk / riskPerShare * 100) / 100 : 0;
-        
-        // Quantity (use manual if entered, otherwise maxQtyRisk)
+        const maxRisk = Math.round(acSize * (riskPerTradePercent / 100));
+
+        // Max Qty for Risk = Max Risk / Risk per Share (floor to whole shares)
+        const maxQtyRisk = riskPerShare > 0 ? Math.floor(maxRisk / riskPerShare) : 0;
+
+        // Quantity (use manual if entered, otherwise maxQtyRisk) - WHOLE SHARES ONLY
         const quantity = manualQty > 0 ? manualQty : maxQtyRisk;
-        
+
         // Trade Size (Position Size) = Quantity × Entry
-        const tradeSize = Math.round(quantity * entry * 100) / 100;
-        
-        // Target Pips = (Target - Entry) × 100
-        const targetPips = target ? Math.round((target - entry) * 100 * 100) / 100 : 0;
-        
-        // SL Pips = (Entry - Stop Loss) × 100
-        const stopLossPips = Math.round((entry - sl) * 100 * 100) / 100;
-        
+        const tradeSize = Math.round(quantity * entry);
+
+        // Target Pips = (Target - Entry)
+        const targetPips = target ? Math.round((target - entry) * 100) / 100 : 0;
+
+        // SL Pips = (Entry - Stop Loss)
+        const stopLossPips = Math.round((entry - sl) * 100) / 100;
+
         // Channel Height = Upper Channel - Lower Channel
         const channelHeight = upperChannel && lowerChannel ? Math.round((upperChannel - lowerChannel) * 100) / 100 : 0;
-        
+
         // A, B, C Targets based on Channel Height (Elder's channel trading)
         // A Target = Entry + (Channel Height × 0.30)
         // B Target = Entry + (Channel Height × 0.20)
@@ -1479,40 +1480,40 @@
         const aTrade = channelHeight > 0 ? Math.round((entry + (channelHeight * 0.30)) * 100) / 100 : 0;
         const bTrade = channelHeight > 0 ? Math.round((entry + (channelHeight * 0.20)) * 100) / 100 : 0;
         const cTrade = channelHeight > 0 ? Math.round((entry + (channelHeight * 0.10)) * 100) / 100 : 0;
-        
+
         // Potential Gain % = ((Upper Channel - Entry) / Entry) × 100 (capped at 9.9%)
         let potentialGain = upperChannel > 0 ? Math.round(((upperChannel - entry) / entry) * 100 * 100) / 100 : 0;
         if (potentialGain >= 10) potentialGain = 9.9;
-        
+
         // Risk = (Entry - Stop Loss) × Quantity (hard stop risk)
-        const risk = Math.round(riskPerShare * quantity * 100) / 100;
+        const risk = Math.round(riskPerShare * quantity);
         // Reward = (Target - Entry) × Quantity
-        const reward = target ? Math.round((target - entry) * quantity * 100) / 100 : 0;
-        
+        const reward = target ? Math.round((target - entry) * quantity) : 0;
+
         // R:R Ratio = Reward / Risk (as a decimal number)
         const riskRewardRatio = risk > 0 && reward > 0 ? Math.round((reward / risk) * 100) / 100 : 0;
-        
+
         // Break Even = Entry (or Entry + overnight charges per share)
         const breakEven = quantity > 0 && overnightCharges > 0 ? Math.round((entry + (overnightCharges / quantity)) * 100) / 100 : entry;
-        
+
         // Trailing Stop = Stop Loss initially
         const trailingStop = sl;
 
-        // Update all form fields
-        if (!manualQty) document.getElementById('tb-qty').value = quantity.toFixed(2);
+        // Update all form fields - WHOLE SHARES for quantity
+        if (!manualQty) document.getElementById('tb-qty').value = quantity;  // No decimals
         document.getElementById('tb-tp').value = targetPips.toFixed(2);
         document.getElementById('tb-slp').value = stopLossPips.toFixed(2);
-        document.getElementById('tb-maxqty').value = maxQtyRisk.toFixed(2);
+        document.getElementById('tb-maxqty').value = maxQtyRisk;  // Whole number
         document.getElementById('tb-rps').value = riskPerShare.toFixed(2);
-        document.getElementById('tb-ps').value = tradeSize.toFixed(2);
+        document.getElementById('tb-ps').value = tradeSize.toLocaleString();  // Format with commas for INR
         document.getElementById('tb-rp').value = riskPerSharePercent.toFixed(2);
         document.getElementById('tb-ch').value = channelHeight.toFixed(2);
         document.getElementById('tb-pg').value = potentialGain.toFixed(2);
         document.getElementById('tb-c').value = cTrade.toFixed(2);
         document.getElementById('tb-b').value = bTrade.toFixed(2);
         document.getElementById('tb-a').value = aTrade.toFixed(2);
-        document.getElementById('tb-risk').value = risk.toFixed(2);
-        document.getElementById('tb-reward').value = reward.toFixed(2);
+        document.getElementById('tb-risk').value = risk.toLocaleString();  // Format with commas
+        document.getElementById('tb-reward').value = reward.toLocaleString();  // Format with commas
         document.getElementById('tb-rrr').value = riskRewardRatio;
         document.getElementById('tb-be').value = breakEven.toFixed(2);
         document.getElementById('tb-ts').value = trailingStop.toFixed(2);
@@ -2874,29 +2875,121 @@
 
     // ========== SETTINGS ==========
     function settingsView() {
-        const s = settings[0] || {account_name:'ISA', trading_capital:6000, risk_per_trade:2, max_monthly_drawdown:6, target_rr:2, currency:'GBP'};
+        const s = settings[0] || {account_name:'Trading Account', trading_capital:500000, risk_per_trade:2, max_monthly_drawdown:6, target_rr:2, currency:'INR'};
         return `
             <div class="space-y-6 max-w-2xl">
                 <h2 class="text-xl font-bold">⚙️ Account Settings</h2>
-                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
-                    <div><label class="text-sm text-gray-400">Account Name</label><input id="s-name" value="${s.account_name||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg"></div>
+
+                <!-- Kite Connect API Settings -->
+                <div class="bg-[#111827] rounded-xl p-6 border border-blue-500/30 space-y-4">
+                    <h3 class="font-bold text-blue-400 flex items-center gap-2">
+                        <span>🔐</span> Kite Connect API (Zerodha)
+                    </h3>
+                    <p class="text-sm text-gray-500">Get your API Key and Secret from <a href="https://developers.kite.trade" target="_blank" class="text-blue-400 hover:underline">Kite Connect Developer Console</a></p>
+
                     <div class="grid grid-cols-2 gap-4">
-                        <div><label class="text-sm text-gray-400">Trading Capital</label><input type="number" id="s-capital" value="${s.trading_capital}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
-                        <div><label class="text-sm text-gray-400">Currency</label><select id="s-currency" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg">
-                            <option ${s.currency==='GBP'?'selected':''}>GBP</option>
-                            <option ${s.currency==='USD'?'selected':''}>USD</option>
-                            <option ${s.currency==='INR'?'selected':''}>INR</option>
-                        </select></div>
+                        <div>
+                            <label class="text-sm text-gray-400">API Key</label>
+                            <input id="s-kite-api-key" type="text" value="${s.kite_api_key||''}" placeholder="Your Kite API Key"
+                                class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono text-sm">
+                        </div>
+                        <div>
+                            <label class="text-sm text-gray-400">API Secret</label>
+                            <input id="s-kite-api-secret" type="password" value="${s.kite_api_secret||''}" placeholder="Your Kite API Secret"
+                                class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono text-sm">
+                        </div>
                     </div>
+
+                    <div class="flex gap-2">
+                        <button onclick="saveKiteCredentials()" class="px-4 py-2 bg-blue-600 rounded-lg hover:bg-blue-700">
+                            💾 Save API Credentials
+                        </button>
+                        <button onclick="showKiteLoginModal()" class="px-4 py-2 bg-green-600 rounded-lg hover:bg-green-700">
+                            🔗 Login to Kite
+                        </button>
+                    </div>
+
+                    ${s.kite_access_token ? `
+                        <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-3 text-sm">
+                            <span class="text-green-400">✓ Currently logged in</span>
+                            <span class="text-gray-500 ml-2">(Token expires: ${s.kite_token_expiry || 'End of day'})</span>
+                        </div>
+                    ` : `
+                        <div class="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 text-sm">
+                            <span class="text-yellow-400">⚠️ Not logged in</span>
+                            <span class="text-gray-500 ml-2">- Login required each trading day</span>
+                        </div>
+                    `}
+                </div>
+
+                <!-- Trading Settings -->
+                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
+                    <h3 class="font-bold text-gray-300">📊 Trading Settings</h3>
+
+                    <div><label class="text-sm text-gray-400">Account Name</label><input id="s-name" value="${s.account_name||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg"></div>
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <div><label class="text-sm text-gray-400">Trading Capital (₹)</label><input type="number" id="s-capital" value="${s.trading_capital}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Broker</label><input id="s-broker" value="${s.broker||'Zerodha'}" disabled class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg text-gray-500"></div>
+                    </div>
+
                     <div class="grid grid-cols-3 gap-4">
                         <div><label class="text-sm text-gray-400">Risk % per Trade</label><input type="number" id="s-risk" value="${s.risk_per_trade}" step="0.5" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                         <div><label class="text-sm text-gray-400">Max Monthly DD %</label><input type="number" id="s-dd" value="${s.max_monthly_drawdown}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                         <div><label class="text-sm text-gray-400">Target R:R</label><input type="number" id="s-rr" value="${s.target_rr}" step="0.5" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                     </div>
-                    <button onclick="saveSettings()" class="w-full py-3 bg-blue-600 rounded-lg font-medium hover:bg-blue-700">💾 Save Settings</button>
+
+                    <button onclick="saveSettings()" class="w-full py-3 bg-blue-600 rounded-lg font-medium hover:bg-blue-700">💾 Save Trading Settings</button>
+                </div>
+
+                <!-- NSE Trading Info -->
+                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                    <h3 class="font-bold text-gray-300 mb-3">📈 NSE Trading Info</h3>
+                    <div class="grid grid-cols-2 gap-4 text-sm">
+                        <div class="bg-[#1f2937] p-3 rounded-lg">
+                            <p class="text-gray-500">Trading Hours</p>
+                            <p class="font-mono text-white">9:15 AM - 3:30 PM IST</p>
+                        </div>
+                        <div class="bg-[#1f2937] p-3 rounded-lg">
+                            <p class="text-gray-500">Market</p>
+                            <p class="font-mono text-white">NSE (NIFTY 100)</p>
+                        </div>
+                        <div class="bg-[#1f2937] p-3 rounded-lg">
+                            <p class="text-gray-500">Currency</p>
+                            <p class="font-mono text-white">INR (₹)</p>
+                        </div>
+                        <div class="bg-[#1f2937] p-3 rounded-lg">
+                            <p class="text-gray-500">Delivery Brokerage</p>
+                            <p class="font-mono text-green-400">₹0 (Free)</p>
+                        </div>
+                    </div>
                 </div>
             </div>
         `;
+    }
+
+    async function saveKiteCredentials() {
+        const apiKey = document.getElementById('s-kite-api-key').value.trim();
+        const apiSecret = document.getElementById('s-kite-api-secret').value.trim();
+
+        if (!apiKey || !apiSecret) {
+            toast('Please enter both API Key and Secret', 'error');
+            return;
+        }
+
+        try {
+            await api('PUT', '/account/info', {
+                kite_api_key: apiKey,
+                kite_api_secret: apiSecret
+            });
+            toast('API credentials saved!', 'success');
+            // Reload settings
+            const response = await api('GET', '/account/info');
+            settings = [response];
+            await render();
+        } catch(e) {
+            toast('Error saving credentials: ' + e.message, 'error');
+        }
     }
 
     async function saveSettings() {
@@ -2906,8 +2999,8 @@
             risk_per_trade: parseFloat(document.getElementById('s-risk').value),
             max_monthly_drawdown: parseFloat(document.getElementById('s-dd').value),
             target_rr: parseFloat(document.getElementById('s-rr').value),
-            currency: document.getElementById('s-currency').value,
-            market: document.getElementById('market').value
+            currency: 'INR',  // Always INR for NSE
+            market: 'IN'  // Always IN for NSE
         };
         try {
             await api('PUT', '/account/info', data);
@@ -2955,24 +3048,117 @@
         `;
     }
 
-    // ========== IBKR STATUS ==========
-    async function checkIBKRStatus() {
+    // ========== KITE CONNECT STATUS ==========
+    async function checkKiteStatus() {
         try {
-            const status = await api('GET', '/ibkr/status');
-            const el = document.getElementById('ibkr-status');
+            const status = await api('GET', '/v2/kite/status');
+            const el = document.getElementById('kite-status');
+            const marketEl = document.getElementById('market-status');
+
+            // Update market status
+            if (status.market) {
+                if (status.market.is_open) {
+                    marketEl.className = 'text-xs px-2 py-1 rounded bg-green-500/20 text-green-400';
+                    marketEl.textContent = '● NSE Open';
+                } else {
+                    marketEl.className = 'text-xs px-2 py-1 rounded bg-gray-700 text-gray-400';
+                    marketEl.textContent = '● NSE Closed';
+                    marketEl.title = status.market.message;
+                }
+            }
+
+            // Update Kite connection status
             if (status.connected) {
                 el.className = 'text-xs px-2 py-1 rounded bg-green-500/20 text-green-400';
-                el.textContent = '● IBKR Connected';
+                el.textContent = '● Kite Connected';
+                el.onclick = null;
             } else {
-                el.className = 'text-xs px-2 py-1 rounded bg-red-500/20 text-red-400 cursor-pointer';
-                el.textContent = '● IBKR Disconnected';
-                el.title = status.message;
-                el.onclick = () => alert(status.message + '\n\n' + (status.instructions || ''));
+                el.className = 'text-xs px-2 py-1 rounded bg-yellow-500/20 text-yellow-400 cursor-pointer';
+                el.textContent = '● Kite Login Required';
+                el.title = status.message + ' (Click to login)';
+                el.onclick = () => showKiteLoginModal();
             }
         } catch(e) {
-            const el = document.getElementById('ibkr-status');
+            const el = document.getElementById('kite-status');
             el.className = 'text-xs px-2 py-1 rounded bg-red-500/20 text-red-400';
-            el.textContent = '● Gateway Error';
+            el.textContent = '● Connection Error';
+        }
+    }
+
+    async function showKiteLoginModal() {
+        document.getElementById('modal').classList.remove('hidden');
+        document.getElementById('modal-body').innerHTML = `
+            <div class="p-6">
+                <div class="flex justify-between items-start mb-6">
+                    <div>
+                        <h2 class="text-2xl font-bold">🔐 Kite Connect Login</h2>
+                        <p class="text-gray-500">Login to Zerodha Kite to enable trading</p>
+                    </div>
+                    <button onclick="closeModal()" class="text-gray-400 hover:text-white text-2xl">&times;</button>
+                </div>
+
+                <div class="space-y-4">
+                    <div class="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
+                        <h3 class="font-bold text-blue-400 mb-2">Step 1: Open Kite Login</h3>
+                        <p class="text-sm text-gray-400 mb-3">Click the button below to open Kite login page. After logging in, you'll be redirected with a request token.</p>
+                        <button onclick="openKiteLogin()" class="px-4 py-2 bg-blue-600 rounded-lg hover:bg-blue-700">
+                            🔗 Open Kite Login
+                        </button>
+                    </div>
+
+                    <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-4">
+                        <h3 class="font-bold text-green-400 mb-2">Step 2: Paste Request Token</h3>
+                        <p class="text-sm text-gray-400 mb-3">After login, copy the request_token from the URL and paste it below.</p>
+                        <div class="flex gap-2">
+                            <input type="text" id="kite-request-token" placeholder="Paste request_token here..."
+                                class="flex-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg text-white">
+                            <button onclick="authenticateKite()" class="px-4 py-2 bg-green-600 rounded-lg hover:bg-green-700">
+                                ✓ Authenticate
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="bg-gray-700/50 rounded-lg p-4 text-sm text-gray-400">
+                        <p><strong>Note:</strong> Kite login is required each trading day. The session expires at midnight.</p>
+                        <p class="mt-2">Make sure you have configured your API Key and Secret in Settings first.</p>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    async function openKiteLogin() {
+        try {
+            const response = await api('GET', '/v2/kite/login-url');
+            if (response.success) {
+                window.open(response.login_url, '_blank');
+                toast('Kite login page opened. Complete login and copy the request_token.', 'info');
+            } else {
+                toast(response.error || 'Could not get login URL', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    async function authenticateKite() {
+        const token = document.getElementById('kite-request-token').value.trim();
+        if (!token) {
+            toast('Please enter the request token', 'error');
+            return;
+        }
+
+        try {
+            const response = await api('POST', '/v2/kite/authenticate', { request_token: token });
+            if (response.success) {
+                toast('Successfully logged in to Kite!', 'success');
+                closeModal();
+                await checkKiteStatus();
+            } else {
+                toast(response.error || 'Authentication failed', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
         }
     }
 
@@ -2983,18 +3169,18 @@
             settings = [account];
         } catch(e) {
             console.log('Could not load account info:', e);
-            settings = [{trading_capital:6000, risk_per_trade:2, currency:'GBP'}];
+            settings = [{trading_capital:500000, risk_per_trade:2, currency:'INR'}];
         }
-        
+
         const cl = await api('GET', '/checklist');
         checklist = cl.items || {};
-        await checkIBKRStatus();
+        await checkKiteStatus();
         renderNav();
         renderHeader();
         await render();
-        
-        // Check IBKR status every 30 seconds
-        setInterval(checkIBKRStatus, 30000);
+
+        // Check Kite status every 30 seconds
+        setInterval(checkKiteStatus, 30000);
     }
 
     init();

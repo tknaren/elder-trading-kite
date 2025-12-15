@@ -1,17 +1,21 @@
 """
 Elder Trading System - Local Application v2
-Enhanced with connected workflow: Screener → Trade Bill → IBKR → Trade Log → Positions
+Enhanced with connected workflow: Screener → Trade Bill → Kite Connect → Trade Log → Positions
 
 Run with: python app.py
 Access at: http://localhost:5001
-IBKR Gateway: https://localhost:5000
+
+Data Source: Kite Connect API (Zerodha)
+Market: NSE (NIFTY 100)
+Symbol Format: NSE:SYMBOL (e.g., NSE:RELIANCE, NSE:TCS)
 
 Features v2:
 - Screen 1 as mandatory gate
 - New high-scoring rules (divergence, false breakout, kangaroo tail, etc.)
 - Elder Entry/Stop/Target calculations
-- IBKR order placement from Trade Bills
-- Auto-sync Trade Log from IBKR
+- Kite Connect order placement from Trade Bills
+- GTT and GTT-OCO orders for bracket trading
+- NSE trade charges calculator (STT, GST, etc.)
 - Live position management with P/L tracking
 """
 
@@ -78,7 +82,8 @@ if __name__ == '__main__':
     print("="*50)
     print(f"\n  Open in browser: http://localhost:5001")
     print(f"  Data stored in: ./data/elder_trading.db")
-    print(f"  IBKR Gateway: https://localhost:5000")
+    print(f"  Market: NSE (NIFTY 100)")
+    print(f"  Broker: Kite Connect (Zerodha)")
     print(f"\n  Press Ctrl+C to stop the server")
     print("="*50 + "\n")
 
