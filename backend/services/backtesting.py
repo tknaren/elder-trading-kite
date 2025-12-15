@@ -124,7 +124,7 @@ class PracticalBacktestEngine:
     def __init__(
         self,
         symbol: str,
-        market: str = 'US',
+        market: str = 'IN',
         lookback_days: int = 365,
         initial_capital: float = 100000,
         risk_per_trade_pct: float = 2.0,
@@ -145,7 +145,7 @@ class PracticalBacktestEngine:
         self.total_signals = 0
 
     def fetch_historical_data(self) -> Optional[pd.DataFrame]:
-        """Fetch historical data from cache or IBKR"""
+        """Fetch historical data from cache or Kite"""
         try:
             from models.database import get_database
             db = get_database().get_connection()
@@ -649,7 +649,7 @@ class PracticalBacktestEngine:
 
 def run_backtest(
     symbol: str,
-    market: str = 'US',
+    market: str = 'IN',
     lookback_days: int = 365,
     initial_capital: float = 100000,
     risk_per_trade_pct: float = 2.0,
@@ -660,10 +660,10 @@ def run_backtest(
     Run backtest for a single symbol
 
     Args:
-        symbol: Stock symbol
-        market: 'US' or 'INDIA'
+        symbol: Stock symbol (NSE:SYMBOL format)
+        market: Market (default 'IN' for NSE)
         lookback_days: Days of history (default 365)
-        initial_capital: Starting capital
+        initial_capital: Starting capital in INR
         risk_per_trade_pct: Risk per trade % (default 2%)
         rr_target: Risk:Reward ratio target (default 1.5)
         min_score: Minimum score to take trade (default 3)
@@ -683,7 +683,7 @@ def run_backtest(
 
 def run_portfolio_backtest(
     symbols: List[str],
-    market: str = 'US',
+    market: str = 'IN',
     lookback_days: int = 365,
     initial_capital: float = 100000,
     risk_per_trade_pct: float = 2.0,

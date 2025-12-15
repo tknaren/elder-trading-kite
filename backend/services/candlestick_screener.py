@@ -605,48 +605,10 @@ def run_candlestick_screener(
     }
 
 
-# Stock lists
-NASDAQ_100 = [
-    'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'AMD', 'AVGO', 'NFLX',
-    'COST', 'PEP', 'ADBE', 'CSCO', 'INTC', 'QCOM', 'TXN', 'INTU', 'AMAT', 'MU',
-    'LRCX', 'KLAC', 'SNPS', 'CDNS', 'MRVL', 'ON', 'NXPI', 'ADI', 'MCHP', 'FTNT',
-    'VRTX', 'CHTR', 'ASML', 'CRWD', 'MNST', 'TEAM', 'PAYX', 'AEP', 'CPRT', 'PCAR',
-    'AMGN', 'MRNA', 'XEL', 'WDAY', 'ABNB', 'MDLZ', 'ANSS', 'DDOG', 'ODFL', 'GOOG',
-    'IDXX', 'ISRG', 'ORLY', 'CTAS', 'SBUX', 'PANW', 'LULU', 'BKNG', 'ADP', 'REGN',
-    'KDP', 'MAR', 'MELI', 'KLAC', 'PYPL', 'SNPS', 'CDNS', 'CEG', 'FAST', 'GEHC',
-    'KHC', 'DXCM', 'CCEP', 'FANG', 'TTWO', 'CDW', 'VRSK', 'DLTR', 'BIIB', 'ILMN',
-    'EA', 'WBD', 'ZS', 'ALGN', 'ENPH', 'SIRI', 'LCID', 'RIVN', 'HOOD', 'COIN',
-    'ARM', 'SMCI', 'CRSP', 'TTD', 'DASH', 'MSTR', 'PLTR', 'ANET', 'MDB', 'DKNG'
-]
-
-NIFTY_100 = [
-    'RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'ICICIBANK.NS',
-    'HINDUNILVR.NS', 'SBIN.NS', 'BHARTIARTL.NS', 'ITC.NS', 'KOTAKBANK.NS',
-    'LT.NS', 'AXISBANK.NS', 'ASIANPAINT.NS', 'MARUTI.NS', 'TITAN.NS',
-    'SUNPHARMA.NS', 'ULTRACEMCO.NS', 'BAJFINANCE.NS', 'WIPRO.NS', 'HCLTECH.NS',
-    'TATAMOTORS.NS', 'POWERGRID.NS', 'NTPC.NS', 'M&M.NS', 'JSWSTEEL.NS',
-    'TATASTEEL.NS', 'ADANIENT.NS', 'ONGC.NS', 'COALINDIA.NS', 'GRASIM.NS',
-    'BAJAJFINSV.NS', 'TECHM.NS', 'HINDALCO.NS', 'DIVISLAB.NS', 'DRREDDY.NS',
-    'CIPLA.NS', 'BPCL.NS', 'INDUSINDBK.NS', 'EICHERMOT.NS', 'BRITANNIA.NS',
-    'HEROMOTOCO.NS', 'APOLLOHOSP.NS', 'SBILIFE.NS', 'HDFCLIFE.NS', 'TATACONSUM.NS',
-    'ADANIPORTS.NS', 'LTIM.NS', 'NESTLEIND.NS', 'DABUR.NS', 'PIDILITIND.NS',
-    # Next 50
-    'ABB.NS', 'ACC.NS', 'ADANIGREEN.NS', 'AMBUJACEM.NS', 'AUROPHARMA.NS',
-    'BAJAJHLDNG.NS', 'BANKBARODA.NS', 'BERGEPAINT.NS', 'BOSCHLTD.NS', 'CANBK.NS',
-    'CHOLAFIN.NS', 'COLPAL.NS', 'CONCOR.NS', 'DLF.NS', 'GAIL.NS',
-    'GODREJCP.NS', 'HAL.NS', 'HAVELLS.NS', 'ICICIPRULI.NS', 'INDUSTOWER.NS',
-    'IOC.NS', 'IRCTC.NS', 'JINDALSTEL.NS', 'JUBLFOOD.NS', 'LTF.NS',
-    'LUPIN.NS', 'MCDOWELL-N.NS', 'MARICO.NS', 'MUTHOOTFIN.NS', 'NAUKRI.NS',
-    'NHPC.NS', 'NMDC.NS', 'OBEROIRLTY.NS', 'OFSS.NS', 'PAGEIND.NS',
-    'PEL.NS', 'PFC.NS', 'PIIND.NS', 'PNB.NS', 'POLYCAB.NS',
-    'RECLTD.NS', 'SAIL.NS', 'SRF.NS', 'SIEMENS.NS', 'TATAPOWER.NS',
-    'TORNTPHARM.NS', 'TRENT.NS', 'UPL.NS', 'VBL.NS', 'ZOMATO.NS'
-]
+# Stock list - NIFTY 100 (NSE India)
+from services.screener_v2 import NIFTY_100
 
 
-def get_stock_list(market: str = 'US') -> List[str]:
-    """Get available stock list"""
-    if market.upper() == 'US':
-        return NASDAQ_100
-    else:
-        return NIFTY_100
+def get_stock_list(market: str = 'IN') -> List[str]:
+    """Get NIFTY 100 stock list for NSE"""
+    return NIFTY_100

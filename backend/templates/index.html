@@ -673,11 +673,11 @@
     async function backtestView() {
         // Load available stocks
         try {
-            const resp = await fetch('/api/v2/historical-screener/stocks?market=US');
+            const resp = await fetch('/api/v2/historical-screener/stocks?market=IN');
             const data = await resp.json();
             historicalStocks = data.stocks || [];
         } catch(e) {
-            historicalStocks = ['AAPL','MSFT','GOOGL','AMZN','NVDA','META','TSLA','AMD','AVGO','NFLX'];
+            historicalStocks = ['NSE:RELIANCE','NSE:TCS','NSE:HDFCBANK','NSE:INFY','NSE:ICICIBANK','NSE:HINDUNILVR','NSE:SBIN','NSE:BHARTIARTL','NSE:ITC','NSE:KOTAKBANK'];
         }
         
         const html = `
@@ -970,7 +970,7 @@
     let candlestickRsiLevel = 30;
     let candlestickSelectedPatterns = [];
     function candlestickScreenerView() {
-        const market = document.getElementById('market')?.value || 'US';
+        const market = document.getElementById('market')?.value || 'IN';
 
         
         const resultsHtml = candlestickResults.length > 0 ? `
@@ -1082,7 +1082,7 @@
         render();
         
         try {
-            const market = document.getElementById('market')?.value || 'US';
+            const market = document.getElementById('market')?.value || 'IN';
             
             const res = await fetch('/api/v2/screener/candlestick/run', {
                 method: 'POST',
@@ -1115,18 +1115,14 @@
     let rsiMacdLookbackDays = 180;
     
     function rsiMacdScreenerView() {
-        const market = document.getElementById('market')?.value || 'US';
-        const stocks = market === 'US' ? [
-            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'AMD', 'AVGO', 'NFLX',
-            'COST', 'PEP', 'ADBE', 'CSCO', 'INTC', 'QCOM', 'TXN', 'INTU', 'AMAT', 'MU',
-            'LRCX', 'KLAC', 'SNPS', 'CDNS', 'MRVL', 'ON', 'NXPI', 'ADI', 'MCHP', 'FTNT',
-            'VRTX', 'CHTR', 'ASML', 'CRWD', 'MNST', 'TEAM', 'PAYX', 'AEP', 'CPRT', 'PCAR',
-            'AMGN', 'MRNA', 'XEL', 'WDAY', 'ABNB', 'MDLZ', 'ANSS', 'DDOG', 'ODFL', 'GOOG'
-        ] : [
-            'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK', 'HINDUNILVR', 'SBIN', 
-            'BHARTIARTL', 'ITC', 'KOTAKBANK', 'LT', 'AXISBANK', 'ASIANPAINT', 'MARUTI', 
-            'TITAN', 'SUNPHARMA', 'ULTRACEMCO', 'BAJFINANCE', 'WIPRO', 'HCLTECH',
-            'TATAMOTORS', 'POWERGRID', 'NTPC', 'M&M', 'JSWSTEEL'
+        const market = 'IN';
+        // NIFTY 100 stocks for NSE India
+        const stocks = [
+            'NSE:RELIANCE', 'NSE:TCS', 'NSE:HDFCBANK', 'NSE:INFY', 'NSE:ICICIBANK',
+            'NSE:HINDUNILVR', 'NSE:SBIN', 'NSE:BHARTIARTL', 'NSE:ITC', 'NSE:KOTAKBANK',
+            'NSE:LT', 'NSE:AXISBANK', 'NSE:ASIANPAINT', 'NSE:MARUTI', 'NSE:TITAN',
+            'NSE:SUNPHARMA', 'NSE:ULTRACEMCO', 'NSE:BAJFINANCE', 'NSE:WIPRO', 'NSE:HCLTECH',
+            'NSE:TATAMOTORS', 'NSE:POWERGRID', 'NSE:NTPC', 'NSE:M&M', 'NSE:JSWSTEEL'
         ];
         
         if (rsiMacdSelectedStocks.length === 0) rsiMacdSelectedStocks = stocks.slice(0, 20);
@@ -1235,7 +1231,7 @@
         render();
         
         try {
-            const market = document.getElementById('market')?.value || 'US';
+            const market = document.getElementById('market')?.value || 'IN';
             const symbols = rsiMacdSelectedStocks.map(s => market === 'IN' ? s + '.NS' : s);
             
             const res = await fetch('/api/v2/screener/rsi-macd/run', {
@@ -1804,7 +1800,7 @@
             const avgWin = winners.length > 0 ? winners.reduce((sum, t) => sum + t.net_pnl, 0) / winners.length : 0;
             const avgLoss = losers.length > 0 ? losers.reduce((sum, t) => sum + Math.abs(t.net_pnl), 0) / losers.length : 0;
             const expectancy = closedTrades.length > 0 ? totalPnL / closedTrades.length : 0;
-            const s = settings[0] || {trading_capital: 6000};
+            const s = settings[0] || {trading_capital: 500000};
             const sym = '₹';  // Always INR for NSE
             
             return `
@@ -1909,8 +1905,8 @@
     async function tradeLogView() {
         const strategies = ['SE - Canon', 'SE - White Marubozu', 'EL - Daily Swing', 'EL - False Breakout', 'EL - LC Bounce', 'CI - Trending Stocks'];
         const mistakes = ['Tight Stop Loss', 'Entered Early', 'Entered Late', 'FOMO', 'Revenge Trading', 'Stock In News', 'Rule Deviation', 'Staying Long'];
-        const s = settings[0] || {trading_capital: 6000};
-        const sym = '$';
+        const s = settings[0] || {trading_capital: 500000};
+        const sym = '₹';  // Always INR for NSE
         
         let trades = [];
         try {
@@ -1934,7 +1930,7 @@
                     
                     <div class="grid grid-cols-6 gap-4 mb-4">
                         <div><label class="text-xs text-gray-400">Entry Date</label><input type="datetime-local" id="tl-entry-date" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
-                        <div><label class="text-xs text-gray-400">Symbol</label><input id="tl-symbol" placeholder="AAPL" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
+                        <div><label class="text-xs text-gray-400">Symbol</label><input id="tl-symbol" placeholder="NSE:RELIANCE" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
                         <div><label class="text-xs text-gray-400">Strategy</label><select id="tl-strategy" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm">${strategies.map(s => `<option>${s}</option>`).join('')}</select></div>
                         <div><label class="text-xs text-gray-400">Direction</label><select id="tl-direction" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm"><option>Long</option><option>Short</option></select></div>
                         <div><label class="text-xs text-gray-400">Entry Price (${sym})</label><input type="number" id="tl-entry" step="0.01" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
@@ -2066,7 +2062,7 @@
             const response = await api('GET', '/trade-log');
             const trades = response.trades || [];
             const closed = trades.filter(t => t.exit_date);
-            const s = settings[0] || {trading_capital: 6000};
+            const s = settings[0] || {trading_capital: 500000};
             const sym = '₹';  // Always INR for NSE
             
             // Calculate by strategy
@@ -2339,9 +2335,8 @@
                             <p class="text-gray-500 text-sm">Your watched stocks with price data</p>
                         </div>
                         <div class="flex gap-2">
-                            <select id="fav-market" onchange="favoritesMarketChanged()" class="bg-[#1f2937] border border-gray-600 rounded px-3 py-2 text-sm">
+                            <select id="fav-market" class="bg-[#1f2937] border border-gray-600 rounded px-3 py-2 text-sm" disabled>
                                 <option value="IN" selected>🇮🇳 NSE (NIFTY 100)</option>
-                                <option value="IN" ${market === 'IN' ? 'selected' : ''}>🇮🇳 NSE</option>
                             </select>
                         </div>
                     </div>
@@ -2602,7 +2597,7 @@
             
             // Show warning if no data was fetched
             if (result.diagnostics && result.diagnostics.symbols_with_data === 0) {
-                toast('⚠️ No data available! Make sure IBKR Gateway is connected.', 'warning');
+                toast('⚠️ No data available! Make sure Kite Connect is authenticated.', 'warning');
             } else {
                 toast(`Scan complete! Found ${allSignals.length} signals`, 'success');
             }
@@ -2641,8 +2636,8 @@
             html += `
                 <div class="col-span-full mt-4 p-4 bg-red-900/30 border border-red-700 rounded-lg text-center">
                     <p class="text-red-400 font-semibold">⚠️ No Data Available</p>
-                    <p class="text-sm text-gray-400 mt-1">Make sure IBKR Gateway is running and authenticated.</p>
-                    <p class="text-xs text-gray-500 mt-1">The historical screener needs live IBKR connection to fetch stock data.</p>
+                    <p class="text-sm text-gray-400 mt-1">Make sure Kite Connect is authenticated.</p>
+                    <p class="text-xs text-gray-500 mt-1">The historical screener needs Kite Connect to fetch stock data.</p>
                 </div>
             `;
         }

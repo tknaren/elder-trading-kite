@@ -606,10 +606,6 @@ def run_historical_screener(
     }
 
 
-def get_stock_list(market: str = 'US') -> List[str]:
-    """Get available stock list"""
-    if market.upper() == 'US':
-        return NASDAQ_100
-    else:
-        from services.screener_v2 import NIFTY_100
-        return NIFTY_100
+def get_stock_list(market: str = 'IN') -> List[str]:
+    """Get NIFTY 100 stock list for NSE"""
+    return NIFTY_100

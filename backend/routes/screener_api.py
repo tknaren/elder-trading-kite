@@ -76,7 +76,7 @@ def get_candlestick_stocks():
     """
     Get list of available stocks for candlestick screening
     """
-    market = request.args.get('market', 'US')
+    market = request.args.get('market', 'IN')
 
     from services.candlestick_screener import get_stock_list
     stocks = get_stock_list(market)
@@ -157,9 +157,9 @@ def run_candlestick_screener_endpoint():
 
     Request body:
     {
-        "symbols": ["AAPL", "MSFT", ...] or "all",
+        "symbols": ["NSE:RELIANCE", "NSE:TCS", ...] or "all",
         "lookback_days": 180,
-        "market": "US",
+        "market": "IN",
         "filter_mode": "all" | "filtered_only" | "patterns_only",
         "kc_level": -1 | 0 | -2 (KC channel level threshold),
         "rsi_level": 30 | 40 | 50 | 60 (RSI threshold level),
@@ -193,7 +193,7 @@ def run_candlestick_screener_endpoint():
 
     symbols = data.get('symbols', [])
     lookback_days = min(max(data.get('lookback_days', 180), 30), 365)
-    market = data.get('market', 'US')
+    market = data.get('market', 'IN')
     filter_mode = data.get('filter_mode', 'all')
     kc_level = data.get('kc_level', -1.0)
     rsi_level = data.get('rsi_level', 30)
@@ -339,7 +339,7 @@ def get_rsi_macd_stocks():
     """
     Get list of available stocks for RSI+MACD screening
     """
-    market = request.args.get('market', 'US')
+    market = request.args.get('market', 'IN')
 
     from services.rsi_macd_screener import get_stock_list
     stocks = get_stock_list(market)
@@ -358,9 +358,9 @@ def run_rsi_macd_screener_endpoint():
 
     Request body:
     {
-        "symbols": ["AAPL", "MSFT", ...] or "all",
+        "symbols": ["NSE:RELIANCE", "NSE:TCS", ...] or "all",
         "lookback_days": 180,
-        "market": "US"
+        "market": "IN"
     }
 
     Filter conditions (ALL must be TRUE):
@@ -375,7 +375,7 @@ def run_rsi_macd_screener_endpoint():
 
     symbols = data.get('symbols', [])
     lookback_days = min(max(data.get('lookback_days', 180), 30), 365)
-    market = data.get('market', 'US')
+    market = data.get('market', 'IN')
 
     from services.rsi_macd_screener import (
         run_rsi_macd_screener,

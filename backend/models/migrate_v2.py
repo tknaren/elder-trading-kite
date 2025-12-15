@@ -56,19 +56,19 @@ def migrate_database(db_path: str = None):
         ALTER TABLE trade_bills ADD COLUMN position_value REAL;
     """)
     
-    # Migration 2: Add IBKR-related columns to trade_log
+    # Migration 2: Add broker order tracking columns to trade_log
     migrations.append("""
         ALTER TABLE trade_log ADD COLUMN ibkr_order_id TEXT;
     """)
-    
+
     migrations.append("""
         ALTER TABLE trade_log ADD COLUMN ibkr_execution_id TEXT;
     """)
-    
+
     migrations.append("""
         ALTER TABLE trade_log ADD COLUMN trade_bill_id INTEGER;
     """)
-    
+
     migrations.append("""
         ALTER TABLE trade_log ADD COLUMN synced_from_ibkr BOOLEAN DEFAULT 0;
     """)
@@ -116,7 +116,7 @@ def migrate_database(db_path: str = None):
         );
     """)
     
-    # Migration 5: Create IBKR orders tracking table
+    # Migration 5: Create broker orders tracking table (legacy)
     migrations.append("""
         CREATE TABLE IF NOT EXISTS ibkr_orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

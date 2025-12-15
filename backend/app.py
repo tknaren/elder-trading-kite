@@ -89,6 +89,6 @@ if __name__ == '__main__':
 
     app.run(
         host='0.0.0.0',
-        port=5001,        # Changed from 5000 to avoid conflict with IBKR Gateway
+        port=5001,
         debug=True
     )

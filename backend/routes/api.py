@@ -78,7 +78,7 @@ def weekly_screener():
         Complete scan results with all stocks and indicators
     """
     data = request.get_json() or {}
-    market = data.get('market', 'US')
+    market = data.get('market', 'IN')
     watchlist_id = data.get('watchlist_id')
 
     db = get_db()
@@ -94,8 +94,7 @@ def weekly_screener():
         if watchlist:
             symbols = json.loads(watchlist['symbols'])
 
-    # If no specific watchlist requested and no symbols provided, use full market list (not default watchlist)
-    # This ensures we always scan the full NASDAQ_100 or NIFTY_100
+    # If no specific watchlist requested and no symbols provided, use full NIFTY_100 list
     # symbols will be None, and run_weekly_screen will use the full list
 
     # Run the screener
@@ -280,7 +279,7 @@ def get_bearish_patterns():
 @api.route('/screener/weekly/latest', methods=['GET'])
 def get_latest_weekly():
     """Get latest weekly scan for current week"""
-    market = request.args.get('market', 'US')
+    market = request.args.get('market', 'IN')
 
     today = datetime.now().date()
     week_start = today - timedelta(days=today.weekday())
@@ -1096,7 +1095,7 @@ def save_indicator_filters():
 def get_favorites():
     """Get all favorite stocks for current market with price data"""
     user_id = get_user_id()
-    market = request.args.get('market', 'US')
+    market = request.args.get('market', 'IN')
     db = get_db()
 
     favorites = db.execute('''
@@ -1141,7 +1140,7 @@ def toggle_favorite(symbol):
     """Toggle favorite status for a stock"""
     user_id = get_user_id()
     data = request.get_json() or {}
-    market = data.get('market', 'US')
+    market = data.get('market', 'IN')
     notes = data.get('notes', '')
     db = get_db()
 
@@ -1173,7 +1172,7 @@ def toggle_favorite(symbol):
 def remove_favorite(symbol):
     """Remove a stock from favorites"""
     user_id = get_user_id()
-    market = request.args.get('market', 'US')
+    market = request.args.get('market', 'IN')
     db = get_db()
 
     db.execute('''
@@ -1190,7 +1189,7 @@ def update_favorite_notes(symbol):
     """Update notes for a favorite stock"""
     user_id = get_user_id()
     data = request.get_json() or {}
-    market = data.get('market', 'US')
+    market = data.get('market', 'IN')
     notes = data.get('notes', '')
     db = get_db()
 
@@ -1208,7 +1207,7 @@ def update_favorite_notes(symbol):
 def check_favorite(symbol):
     """Check if stock is favorited"""
     user_id = get_user_id()
-    market = request.args.get('market', 'US')
+    market = request.args.get('market', 'IN')
     db = get_db()
 
     favorite = db.execute('''
@@ -1227,7 +1226,7 @@ def run_backtest():
 
     data = request.get_json() or {}
     symbol = data.get('symbol', '').upper()
-    market = data.get('market', 'US')
+    market = data.get('market', 'IN')
     lookback_days = data.get('lookback_days', 90)
     config = data.get('config', {})
 
@@ -1246,7 +1245,7 @@ def run_backtest():
 @api.route('/backtest/available-stocks', methods=['GET'])
 def get_backtest_stocks():
     """Get list of available stocks for backtesting"""
-    market = request.args.get('market', 'US')
+    market = request.args.get('market', 'IN')
 
     # Get stocks that have at least 90 days of historical data
     db = get_db()

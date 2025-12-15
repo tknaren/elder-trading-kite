@@ -81,7 +81,7 @@ def run_screener_v2():
     - Elder Entry/Stop/Target calculations
     """
     data = request.get_json() or {}
-    market = data.get('market', 'US')
+    market = data.get('market', 'IN')
     symbols = data.get('symbols')
 
     results = run_weekly_screen_v2(market, symbols)
@@ -620,7 +620,7 @@ def create_bill_from_screener():
 
     Body:
     {
-        "symbol": "AAPL",
+        "symbol": "NSE:RELIANCE",
         "screener_data": { ... }  // Optional, will fetch if not provided
     }
     """
@@ -701,15 +701,15 @@ def create_bill_from_screener():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# AUTO-SYNC TRADE LOG FROM IBKR
+# AUTO-SYNC TRADE LOG FROM KITE CONNECT
 # ══════════════════════════════════════════════════════════════════════════════
 
-@api_v2.route('/trade-log/sync-ibkr', methods=['POST'])
-def sync_trade_log_from_ibkr():
+@api_v2.route('/trade-log/sync-kite', methods=['POST'])
+def sync_trade_log_from_kite():
     """
-    Sync trade log with filled orders from IBKR
+    Sync trade log with filled orders from Kite Connect
 
-    This pulls executed trades from IBKR and creates/updates trade log entries
+    This pulls executed trades from Kite and creates/updates trade log entries
     """
     result = get_filled_trades(days_back=7)
 
@@ -725,7 +725,7 @@ def sync_trade_log_from_ibkr():
     for trade in result['trades']:
         # Check if already exists
         existing = db.execute('''
-            SELECT id FROM trade_log 
+            SELECT id FROM trade_log
             WHERE user_id = ? AND symbol = ? AND entry_date = ?
         ''', (user_id, trade['symbol'], trade['execution_time'])).fetchone()
 
@@ -734,8 +734,8 @@ def sync_trade_log_from_ibkr():
             continue
 
         # Create trade log entry
-        side = 'Long' if trade['side'] == 'BOT' else 'Short'
-        status = 'open' if trade['side'] == 'BOT' else 'closed'
+        side = 'Long' if trade['side'] == 'BUY' else 'Short'
+        status = 'open' if trade['side'] == 'BUY' else 'closed'
 
         db.execute('''
             INSERT INTO trade_log (
@@ -746,7 +746,7 @@ def sync_trade_log_from_ibkr():
             user_id, trade['execution_time'], trade['symbol'],
             'EL - Elder System', side, trade['price'],
             trade['quantity'], trade['commission'], status,
-            f"Auto-synced from IBKR. Order ref: {trade['order_ref']}"
+            f"Auto-synced from Kite. Order ref: {trade['order_ref']}"
         ))
         synced += 1
 
@@ -756,8 +756,8 @@ def sync_trade_log_from_ibkr():
         'success': True,
         'synced': synced,
         'skipped': skipped,
-        'total_ibkr_trades': len(result['trades']),
-        'message': f'Synced {synced} new trades from IBKR ({skipped} already existed)'
+        'total_kite_trades': len(result['trades']),
+        'message': f'Synced {synced} new trades from Kite ({skipped} already existed)'
     })
 
 
@@ -866,7 +866,7 @@ def get_workflow_status():
         WHERE user_id = ? AND status = 'PENDING'
     ''', (user_id,)).fetchone()
 
-    # Get open orders from IBKR
+    # Get open orders from Kite
     orders = get_open_orders()
 
     # Get positions
@@ -883,7 +883,7 @@ def get_workflow_status():
         alerts = get_position_alerts(positions['positions'], trade_bills)
 
     return jsonify({
-        'ibkr_connected': positions['success'],
+        'kite_connected': positions['success'],
         'latest_scan': scan_summary,
         'pending_trade_bills': pending_bills['count'] if pending_bills else 0,
         'open_orders': orders.get('count', 0),
@@ -903,18 +903,18 @@ def get_workflow_status():
 def run_backtest_endpoint():
     """
     Run backtest for a single symbol using Elder's practical methodology
-    
+
     Body:
     {
-        "symbol": "AAPL",
-        "market": "US",
+        "symbol": "NSE:RELIANCE",
+        "market": "IN",
         "lookback_days": 365,
         "initial_capital": 100000,
         "risk_per_trade_pct": 2.0,
         "rr_target": 1.5,
         "min_score": 3
     }
-    
+
     Core Logic: Weekly UP + Daily DOWN = Go Long
     - Weekly UP: EMA rising OR MACD-H rising OR Price > EMA
     - Daily DOWN: Force Index < 0 OR Stochastic < 50 OR RSI < 50
@@ -929,7 +929,7 @@ def run_backtest_endpoint():
     
     result = run_backtest(
         symbol=symbol,
-        market=data.get('market', 'US'),
+        market=data.get('market', 'IN'),
         lookback_days=data.get('lookback_days', 365),
         initial_capital=data.get('initial_capital', 100000),
         risk_per_trade_pct=data.get('risk_per_trade_pct', 2.0),
@@ -946,11 +946,11 @@ def run_backtest_endpoint():
 def run_portfolio_backtest_endpoint():
     """
     Run backtest across multiple symbols
-    
+
     Body:
     {
-        "symbols": ["AAPL", "MSFT", "GOOGL"],
-        "market": "US",
+        "symbols": ["NSE:RELIANCE", "NSE:TCS", "NSE:HDFCBANK"],
+        "market": "IN",
         "lookback_days": 365,
         "initial_capital": 100000,
         "risk_per_trade_pct": 2.0,
@@ -968,7 +968,7 @@ def run_portfolio_backtest_endpoint():
     
     result = run_portfolio_backtest(
         symbols=symbols,
-        market=data.get('market', 'US'),
+        market=data.get('market', 'IN'),
         lookback_days=data.get('lookback_days', 365),
         initial_capital=data.get('initial_capital', 100000),
         risk_per_trade_pct=data.get('risk_per_trade_pct', 2.0),
@@ -989,7 +989,7 @@ def quick_backtest(symbol):
     
     result = run_backtest(
         symbol=symbol,
-        market='US',
+        market='IN',
         lookback_days=365,
         initial_capital=100000,
         risk_per_trade_pct=2.0,
@@ -1031,7 +1031,7 @@ def get_available_stocks():
     """
     Get list of available stocks for screening
     """
-    market = request.args.get('market', 'US')
+    market = request.args.get('market', 'IN')
     
     from services.historical_screener import get_stock_list
     stocks = get_stock_list(market)
@@ -1047,15 +1047,15 @@ def get_available_stocks():
 def run_historical_screener():
     """
     Run historical screener to find signals
-    
+
     Request body:
     {
-        "symbols": ["AAPL", "MSFT", ...],  // or "all" for all stocks
+        "symbols": ["NSE:RELIANCE", "NSE:TCS", ...],  // or "all" for all stocks
         "lookback_days": 180,
         "min_score": 5,
-        "market": "US"
+        "market": "IN"
     }
-    
+
     Returns signals sorted by date (newest first)
     """
     data = request.get_json() or {}
@@ -1063,7 +1063,7 @@ def run_historical_screener():
     symbols = data.get('symbols', [])
     lookback_days = data.get('lookback_days', 180)
     min_score = data.get('min_score', 5)
-    market = data.get('market', 'US')
+    market = data.get('market', 'IN')
     
     from services.historical_screener import run_historical_screener, get_stock_list
     
