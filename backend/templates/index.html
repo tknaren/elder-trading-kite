@@ -691,7 +691,7 @@
                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <!-- Left: Stock Selection -->
                         <div>
-                            <label class="block text-sm font-medium text-gray-300 mb-2">Select Stocks (NASDAQ 100)</label>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Select Stocks (NIFTY 100)</label>
                             <div class="flex gap-2 mb-2">
                                 <button onclick="selectAllStocks()" class="text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded">Select All</button>
                                 <button onclick="clearAllStocks()" class="text-xs bg-gray-600 hover:bg-gray-700 text-white px-3 py-1 rounded">Clear All</button>
@@ -734,9 +734,8 @@
                             
                             <div>
                                 <label class="block text-sm font-medium text-gray-300 mb-2">Market</label>
-                                <select id="hs-market" class="w-full bg-[#1f2937] border border-gray-600 rounded-lg px-3 py-2 text-white" onchange="changeMarket()">
-                                    <option value="US">US Market (NASDAQ 100)</option>
-                                    <option value="India">India Market (NIFTY 100)</option>
+                                <select id="hs-market" class="w-full bg-[#1f2937] border border-gray-600 rounded-lg px-3 py-2 text-white" disabled>
+                                    <option value="IN" selected>🇮🇳 NSE (NIFTY 100)</option>
                                 </select>
                             </div>
                         </div>
@@ -1199,7 +1198,7 @@
                         </div>
                         <div>
                             <label class="block text-sm font-medium mb-1">Market</label>
-                            <div class="py-2 text-gray-400">Using: ${market === 'US' ? '🇺🇸 NASDAQ' : '🇮🇳 NSE'}</div>
+                            <div class="py-2 text-gray-400">Using: 🇮🇳 NSE (NIFTY 100)</div>
                         </div>
                         <div>
                             <label class="block text-sm font-medium mb-1">Selected: ${rsiMacdSelectedStocks.length}</label>
@@ -1591,8 +1590,7 @@
     async function tradeBillsView() {
         try {
             const bills = await api('GET', '/trade-bills');
-            const s = settings[0] || {currency:'USD'};
-            const sym = s.currency==='GBP'?'£':s.currency==='INR'?'₹':'$';
+            const sym = '₹';  // Always INR for NSE
 
             if (!Array.isArray(bills)) {
                 return `<div class="text-red-400">Error: API returned invalid data</div>`;
@@ -1691,7 +1689,7 @@
     async function accountView() {
         try {
             const account = await api('GET', '/account/info');
-            const sym = account.currency==='GBP'?'£':account.currency==='INR'?'₹':'$';
+            const sym = '₹';  // Always INR for NSE
 
             return `
                 <div class="space-y-6 max-w-4xl">
@@ -1807,7 +1805,7 @@
             const avgLoss = losers.length > 0 ? losers.reduce((sum, t) => sum + Math.abs(t.net_pnl), 0) / losers.length : 0;
             const expectancy = closedTrades.length > 0 ? totalPnL / closedTrades.length : 0;
             const s = settings[0] || {trading_capital: 6000};
-            const sym = '$';
+            const sym = '₹';  // Always INR for NSE
             
             return `
                 <div class="space-y-6">
@@ -2069,7 +2067,7 @@
             const trades = response.trades || [];
             const closed = trades.filter(t => t.exit_date);
             const s = settings[0] || {trading_capital: 6000};
-            const sym = '$';
+            const sym = '₹';  // Always INR for NSE
             
             // Calculate by strategy
             const strategies = {};
@@ -2136,7 +2134,7 @@
             const response = await api('GET', '/trade-log');
             const trades = response.trades || [];
             const closed = trades.filter(t => t.exit_date);
-            const sym = '$';
+            const sym = '₹';  // Always INR for NSE
             
             // Group by date
             const byDate = {};
@@ -2239,7 +2237,7 @@
             const response = await api('GET', '/trade-log');
             const trades = response.trades || [];
             const closed = trades.filter(t => t.exit_date);
-            const sym = '$';
+            const sym = '₹';  // Always INR for NSE
             
             // Group by mistake
             const byMistake = {};
@@ -2342,7 +2340,7 @@
                         </div>
                         <div class="flex gap-2">
                             <select id="fav-market" onchange="favoritesMarketChanged()" class="bg-[#1f2937] border border-gray-600 rounded px-3 py-2 text-sm">
-                                <option value="US" ${market === 'US' ? 'selected' : ''}>🇺🇸 NASDAQ</option>
+                                <option value="IN" selected>🇮🇳 NSE (NIFTY 100)</option>
                                 <option value="IN" ${market === 'IN' ? 'selected' : ''}>🇮🇳 NSE</option>
                             </select>
                         </div>

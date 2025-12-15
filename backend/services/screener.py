@@ -46,8 +46,9 @@ from services.screener_v2 import (
     detect_false_breakout,
     detect_force_index_spike,
     calculate_ema_penetration_history,
-    NASDAQ_100_TOP,
-    NIFTY_50
+    NIFTY_50,
+    NIFTY_100,
+    DEFAULT_STOCKS
 )
 
 # Re-export for backward compatibility
@@ -62,8 +63,9 @@ __all__ = [
     'detect_false_breakout',
     'detect_force_index_spike',
     'calculate_ema_penetration_history',
-    'NASDAQ_100_TOP',
-    'NIFTY_50'
+    'NIFTY_50',
+    'NIFTY_100',
+    'DEFAULT_STOCKS'
 ]
 
 
