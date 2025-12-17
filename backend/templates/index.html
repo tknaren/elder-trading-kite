@@ -61,6 +61,7 @@
         {id:'rsi-macd-screener', icon:'📈', label:'RSI+MACD'},
         {id:'trade-bill', icon:'💼', label:'Trade Bill'},
         {id:'trade-bills', icon:'📋', label:'Trade Bills'},
+        {id:'trade-journal', icon:'📓', label:'Trade Journal'},
         {id:'journal-dashboard', icon:'📈', label:'Dashboard'},
         {id:'trade-log', icon:'📝', label:'Trade Log'},
         {id:'trade-summary', icon:'📈', label:'Trade Summary'},
@@ -147,6 +148,7 @@
         else if(currentTab==='rsi-macd-screener') c.innerHTML = rsiMacdScreenerView();
         else if(currentTab==='trade-bill') { c.innerHTML = tradeBillView(); triggerTradeBillCalc(); }
         else if(currentTab==='trade-bills') c.innerHTML = await tradeBillsView();
+        else if(currentTab==='trade-journal') c.innerHTML = await tradeJournalView();
         else if(currentTab==='journal-dashboard') c.innerHTML = await journalDashboardView();
         else if(currentTab==='trade-log') c.innerHTML = await tradeLogView();
         else if(currentTab==='trade-summary') c.innerHTML = await tradeSummaryView();
@@ -155,7 +157,7 @@
         else if(currentTab==='favorites') c.innerHTML = await favoritesView();
         else if(currentTab==='account') c.innerHTML = await accountView();
         else if(currentTab==='checklist') c.innerHTML = checklistView();
-        else if(currentTab==='settings') c.innerHTML = settingsView();
+        else if(currentTab==='settings') { c.innerHTML = settingsView(); loadDataStatus(); }
     }
 
     // ========== SCREENER ==========
@@ -663,15 +665,19 @@
     async function selectStock(symbol) {
         document.getElementById('tb-ticker').value = symbol;
         document.getElementById('ticker-suggestions').innerHTML = '';
-        toast(`Loading ${symbol} data...`, 'info');
 
         try {
-            // Fetch stock quote with KCB channels (v2 API)
-            const resp = await fetch(`/api/v2/stock/quote/${encodeURIComponent(symbol)}`);
+            // Fetch from DATABASE CACHE only (no API calls) - fast!
+            const resp = await fetch(`/api/v2/data/stock/${encodeURIComponent(symbol)}`);
             const quote = await resp.json();
 
+            if (quote.error) {
+                toast(quote.error, 'warning');
+                return;
+            }
+
             if (quote && quote.price) {
-                // Auto-populate Trade Bill fields
+                // Auto-populate Trade Bill fields from cached data
                 document.getElementById('tb-cmp').value = quote.price.toFixed(2);
                 document.getElementById('tb-entry').value = quote.suggested_entry.toFixed(2);
                 document.getElementById('tb-sl').value = quote.suggested_stop.toFixed(2);
@@ -681,13 +687,13 @@
 
                 // Trigger calculations
                 autoCalculateTradeBill();
-                toast(`${symbol} loaded! CMP: ₹${quote.price.toFixed(2)}`, 'success');
+                toast(`${symbol} loaded (${quote.date})`, 'success');
             } else {
-                toast(`Could not load data for ${symbol}`, 'warning');
+                toast(`No cached data for ${symbol}. Load data first.`, 'warning');
             }
         } catch(e) {
-            console.error('Error fetching stock quote:', e);
-            toast(`Error loading ${symbol}: ${e.message}`, 'error');
+            console.error('Error fetching stock data:', e);
+            toast(`Error: ${e.message}. Load data from Settings first.`, 'error');
         }
     }
 
@@ -1147,7 +1153,7 @@
             'NSE:HINDUNILVR', 'NSE:SBIN', 'NSE:BHARTIARTL', 'NSE:ITC', 'NSE:KOTAKBANK',
             'NSE:LT', 'NSE:AXISBANK', 'NSE:ASIANPAINT', 'NSE:MARUTI', 'NSE:TITAN',
             'NSE:SUNPHARMA', 'NSE:ULTRACEMCO', 'NSE:BAJFINANCE', 'NSE:WIPRO', 'NSE:HCLTECH',
-            'NSE:TATAMOTORS', 'NSE:POWERGRID', 'NSE:NTPC', 'NSE:M&M', 'NSE:JSWSTEEL'
+            'NSE:POWERGRID', 'NSE:NTPC', 'NSE:M&M', 'NSE:JSWSTEEL'
         ];
         
         if (rsiMacdSelectedStocks.length === 0) rsiMacdSelectedStocks = stocks.slice(0, 20);
@@ -1334,13 +1340,13 @@
                 <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
                     <h3 class="font-bold text-lg text-red-400">📉 Trade Risk</h3>
                     <div class="grid grid-cols-3 gap-4">
-                        <div><label class="text-sm text-gray-400">Max Risk (${sym})</label><input id="tb-maxrisk" type="number" value="${tb.max_risk||''}" step="1" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                        <div><label class="text-sm text-gray-400">Max Risk (${sym})</label><input id="tb-maxrisk" type="text" value="${tb.max_risk||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
                         <div><label class="text-sm text-gray-400">Risk % <span class="text-xs text-gray-500">(from settings)</span></label><input id="tb-rp" type="number" value="${tb.risk_percent||''}" step="0.01" oninput="recalcFromRiskPercent()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                         <div><label class="text-sm text-gray-400">Risk per Share (${sym})</label><input id="tb-rps" type="number" value="${tb.risk_per_share||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
                     </div>
                     <div class="grid grid-cols-3 gap-4">
                         <div><label class="text-sm text-gray-400">Max Qty for Risk</label><input id="tb-maxqty" type="number" value="${tb.max_qty_for_risk||''}" step="1" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
-                        <div><label class="text-sm text-gray-400">Position Size (${sym})</label><input id="tb-ps" type="number" value="${tb.position_size||''}" step="0.01" oninput="recalcFromPositionSize()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Position Size (${sym})</label><input id="tb-ps" type="text" value="${tb.position_size||''}" oninput="recalcFromPositionSize()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                         <div><label class="text-sm text-gray-400">Other Charges (${sym})</label><input id="tb-oc" type="number" value="${tb.other_charges||0}" step="0.01" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                     </div>
                 </div>
@@ -1351,16 +1357,16 @@
                     <div class="grid grid-cols-3 gap-4">
                         <div><label class="text-sm text-gray-400">Channel Height (${sym})</label><input id="tb-ch" type="number" value="${tb.channel_height||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
                         <div><label class="text-sm text-gray-400">Potential Gain (${sym})</label><input id="tb-pg" type="number" value="${tb.potential_gain||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
-                        <div><label class="text-sm text-gray-400">C Target 1:1 (${sym})</label><input id="tb-c" type="number" value="${tb.target_1_1_c||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-yellow-900/30"></div>
+                        <div><label class="text-sm text-gray-400">C Target (10% of CH from Entry) (${sym})</label><input id="tb-c" type="number" value="${tb.target_1_1_c||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-yellow-900/30"></div>
                     </div>
                     <div class="grid grid-cols-3 gap-4">
-                        <div><label class="text-sm text-gray-400">B Target 1:2 (${sym}) <span class="text-xs text-green-400">★ Recommended</span></label><input id="tb-b" type="number" value="${tb.target_1_2_b||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-green-600 rounded-lg font-mono bg-green-900/30"></div>
-                        <div><label class="text-sm text-gray-400">A Target 1:3 (${sym})</label><input id="tb-a" type="number" value="${tb.target_1_3_a||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-blue-900/30"></div>
+                        <div><label class="text-sm text-gray-400">B Target (20% of CH from Entry) (${sym}) <span class="text-xs text-green-400">★ Recommended</span></label><input id="tb-b" type="number" value="${tb.target_1_2_b||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-green-600 rounded-lg font-mono bg-green-900/30"></div>
+                        <div><label class="text-sm text-gray-400">A Target (30% of CH from Entry) (${sym})</label><input id="tb-a" type="number" value="${tb.target_1_3_a||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-blue-900/30"></div>
                         <div></div>
                     </div>
                     <div class="grid grid-cols-3 gap-4">
-                        <div><label class="text-sm text-gray-400">Risk (${sym})</label><input id="tb-risk" type="number" value="${tb.risk_amount_currency||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-red-900/30" readonly></div>
-                        <div><label class="text-sm text-gray-400">Reward (${sym}) <span class="text-xs text-gray-500">(B target)</span></label><input id="tb-reward" type="number" value="${tb.reward_amount_currency||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-green-900/30"></div>
+                        <div><label class="text-sm text-gray-400">Risk (${sym})</label><input id="tb-risk" type="text" value="${tb.risk_amount_currency||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-red-900/30" readonly></div>
+                        <div><label class="text-sm text-gray-400">Reward (${sym}) <span class="text-xs text-gray-500">(B target)</span></label><input id="tb-reward" type="text" value="${tb.reward_amount_currency||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-green-900/30" readonly></div>
                         <div><label class="text-sm text-gray-400">R:R Ratio</label><input id="tb-rrr" type="number" value="${tb.risk_reward_ratio||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
                     </div>
                 </div>
@@ -1407,7 +1413,7 @@
                             <p><span class="text-red-400">Max Risk</span> = Capital × (Risk % ÷ 100)</p>
                             <p><span class="text-blue-400">Risk per Share</span> = Entry − Stop Loss</p>
                             <p><span class="text-blue-400">Max Qty for Risk</span> = Max Risk ÷ Risk per Share</p>
-                            <p><span class="text-blue-400">Position Size</span> = Entry × Quantity</p>
+                            <p><span class="text-blue-400">Position Size</span> = Quantity × Entry</p>
                             <p><span class="text-blue-400">Target Pips</span> = Target − Entry (in ₹)</p>
                             <p><span class="text-blue-400">SL Pips</span> = Entry − Stop Loss (in ₹)</p>
                         </div>
@@ -1416,18 +1422,26 @@
                             <p><span class="text-yellow-400">C Target (10%)</span> = Entry + (Channel × 0.10)</p>
                             <p><span class="text-green-400">B Target (20%)</span> = Entry + (Channel × 0.20)</p>
                             <p><span class="text-blue-400">A Target (30%)</span> = Entry + (Channel × 0.30)</p>
-                            <p><span class="text-red-400">Risk</span> = (Entry − SL) × Quantity</p>
-                            <p><span class="text-green-400">Reward</span> = (Target − Entry) × Quantity</p>
+                            <p><span class="text-red-400">Risk</span> = SL Pips × Quantity</p>
+                            <p><span class="text-green-400">Reward</span> = Target Pips × Quantity</p>
                             <p><span class="text-purple-400">R:R Ratio</span> = Reward ÷ Risk</p>
                         </div>
                     </div>
                     <p class="text-xs text-gray-600 mt-2">Upper/Lower Channels = KC Middle ± (3 × ATR). Potential Gain % = ((Upper − Entry) ÷ Entry) × 100</p>
                 </div>
 
-                <!-- Save Button -->
-                <div class="flex gap-2">
-                    <button onclick="calculateTradeBillMetrics()" class="flex-1 py-3 bg-purple-600 rounded-lg font-medium hover:bg-purple-700">🔢 Calculate Metrics</button>
-                    <button onclick="saveTradeBill()" class="flex-1 py-3 bg-green-600 rounded-lg font-medium hover:bg-green-700 disabled:opacity-50" id="save-btn">💾 Save Trade Bill</button>
+                <!-- Action Buttons -->
+                <div class="space-y-3">
+                    <div class="flex gap-2">
+                        <button onclick="calculateTradeBillMetrics()" class="flex-1 py-3 bg-purple-600 rounded-lg font-medium hover:bg-purple-700">🔢 Calculate Metrics</button>
+                        <button onclick="saveTradeBill()" class="flex-1 py-3 bg-green-600 rounded-lg font-medium hover:bg-green-700 disabled:opacity-50" id="save-btn">💾 Save Trade Bill</button>
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="fillJournalFromBill()" class="flex-1 py-3 bg-blue-600 rounded-lg font-medium hover:bg-blue-700" id="fill-journal-btn" disabled>📓 Fill Journal</button>
+                        <button onclick="placeGttOrder()" class="flex-1 py-3 bg-orange-600 rounded-lg font-medium hover:bg-orange-700" id="gtt-btn" disabled>📊 Place GTT Order</button>
+                        <button onclick="placeOcoSellOrder()" class="flex-1 py-3 bg-red-600 rounded-lg font-medium hover:bg-red-700" id="oco-btn" disabled>🎯 Place OCO Sell</button>
+                    </div>
+                    <p class="text-xs text-gray-500 text-center">Save the Trade Bill first to enable Journal and Order buttons</p>
                 </div>
             </div>
         `;
@@ -1481,7 +1495,7 @@
         // Quantity (use manual if entered, otherwise maxQtyRisk) - WHOLE SHARES ONLY
         const quantity = manualQty > 0 ? manualQty : maxQtyRisk;
 
-        // 9. Position Size = Max Qty for Risk × Entry Price
+        // 9. Position Size = Quantity × Entry Price
         const positionSize = Math.round(quantity * entry);
 
         // 4. Target Pips = Target - Entry (distance in ₹)
@@ -1505,11 +1519,11 @@
         let potentialGain = upperChannel > 0 ? Math.round(((upperChannel - entry) / entry) * 100 * 100) / 100 : 0;
         if (potentialGain >= 10) potentialGain = 9.9;
 
-        // 14. Risk = (Entry - SL) × Quantity
-        const risk = Math.round(riskPerShare * quantity);
+        // 14. Risk (₹) = SL Pips × Quantity
+        const risk = Math.round(stopLossPips * quantity);
 
-        // 15. Reward = (Target - Entry) × Quantity
-        const reward = target ? Math.round((target - entry) * quantity) : 0;
+        // 15. Reward (₹) = Target Pips × Quantity
+        const reward = targetPips > 0 ? Math.round(targetPips * quantity) : 0;
 
         // 16. R:R Ratio = Reward / Risk
         const riskRewardRatio = risk > 0 && reward > 0 ? Math.round((reward / risk) * 100) / 100 : 0;
@@ -1539,6 +1553,13 @@
         document.getElementById('tb-rrr').value = riskRewardRatio;
         document.getElementById('tb-be').value = breakEven.toFixed(2);
         document.getElementById('tb-ts').value = trailingStop.toFixed(2);
+        
+        // Debug log to verify calculations
+        console.log('Trade Bill Calculated:', {
+            maxRisk, positionSize, risk, reward,
+            quantity, entry, sl, target,
+            riskPerShare, targetPips, stopLossPips
+        });
     }
 
     // 9. Recalculate from Position Size - when user manually changes position size
@@ -1638,26 +1659,149 @@
         try {
             const tb = window.tradeBillTemplate || {};
             let result;
-            
+
             if (tb.id) {
                 // Update existing
                 result = await api('PUT', `/trade-bills/${tb.id}`, data);
                 if (result.success) {
                     toast(`Trade Bill for ${ticker} updated!`, 'success');
+                    window.currentBillId = tb.id;
                 }
             } else {
                 // Create new
                 result = await api('POST', '/trade-bills', data);
                 if (result.success || result.id) {
                     toast(`Trade Bill for ${ticker} saved!`, 'success');
+                    window.currentBillId = result.id;
                 }
             }
-            
-            window.tradeBillTemplate = null;
-            await switchTab('trade-bills');
+
+            // Enable action buttons after save
+            if (window.currentBillId) {
+                document.getElementById('fill-journal-btn').disabled = false;
+                document.getElementById('gtt-btn').disabled = false;
+                document.getElementById('oco-btn').disabled = false;
+            }
         } catch(e) {
             toast('Error saving Trade Bill: ' + e.message, 'error');
             console.error('Save error:', e);
+        }
+    }
+
+    // Fill Journal from saved Trade Bill
+    async function fillJournalFromBill() {
+        if (!window.currentBillId) {
+            toast('Please save the Trade Bill first', 'error');
+            return;
+        }
+
+        try {
+            const result = await fetch(`/api/v2/trade-journal/from-bill/${window.currentBillId}`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            });
+            const data = await result.json();
+
+            if (data.success) {
+                toast('Journal created! Opening Trade Journal...', 'success');
+                window.currentJournalId = data.id;
+                await switchTab('trade-journal');
+            } else {
+                toast(data.error || 'Failed to create journal', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    // Place GTT Order from Trade Bill
+    async function placeGttOrder() {
+        if (!window.currentBillId) {
+            toast('Please save the Trade Bill first', 'error');
+            return;
+        }
+
+        const entry = parseFloat(document.getElementById('tb-entry').value);
+        const qty = parseInt(document.getElementById('tb-qty').value);
+        const ticker = document.getElementById('tb-ticker').value;
+
+        if (!entry || !qty || !ticker) {
+            toast('Missing entry price, quantity or ticker', 'error');
+            return;
+        }
+
+        if (!confirm(`Place GTT BUY order for ${qty} shares of ${ticker} at ₹${entry}?`)) {
+            return;
+        }
+
+        try {
+            const result = await fetch('/api/v2/kite/gtt', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    symbol: ticker,
+                    transaction_type: 'BUY',
+                    trigger_price: entry,
+                    quantity: qty,
+                    order_type: 'LIMIT',
+                    price: entry
+                })
+            });
+            const data = await result.json();
+
+            if (data.success) {
+                toast(`GTT Order placed! ID: ${data.trigger_id}`, 'success');
+            } else {
+                toast(data.error || 'Failed to place GTT order', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    // Place OCO Sell Order (Stop Loss + Target)
+    async function placeOcoSellOrder() {
+        if (!window.currentBillId) {
+            toast('Please save the Trade Bill first', 'error');
+            return;
+        }
+
+        const sl = parseFloat(document.getElementById('tb-sl').value);
+        const target = parseFloat(document.getElementById('tb-target').value);
+        const qty = parseInt(document.getElementById('tb-qty').value);
+        const ticker = document.getElementById('tb-ticker').value;
+
+        if (!sl || !target || !qty || !ticker) {
+            toast('Missing stop loss, target, quantity or ticker', 'error');
+            return;
+        }
+
+        if (!confirm(`Place OCO SELL order for ${qty} shares of ${ticker}?\n\nStop Loss: ₹${sl}\nTarget: ₹${target}`)) {
+            return;
+        }
+
+        try {
+            const result = await fetch('/api/v2/kite/gtt-oco', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    symbol: ticker,
+                    quantity: qty,
+                    stop_loss_trigger: sl,
+                    stop_loss_price: sl * 0.99,  // 1% below trigger for limit order
+                    target_trigger: target,
+                    target_price: target
+                })
+            });
+            const data = await result.json();
+
+            if (data.success) {
+                toast(`OCO Sell Order placed! ID: ${data.trigger_id}`, 'success');
+            } else {
+                toast(data.error || 'Failed to place OCO order', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
         }
     }
 
@@ -1757,6 +1901,501 @@
             } catch(e) {
                 toast('Error deleting Trade Bill: ' + e.message, 'error');
             }
+        }
+    }
+
+    // ========== TRADE JOURNAL V2 ==========
+    let currentJournal = null;
+
+    async function tradeJournalView() {
+        const sym = '₹';
+        let journals = [];
+
+        try {
+            const resp = await fetch('/api/v2/trade-journal');
+            const data = await resp.json();
+            journals = data.journals || [];
+        } catch(e) {
+            console.log('No journals yet');
+        }
+
+        // If editing a specific journal
+        if (window.currentJournalId) {
+            try {
+                const resp = await fetch(`/api/v2/trade-journal/${window.currentJournalId}`);
+                currentJournal = await resp.json();
+            } catch(e) {
+                currentJournal = null;
+            }
+        }
+
+        const j = currentJournal || {};
+        const entries = j.entries || [];
+        const exits = j.exits || [];
+
+        const entryTactics = ['Limit Order', 'Market Order', 'Stop Order', 'Scale In', 'Breakout'];
+        const exitTactics = ['Target Hit', 'Stop Loss Hit', 'Trailing Stop', 'Time Exit', 'Scale Out', 'Manual'];
+        const orderTypes = ['CNC', 'MIS', 'NRML'];
+        const mentalStates = ['Confident', 'Neutral', 'Anxious', 'FOMO', 'Revenge'];
+        const directions = ['Long', 'Short'];
+        const statuses = ['open', 'closed', 'cancelled'];
+        const grades = ['A', 'B', 'C', 'D', 'F'];
+
+        return `
+            <div class="space-y-4">
+                <!-- Header with tabs -->
+                <div class="flex justify-between items-center border-b border-gray-700 pb-2">
+                    <div class="flex gap-4">
+                        <button onclick="showJournalForm()" class="px-4 py-2 ${currentJournal ? 'bg-blue-600' : 'bg-gray-700'} rounded-t-lg">TradeJournal</button>
+                        <button onclick="showJournalRecords()" class="px-4 py-2 ${!currentJournal ? 'bg-blue-600' : 'bg-gray-700'} rounded-t-lg">Records</button>
+                    </div>
+                    <button onclick="newJournal()" class="px-4 py-2 bg-green-600 rounded-lg hover:bg-green-700">+ New Journal</button>
+                </div>
+
+                ${currentJournal ? `
+                <!-- Trade Journal Form (matching screenshot layout) -->
+                <div class="bg-[#111827] rounded-xl p-4 border border-gray-700">
+                    <div class="grid grid-cols-4 gap-4">
+                        <!-- Ticker Info -->
+                        <div class="border border-gray-600 rounded p-3 space-y-2">
+                            <h4 class="text-sm font-bold text-gray-400 border-b border-gray-600 pb-1">Ticker Info</h4>
+                            <div class="grid grid-cols-2 gap-2 text-xs">
+                                <div><label class="text-gray-500">Ticker</label><input id="tj-ticker" value="${j.ticker||''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                                <div><label class="text-gray-500">Journal Date</label><input type="date" id="tj-date" value="${j.journal_date||new Date().toISOString().split('T')[0]}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded"></div>
+                                <div><label class="text-gray-500">CMP</label><input type="number" id="tj-cmp" value="${j.cmp||''}" step="0.01" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                                <div><label class="text-gray-500">Remaining Qty</label><input type="number" id="tj-remaining" value="${j.remaining_qty||0}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                                <div><label class="text-gray-500">Direction</label><select id="tj-direction" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded">${directions.map(d => `<option ${j.direction===d?'selected':''}>${d}</option>`).join('')}</select></div>
+                                <div><label class="text-gray-500">Order Type</label><select id="tj-ordertype" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded">${orderTypes.map(o => `<option ${j.order_type===o?'selected':''}>${o}</option>`).join('')}</select></div>
+                                <div><label class="text-gray-500">Status</label><select id="tj-status" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded">${statuses.map(s => `<option ${j.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
+                                <div><label class="text-gray-500">Mental State</label><select id="tj-mental" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded">${mentalStates.map(m => `<option ${j.mental_state===m?'selected':''}>${m}</option>`).join('')}</select></div>
+                            </div>
+                        </div>
+
+                        <!-- Trade Setup -->
+                        <div class="border border-gray-600 rounded p-3 space-y-2">
+                            <h4 class="text-sm font-bold text-gray-400 border-b border-gray-600 pb-1">Trade Setup</h4>
+                            <div class="grid grid-cols-2 gap-2 text-xs">
+                                <div><label class="text-gray-500">Entry</label><input type="number" id="tj-entry" value="${j.entry_price||''}" step="0.01" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                                <div><label class="text-gray-500">Quantity</label><input type="number" id="tj-qty" value="${j.quantity||''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                                <div><label class="text-gray-500">Target</label><input type="number" id="tj-target" value="${j.target_price||''}" step="0.01" class="w-full px-2 py-1 bg-green-900/30 border border-green-600 rounded font-mono"></div>
+                                <div><label class="text-gray-500">Stop Loss</label><input type="number" id="tj-sl" value="${j.stop_loss||''}" step="0.01" class="w-full px-2 py-1 bg-red-900/30 border border-red-600 rounded font-mono"></div>
+                                <div class="col-span-2"><label class="text-gray-500">RR Ratio</label><input type="number" id="tj-rr" value="${j.rr_ratio||''}" step="0.01" class="w-full px-2 py-1 bg-yellow-900/30 border border-yellow-600 rounded font-mono" readonly></div>
+                            </div>
+                        </div>
+
+                        <!-- Risk -->
+                        <div class="border border-red-600/30 rounded p-3 space-y-2">
+                            <h4 class="text-sm font-bold text-red-400 border-b border-gray-600 pb-1">Risk</h4>
+                            <div class="grid grid-cols-1 gap-2 text-xs">
+                                <div><label class="text-gray-500">Potential Loss</label><input type="number" id="tj-potloss" value="${j.potential_loss||''}" class="w-full px-2 py-1 bg-red-900/20 border border-gray-600 rounded font-mono" readonly></div>
+                                <div><label class="text-gray-500">Trailing Stop</label><input type="number" id="tj-trailing" value="${j.trailing_stop||''}" step="0.01" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                                <div><label class="text-gray-500">New Target</label><input type="number" id="tj-newtarget" value="${j.new_target||''}" step="0.01" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                            </div>
+                        </div>
+
+                        <!-- Reward -->
+                        <div class="border border-green-600/30 rounded p-3 space-y-2">
+                            <h4 class="text-sm font-bold text-green-400 border-b border-gray-600 pb-1">Reward</h4>
+                            <div class="grid grid-cols-1 gap-2 text-xs">
+                                <div><label class="text-gray-500">Potential Gain</label><input type="number" id="tj-potgain" value="${j.potential_gain||''}" class="w-full px-2 py-1 bg-green-900/20 border border-gray-600 rounded font-mono" readonly></div>
+                                <div><label class="text-gray-500">1:3 A-Target</label><input type="number" id="tj-targeta" value="${j.target_a||''}" step="0.01" class="w-full px-2 py-1 bg-green-900/30 border border-gray-600 rounded font-mono"></div>
+                                <div><label class="text-gray-500">1:2 B-Target</label><input type="number" id="tj-targetb" value="${j.target_b||''}" step="0.01" class="w-full px-2 py-1 bg-green-900/30 border border-gray-600 rounded font-mono"></div>
+                                <div><label class="text-gray-500">1:1 C-Target</label><input type="number" id="tj-targetc" value="${j.target_c||''}" step="0.01" class="w-full px-2 py-1 bg-yellow-900/30 border border-gray-600 rounded font-mono"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Entries Section -->
+                <div class="bg-[#111827] rounded-xl p-4 border border-gray-700">
+                    <div class="flex justify-between items-center mb-3">
+                        <h4 class="font-bold text-blue-400">Entries</h4>
+                        <div class="flex gap-2 items-center text-xs">
+                            <label class="text-gray-500">Entry Tactic</label>
+                            <select id="tj-entry-tactic" class="px-2 py-1 bg-[#1f2937] border border-gray-600 rounded">${entryTactics.map(t => `<option ${j.entry_tactic===t?'selected':''}>${t}</option>`).join('')}</select>
+                            <label class="text-gray-500 ml-2">Reason</label>
+                            <input id="tj-entry-reason" value="${j.entry_reason||''}" placeholder="Reason for entry" class="px-2 py-1 bg-[#1f2937] border border-gray-600 rounded flex-1">
+                            <button onclick="addEntryRow(${j.id})" class="px-3 py-1 bg-green-600 rounded hover:bg-green-700">+ Add Entry</button>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs">
+                            <thead class="bg-[#1f2937]">
+                                <tr>
+                                    <th class="p-2 text-left text-gray-400">Entry Date</th>
+                                    <th class="p-2 text-right text-gray-400">Quantity</th>
+                                    <th class="p-2 text-right text-gray-400">Order Price</th>
+                                    <th class="p-2 text-right text-gray-400">Filled Price</th>
+                                    <th class="p-2 text-right text-gray-400">Slippage</th>
+                                    <th class="p-2 text-right text-gray-400">Commission</th>
+                                    <th class="p-2 text-right text-gray-400">Position Size</th>
+                                    <th class="p-2 text-right text-gray-400">Day High</th>
+                                    <th class="p-2 text-right text-gray-400">Day Low</th>
+                                    <th class="p-2 text-center text-gray-400">Grade</th>
+                                    <th class="p-2 text-center text-gray-400">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${entries.length > 0 ? entries.map(e => `
+                                    <tr class="border-t border-gray-700">
+                                        <td class="p-2 font-mono">${e.entry_datetime?.split('T')[0] || '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.quantity || '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.order_price ? sym + e.order_price.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.filled_price ? sym + e.filled_price.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono ${(e.slippage||0) > 0 ? 'text-red-400' : ''}">${e.slippage ? sym + e.slippage.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.commission ? sym + e.commission.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.position_size ? sym + e.position_size.toLocaleString() : '-'}</td>
+                                        <td class="p-2 text-right font-mono text-green-400">${e.day_high ? sym + e.day_high.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono text-red-400">${e.day_low ? sym + e.day_low.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-center"><span class="px-2 py-0.5 rounded ${e.grade==='A' ? 'bg-green-500/20 text-green-400' : e.grade==='B' ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-500/20 text-gray-400'}">${e.grade || '-'}</span></td>
+                                        <td class="p-2 text-center"><button onclick="deleteEntry(${e.id})" class="text-red-400 hover:text-red-300">🗑️</button></td>
+                                    </tr>
+                                `).join('') : '<tr><td colspan="11" class="p-4 text-center text-gray-500">No entries yet. Add your first entry above.</td></tr>'}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Exits Section -->
+                <div class="bg-[#111827] rounded-xl p-4 border border-gray-700">
+                    <div class="flex justify-between items-center mb-3">
+                        <h4 class="font-bold text-orange-400">Exits</h4>
+                        <div class="flex gap-2 items-center text-xs">
+                            <label class="text-gray-500">Exit Tactic</label>
+                            <select id="tj-exit-tactic" class="px-2 py-1 bg-[#1f2937] border border-gray-600 rounded">${exitTactics.map(t => `<option ${j.exit_tactic===t?'selected':''}>${t}</option>`).join('')}</select>
+                            <label class="text-gray-500 ml-2">Reason</label>
+                            <input id="tj-exit-reason" value="${j.exit_reason||''}" placeholder="Reason for exit" class="px-2 py-1 bg-[#1f2937] border border-gray-600 rounded flex-1">
+                            <button onclick="addExitRow(${j.id})" class="px-3 py-1 bg-orange-600 rounded hover:bg-orange-700">+ Add Exit</button>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs">
+                            <thead class="bg-[#1f2937]">
+                                <tr>
+                                    <th class="p-2 text-left text-gray-400">Exit Date</th>
+                                    <th class="p-2 text-right text-gray-400">Quantity</th>
+                                    <th class="p-2 text-right text-gray-400">Order Price</th>
+                                    <th class="p-2 text-right text-gray-400">Filled Price</th>
+                                    <th class="p-2 text-right text-gray-400">Slippage</th>
+                                    <th class="p-2 text-right text-gray-400">Commission</th>
+                                    <th class="p-2 text-right text-gray-400">Position Size</th>
+                                    <th class="p-2 text-right text-gray-400">Day High</th>
+                                    <th class="p-2 text-right text-gray-400">Day Low</th>
+                                    <th class="p-2 text-center text-gray-400">Grade</th>
+                                    <th class="p-2 text-center text-gray-400">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${exits.length > 0 ? exits.map(e => `
+                                    <tr class="border-t border-gray-700">
+                                        <td class="p-2 font-mono">${e.exit_datetime?.split('T')[0] || '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.quantity || '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.order_price ? sym + e.order_price.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.filled_price ? sym + e.filled_price.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono ${(e.slippage||0) > 0 ? 'text-red-400' : ''}">${e.slippage ? sym + e.slippage.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.commission ? sym + e.commission.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.position_size ? sym + e.position_size.toLocaleString() : '-'}</td>
+                                        <td class="p-2 text-right font-mono text-green-400">${e.day_high ? sym + e.day_high.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono text-red-400">${e.day_low ? sym + e.day_low.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-center"><span class="px-2 py-0.5 rounded ${e.grade==='A' ? 'bg-green-500/20 text-green-400' : e.grade==='B' ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-500/20 text-gray-400'}">${e.grade || '-'}</span></td>
+                                        <td class="p-2 text-center"><button onclick="deleteExit(${e.id})" class="text-red-400 hover:text-red-300">🗑️</button></td>
+                                    </tr>
+                                `).join('') : '<tr><td colspan="11" class="p-4 text-center text-gray-500">No exits yet. Add your first exit above.</td></tr>'}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Results Section -->
+                <div class="bg-[#111827] rounded-xl p-4 border border-gray-700">
+                    <h4 class="font-bold text-purple-400 mb-3">Results</h4>
+                    <div class="grid grid-cols-6 gap-4 text-xs">
+                        <div><label class="text-gray-500">First Entry Date</label><input id="tj-firstentry" value="${j.first_entry_date||''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Total Shares</label><input id="tj-totalshares" value="${j.total_shares||''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Avg Entry</label><input id="tj-avgentry" value="${j.avg_entry ? sym + j.avg_entry.toFixed(2) : ''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Gain/Loss %</label><input id="tj-glpct" value="${j.gain_loss_percent ? j.gain_loss_percent.toFixed(2) + '%' : ''}" class="w-full px-2 py-1 ${(j.gain_loss_percent||0) >= 0 ? 'bg-green-900/20' : 'bg-red-900/20'} border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">High During Trade</label><input id="tj-hdt" value="${j.high_during_trade ? sym + j.high_during_trade.toFixed(2) : ''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Max Drawdown</label><input id="tj-maxdd" value="${j.max_drawdown ? sym + j.max_drawdown.toFixed(2) : ''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+
+                        <div><label class="text-gray-500">Last Exit Date</label><input id="tj-lastexit" value="${j.last_exit_date||''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Trade Grade</label><select id="tj-grade" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded">${grades.map(g => `<option ${j.trade_grade===g?'selected':''}>${g}</option>`).join('')}</select></div>
+                        <div><label class="text-gray-500">Avg Exit</label><input id="tj-avgexit" value="${j.avg_exit ? sym + j.avg_exit.toFixed(2) : ''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Gain/Loss ${sym}</label><input id="tj-glamount" value="${j.gain_loss_amount ? sym + j.gain_loss_amount.toFixed(2) : ''}" class="w-full px-2 py-1 ${(j.gain_loss_amount||0) >= 0 ? 'bg-green-900/20' : 'bg-red-900/20'} border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Low During Trade</label><input id="tj-ldt" value="${j.low_during_trade ? sym + j.low_during_trade.toFixed(2) : ''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">% Captured</label><input id="tj-captured" value="${j.percent_captured ? j.percent_captured.toFixed(1) + '%' : ''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                    </div>
+                </div>
+
+                <!-- Comments Section -->
+                <div class="bg-[#111827] rounded-xl p-4 border border-gray-700">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="text-sm text-gray-400">Open Trade Comments</label>
+                            <textarea id="tj-comments" class="w-full h-20 mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded text-sm">${j.open_trade_comments||''}</textarea>
+                        </div>
+                        <div>
+                            <label class="text-sm text-gray-400">Followup Analysis</label>
+                            <textarea id="tj-followup" class="w-full h-20 mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded text-sm">${j.followup_analysis||''}</textarea>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="flex gap-2">
+                    <button onclick="saveJournal()" class="flex-1 py-3 bg-green-600 rounded-lg font-medium hover:bg-green-700">💾 Save Journal</button>
+                    <button onclick="clearJournal()" class="flex-1 py-3 bg-gray-600 rounded-lg font-medium hover:bg-gray-700">🗑️ Clear</button>
+                </div>
+                ` : `
+                <!-- Journal Records List -->
+                <div class="bg-[#111827] rounded-xl border border-gray-700 overflow-hidden">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs">
+                            <thead class="bg-[#1f2937]">
+                                <tr>
+                                    <th class="p-2 text-left text-gray-400">Date</th>
+                                    <th class="p-2 text-left text-gray-400">Ticker</th>
+                                    <th class="p-2 text-center text-gray-400">Dir</th>
+                                    <th class="p-2 text-right text-gray-400">Entry</th>
+                                    <th class="p-2 text-right text-gray-400">Qty</th>
+                                    <th class="p-2 text-right text-gray-400">Target</th>
+                                    <th class="p-2 text-right text-gray-400">SL</th>
+                                    <th class="p-2 text-right text-gray-400">Gain/Loss</th>
+                                    <th class="p-2 text-center text-gray-400">Status</th>
+                                    <th class="p-2 text-center text-gray-400">Grade</th>
+                                    <th class="p-2 text-center text-gray-400">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${journals.length > 0 ? journals.map(j => `
+                                    <tr class="border-t border-gray-700 hover:bg-[#1f2937]/50 cursor-pointer" onclick="editJournal(${j.id})">
+                                        <td class="p-2 font-mono">${j.journal_date || '-'}</td>
+                                        <td class="p-2 font-mono font-bold">${j.ticker}</td>
+                                        <td class="p-2 text-center"><span class="${j.direction === 'Long' ? 'text-green-400' : 'text-red-400'}">${j.direction === 'Long' ? '▲' : '▼'}</span></td>
+                                        <td class="p-2 text-right font-mono">${j.entry_price ? sym + j.entry_price.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${j.quantity || '-'}</td>
+                                        <td class="p-2 text-right font-mono text-green-400">${j.target_price ? sym + j.target_price.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono text-red-400">${j.stop_loss ? sym + j.stop_loss.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono ${(j.gain_loss_amount||0) >= 0 ? 'text-green-400' : 'text-red-400'}">${j.gain_loss_amount ? sym + j.gain_loss_amount.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-center"><span class="px-2 py-0.5 rounded text-xs ${j.status==='closed' ? 'bg-gray-500/20 text-gray-400' : 'bg-blue-500/20 text-blue-400'}">${j.status}</span></td>
+                                        <td class="p-2 text-center"><span class="px-2 py-0.5 rounded ${j.trade_grade==='A' ? 'bg-green-500/20 text-green-400' : j.trade_grade==='B' ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-500/20 text-gray-400'}">${j.trade_grade || '-'}</span></td>
+                                        <td class="p-2 text-center">
+                                            <button onclick="event.stopPropagation(); editJournal(${j.id})" class="text-blue-400 hover:text-blue-300 mr-2">✏️</button>
+                                            <button onclick="event.stopPropagation(); deleteJournal(${j.id})" class="text-red-400 hover:text-red-300">🗑️</button>
+                                        </td>
+                                    </tr>
+                                `).join('') : '<tr><td colspan="11" class="p-8 text-center text-gray-500">No journal entries yet. Create one from Trade Bill or click + New Journal.</td></tr>'}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                `}
+            </div>
+        `;
+    }
+
+    function showJournalForm() {
+        // Already showing form, do nothing
+    }
+
+    function showJournalRecords() {
+        window.currentJournalId = null;
+        currentJournal = null;
+        render();
+    }
+
+    function newJournal() {
+        window.currentJournalId = 'new';
+        currentJournal = {id: null};
+        render();
+    }
+
+    async function editJournal(id) {
+        window.currentJournalId = id;
+        await render();
+    }
+
+    async function deleteJournal(id) {
+        if (!confirm('Delete this journal entry?')) return;
+
+        try {
+            await fetch(`/api/v2/trade-journal/${id}`, {method: 'DELETE'});
+            toast('Journal deleted', 'success');
+            window.currentJournalId = null;
+            currentJournal = null;
+            await render();
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    function clearJournal() {
+        window.currentJournalId = null;
+        currentJournal = null;
+        render();
+    }
+
+    async function saveJournal() {
+        const data = {
+            ticker: document.getElementById('tj-ticker').value,
+            journal_date: document.getElementById('tj-date').value,
+            cmp: parseFloat(document.getElementById('tj-cmp').value) || null,
+            direction: document.getElementById('tj-direction').value,
+            order_type: document.getElementById('tj-ordertype').value,
+            status: document.getElementById('tj-status').value,
+            mental_state: document.getElementById('tj-mental').value,
+            entry_price: parseFloat(document.getElementById('tj-entry').value) || null,
+            quantity: parseInt(document.getElementById('tj-qty').value) || null,
+            target_price: parseFloat(document.getElementById('tj-target').value) || null,
+            stop_loss: parseFloat(document.getElementById('tj-sl').value) || null,
+            trailing_stop: parseFloat(document.getElementById('tj-trailing').value) || null,
+            new_target: parseFloat(document.getElementById('tj-newtarget').value) || null,
+            target_a: parseFloat(document.getElementById('tj-targeta').value) || null,
+            target_b: parseFloat(document.getElementById('tj-targetb').value) || null,
+            target_c: parseFloat(document.getElementById('tj-targetc').value) || null,
+            entry_tactic: document.getElementById('tj-entry-tactic').value,
+            entry_reason: document.getElementById('tj-entry-reason').value,
+            exit_tactic: document.getElementById('tj-exit-tactic').value,
+            exit_reason: document.getElementById('tj-exit-reason').value,
+            trade_grade: document.getElementById('tj-grade').value,
+            open_trade_comments: document.getElementById('tj-comments').value,
+            followup_analysis: document.getElementById('tj-followup').value
+        };
+
+        // Calculate derived fields
+        if (data.entry_price && data.stop_loss && data.quantity) {
+            data.potential_loss = Math.abs(data.entry_price - data.stop_loss) * data.quantity;
+        }
+        if (data.entry_price && data.target_price && data.quantity) {
+            data.potential_gain = Math.abs(data.target_price - data.entry_price) * data.quantity;
+        }
+        if (data.potential_loss && data.potential_gain) {
+            data.rr_ratio = data.potential_gain / data.potential_loss;
+        }
+
+        try {
+            let result;
+            if (currentJournal && currentJournal.id) {
+                // Update
+                result = await fetch(`/api/v2/trade-journal/${currentJournal.id}`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+            } else {
+                // Create
+                result = await fetch('/api/v2/trade-journal', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+            }
+
+            const res = await result.json();
+            if (res.success || res.id) {
+                toast('Journal saved!', 'success');
+                if (res.id) window.currentJournalId = res.id;
+                await render();
+            } else {
+                toast(res.error || 'Failed to save', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    async function addEntryRow(journalId) {
+        if (!journalId) {
+            toast('Save journal first', 'error');
+            return;
+        }
+
+        const entry = {
+            entry_datetime: new Date().toISOString(),
+            quantity: parseInt(document.getElementById('tj-qty').value) || 0,
+            order_price: parseFloat(document.getElementById('tj-entry').value) || 0,
+            filled_price: parseFloat(document.getElementById('tj-entry').value) || 0,
+            slippage: 0,
+            commission: 0,
+            position_size: 0
+        };
+
+        entry.position_size = entry.filled_price * entry.quantity;
+
+        try {
+            const result = await fetch(`/api/v2/trade-journal/${journalId}/entry`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(entry)
+            });
+            const res = await result.json();
+            if (res.success) {
+                toast('Entry added!', 'success');
+                await render();
+            } else {
+                toast(res.error || 'Failed to add entry', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    async function addExitRow(journalId) {
+        if (!journalId) {
+            toast('Save journal first', 'error');
+            return;
+        }
+
+        const exit = {
+            exit_datetime: new Date().toISOString(),
+            quantity: parseInt(document.getElementById('tj-qty').value) || 0,
+            order_price: parseFloat(document.getElementById('tj-target').value) || 0,
+            filled_price: parseFloat(document.getElementById('tj-target').value) || 0,
+            slippage: 0,
+            commission: 0,
+            position_size: 0
+        };
+
+        exit.position_size = exit.filled_price * exit.quantity;
+
+        try {
+            const result = await fetch(`/api/v2/trade-journal/${journalId}/exit`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(exit)
+            });
+            const res = await result.json();
+            if (res.success) {
+                toast('Exit added!', 'success');
+                await render();
+            } else {
+                toast(res.error || 'Failed to add exit', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    async function deleteEntry(entryId) {
+        if (!confirm('Delete this entry?')) return;
+
+        try {
+            await fetch(`/api/v2/trade-journal/entry/${entryId}`, {method: 'DELETE'});
+            toast('Entry deleted', 'success');
+            await render();
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    async function deleteExit(exitId) {
+        if (!confirm('Delete this exit?')) return;
+
+        try {
+            await fetch(`/api/v2/trade-journal/exit/${exitId}`, {method: 'DELETE'});
+            toast('Exit deleted', 'success');
+            await render();
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
         }
     }
 
@@ -3014,6 +3653,48 @@
                     <button onclick="saveSettings()" class="w-full py-3 bg-blue-600 rounded-lg font-medium hover:bg-blue-700">💾 Save Trading Settings</button>
                 </div>
 
+                <!-- Data Management -->
+                <div class="bg-[#111827] rounded-xl p-6 border border-green-500/30 space-y-4">
+                    <h3 class="font-bold text-green-400 flex items-center gap-2">
+                        <span>📊</span> Data Management
+                    </h3>
+                    <p class="text-sm text-gray-500">Load NIFTY 100 historical data and pre-calculate all indicators. Run this once daily after market close.</p>
+
+                    <div id="data-status" class="bg-[#1f2937] p-4 rounded-lg space-y-2">
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Last Data Refresh:</span>
+                            <span id="last-refresh-date" class="font-mono text-white">Loading...</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Symbols Cached:</span>
+                            <span id="symbols-cached" class="font-mono text-white">-</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Data Range:</span>
+                            <span id="data-range" class="font-mono text-white">-</span>
+                        </div>
+                        <div id="data-stale-warning" class="hidden bg-yellow-500/10 border border-yellow-500/30 rounded p-2 text-sm text-yellow-400 mt-2">
+                            ⚠️ Data is stale. Please load fresh data after market close.
+                        </div>
+                    </div>
+
+                    <div class="flex gap-2">
+                        <button id="load-data-btn" onclick="loadMarketData()" class="flex-1 py-3 bg-green-600 rounded-lg font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed">
+                            📥 Load Market Data
+                        </button>
+                    </div>
+
+                    <div id="load-progress" class="hidden">
+                        <div class="flex items-center gap-2 text-sm text-gray-400">
+                            <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span id="load-progress-text">Loading data...</span>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- NSE Trading Info -->
                 <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
                     <h3 class="font-bold text-gray-300 mb-3">📈 NSE Trading Info</h3>
@@ -3038,6 +3719,86 @@
                 </div>
             </div>
         `;
+    }
+
+    // ========== DATA MANAGEMENT ==========
+    async function loadDataStatus() {
+        try {
+            const resp = await fetch('/api/v2/data/status');
+            const status = await resp.json();
+
+            const lastRefreshEl = document.getElementById('last-refresh-date');
+            const symbolsCachedEl = document.getElementById('symbols-cached');
+            const dataRangeEl = document.getElementById('data-range');
+            const staleWarningEl = document.getElementById('data-stale-warning');
+
+            if (lastRefreshEl) {
+                if (status.last_refresh) {
+                    const date = new Date(status.last_refresh);
+                    lastRefreshEl.textContent = date.toLocaleString('en-IN', {
+                        dateStyle: 'medium',
+                        timeStyle: 'short'
+                    });
+                    lastRefreshEl.className = status.is_stale ? 'font-mono text-yellow-400' : 'font-mono text-green-400';
+                } else {
+                    lastRefreshEl.textContent = 'Never';
+                    lastRefreshEl.className = 'font-mono text-red-400';
+                }
+            }
+
+            if (symbolsCachedEl) {
+                symbolsCachedEl.textContent = status.symbols_cached || '0';
+            }
+
+            if (dataRangeEl && status.data_from && status.data_to) {
+                dataRangeEl.textContent = `${status.data_from} to ${status.data_to}`;
+            }
+
+            if (staleWarningEl) {
+                staleWarningEl.classList.toggle('hidden', !status.is_stale);
+            }
+        } catch(e) {
+            console.error('Error loading data status:', e);
+        }
+    }
+
+    async function loadMarketData() {
+        const btn = document.getElementById('load-data-btn');
+        const progress = document.getElementById('load-progress');
+        const progressText = document.getElementById('load-progress-text');
+
+        btn.disabled = true;
+        btn.textContent = '⏳ Loading...';
+        progress.classList.remove('hidden');
+        progressText.textContent = 'Connecting to Kite...';
+
+        try {
+            const resp = await fetch('/api/v2/data/load', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            });
+            const result = await resp.json();
+
+            if (result.success) {
+                if (result.skipped) {
+                    toast('Data already loaded for today!', 'info');
+                } else {
+                    toast(`Loaded ${result.symbols_loaded} symbols successfully!`, 'success');
+                    if (result.symbols_failed && result.symbols_failed.length > 0) {
+                        console.warn('Failed symbols:', result.symbols_failed);
+                    }
+                }
+                await loadDataStatus();
+            } else {
+                toast(result.error || 'Failed to load data', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '📥 Load Market Data';
+            progress.classList.add('hidden');
+        }
     }
 
     async function saveKiteCredentials() {

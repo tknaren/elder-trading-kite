@@ -36,9 +36,14 @@ class Database:
             print(f"Warning: Could not create db directory: {e}")
 
     def get_connection(self):
-        """Get database connection"""
-        conn = sqlite3.connect(self.db_path)
+        """Get database connection with proper settings"""
+        conn = sqlite3.connect(self.db_path, timeout=30.0,
+                               check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        # Enable WAL mode for better concurrency
+        conn.execute('PRAGMA journal_mode=WAL')
+        # Set busy timeout
+        conn.execute('PRAGMA busy_timeout=30000')
         return conn
 
     def _init_db(self):
@@ -391,7 +396,8 @@ class Database:
         # Migration 1: Add max_risk column to trade_bills
         if 'max_risk' not in columns:
             try:
-                cursor.execute('ALTER TABLE trade_bills ADD COLUMN max_risk REAL')
+                cursor.execute(
+                    'ALTER TABLE trade_bills ADD COLUMN max_risk REAL')
                 print("Migration: Added max_risk column to trade_bills")
             except Exception as e:
                 print(f"Migration warning (max_risk): {e}")
@@ -399,12 +405,116 @@ class Database:
         # Migration 2: Add other_charges column (keeping overnight_charges for backward compatibility)
         if 'other_charges' not in columns:
             try:
-                cursor.execute('ALTER TABLE trade_bills ADD COLUMN other_charges REAL DEFAULT 0')
+                cursor.execute(
+                    'ALTER TABLE trade_bills ADD COLUMN other_charges REAL DEFAULT 0')
                 # Copy existing overnight_charges values to other_charges
-                cursor.execute('UPDATE trade_bills SET other_charges = overnight_charges WHERE overnight_charges IS NOT NULL')
+                cursor.execute(
+                    'UPDATE trade_bills SET other_charges = overnight_charges WHERE overnight_charges IS NOT NULL')
                 print("Migration: Added other_charges column to trade_bills")
             except Exception as e:
                 print(f"Migration warning (other_charges): {e}")
+
+        # Migration 3: Create trade_journal_v2 table for enhanced journal
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS trade_journal_v2 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                trade_bill_id INTEGER,
+                -- Ticker Info
+                ticker TEXT NOT NULL,
+                cmp REAL,
+                direction TEXT DEFAULT 'Long',
+                status TEXT DEFAULT 'open',
+                journal_date DATE DEFAULT CURRENT_DATE,
+                remaining_qty INTEGER DEFAULT 0,
+                order_type TEXT,
+                mental_state TEXT,
+                -- Trade Setup
+                entry_price REAL,
+                quantity INTEGER,
+                target_price REAL,
+                stop_loss REAL,
+                rr_ratio REAL,
+                -- Risk
+                potential_loss REAL,
+                trailing_stop REAL,
+                new_target REAL,
+                -- Reward
+                potential_gain REAL,
+                target_a REAL,
+                target_b REAL,
+                target_c REAL,
+                -- Entry/Exit tactics
+                entry_tactic TEXT,
+                entry_reason TEXT,
+                exit_tactic TEXT,
+                exit_reason TEXT,
+                -- Results (calculated)
+                first_entry_date TEXT,
+                last_exit_date TEXT,
+                total_shares INTEGER,
+                avg_entry REAL,
+                avg_exit REAL,
+                trade_grade TEXT,
+                gain_loss_percent REAL,
+                gain_loss_amount REAL,
+                high_during_trade REAL,
+                low_during_trade REAL,
+                max_drawdown REAL,
+                percent_captured REAL,
+                -- Notes
+                open_trade_comments TEXT,
+                followup_analysis TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (trade_bill_id) REFERENCES trade_bills(id)
+            )
+        ''')
+
+        # Migration 4: Create trade_entries table for multiple entries per trade
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS trade_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                journal_id INTEGER NOT NULL,
+                entry_datetime TEXT,
+                quantity INTEGER,
+                order_price REAL,
+                filled_price REAL,
+                slippage REAL,
+                commission REAL,
+                position_size REAL,
+                day_high REAL,
+                day_low REAL,
+                grade TEXT,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (journal_id) REFERENCES trade_journal_v2(id) ON DELETE CASCADE
+            )
+        ''')
+
+        # Migration 5: Create trade_exits table for multiple exits per trade
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS trade_exits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                journal_id INTEGER NOT NULL,
+                exit_datetime TEXT,
+                quantity INTEGER,
+                order_price REAL,
+                filled_price REAL,
+                slippage REAL,
+                commission REAL,
+                position_size REAL,
+                day_high REAL,
+                day_low REAL,
+                grade TEXT,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (journal_id) REFERENCES trade_journal_v2(id) ON DELETE CASCADE
+            )
+        ''')
+
+        print("Migration: Created trade_journal_v2, trade_entries, trade_exits tables")
 
         conn.commit()
         conn.close()
@@ -489,7 +599,7 @@ class Database:
                 'NSE:HINDUNILVR', 'NSE:SBIN', 'NSE:BHARTIARTL', 'NSE:ITC', 'NSE:KOTAKBANK',
                 'NSE:LT', 'NSE:AXISBANK', 'NSE:ASIANPAINT', 'NSE:MARUTI', 'NSE:TITAN',
                 'NSE:SUNPHARMA', 'NSE:ULTRACEMCO', 'NSE:BAJFINANCE', 'NSE:WIPRO', 'NSE:HCLTECH',
-                'NSE:TATAMOTORS', 'NSE:POWERGRID', 'NSE:NTPC', 'NSE:M&M', 'NSE:JSWSTEEL',
+                'NSE:POWERGRID', 'NSE:NTPC', 'NSE:M&M', 'NSE:JSWSTEEL',
                 'NSE:BAJAJFINSV', 'NSE:ONGC', 'NSE:TATASTEEL', 'NSE:ADANIENT', 'NSE:COALINDIA',
                 'NSE:GRASIM', 'NSE:TECHM', 'NSE:HINDALCO', 'NSE:INDUSINDBK', 'NSE:DRREDDY',
                 'NSE:APOLLOHOSP', 'NSE:CIPLA', 'NSE:EICHERMOT', 'NSE:NESTLEIND', 'NSE:DIVISLAB',
@@ -505,7 +615,7 @@ class Database:
                 'NSE:MARICO', 'NSE:MAXHEALTH', 'NSE:MPHASIS', 'NSE:NAUKRI', 'NSE:NHPC',
                 'NSE:OBEROIRLTY', 'NSE:OFSS', 'NSE:PAGEIND', 'NSE:PFC', 'NSE:PIDILITIND',
                 'NSE:PNB', 'NSE:POLYCAB', 'NSE:RECLTD', 'NSE:SRF', 'NSE:TATAPOWER',
-                'NSE:TORNTPHARM', 'NSE:TRENT', 'NSE:UNIONBANK', 'NSE:VBL', 'NSE:ZOMATO'
+                'NSE:TORNTPHARM', 'NSE:TRENT', 'NSE:UNIONBANK', 'NSE:VBL'
             ]
 
             conn.execute('''

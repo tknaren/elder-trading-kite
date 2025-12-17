@@ -18,12 +18,15 @@ import numpy as np
 from datetime import datetime, timedelta, time
 from typing import Optional, Dict, List, Tuple, Any
 import pytz
+import time as time_module
 
 # Will be imported when kiteconnect is installed
 try:
     from kiteconnect import KiteConnect
+    from kiteconnect.exceptions import KiteException
 except ImportError:
     KiteConnect = None
+    KiteException = Exception
 
 
 def convert_to_native(obj: Any) -> Any:
@@ -109,6 +112,9 @@ class KiteClient:
         self.kite = None
         self._instrument_cache: Dict[str, int] = {}
         self._authenticated = False
+        self._last_request_time = 0
+        # ~3 requests per second (Kite limit)
+        self._min_request_interval = 0.35
 
         if api_key:
             self._init_kite()
@@ -124,6 +130,17 @@ class KiteClient:
         if self.access_token:
             self.kite.set_access_token(self.access_token)
             self._authenticated = True
+
+    def _rate_limit(self):
+        """Enforce rate limiting between API requests"""
+        current_time = time_module.time()
+        time_since_last = current_time - self._last_request_time
+
+        if time_since_last < self._min_request_interval:
+            sleep_time = self._min_request_interval - time_since_last
+            time_module.sleep(sleep_time)
+
+        self._last_request_time = time_module.time()
 
     def get_login_url(self) -> str:
         """Get Kite login URL for authentication"""
@@ -265,6 +282,7 @@ class KiteClient:
             to_date = datetime.now()
             from_date = to_date - timedelta(days=days)
 
+            self._rate_limit()
             data = self.kite.historical_data(
                 instrument_token,
                 from_date,
@@ -330,6 +348,7 @@ class KiteClient:
                 else:
                     formatted.append(s)
 
+            self._rate_limit()
             return self.kite.quote(formatted)
         except Exception as e:
             print(f"Error fetching quotes: {e}")
@@ -348,17 +367,19 @@ class KiteClient:
                 else:
                     formatted.append(s)
 
+            self._rate_limit()
             return self.kite.ltp(formatted)
         except Exception as e:
             print(f"Error fetching LTP: {e}")
             return {}
 
-    def get_market_snapshot(self, symbol: str) -> Optional[Dict]:
+    def get_market_snapshot(self, symbol: str, max_retries: int = 2) -> Optional[Dict]:
         """
         Get current market data snapshot for a symbol
 
         Args:
             symbol: Stock symbol (e.g., 'NSE:RELIANCE')
+            max_retries: Maximum number of retries for rate limit errors
 
         Returns:
             Dict with last, bid, ask, high, low, volume, open
@@ -366,31 +387,45 @@ class KiteClient:
         if not self._authenticated:
             return None
 
-        try:
-            if ':' not in symbol:
-                symbol = f'NSE:{symbol}'
+        if ':' not in symbol:
+            symbol = f'NSE:{symbol}'
 
-            quote = self.kite.quote([symbol])
+        for attempt in range(max_retries + 1):
+            try:
+                self._rate_limit()
+                quote = self.kite.quote([symbol])
 
-            if symbol in quote:
-                q = quote[symbol]
-                ohlc = q.get('ohlc', {})
-                return {
-                    'last': q.get('last_price'),
-                    'bid': q.get('depth', {}).get('buy', [{}])[0].get('price'),
-                    'ask': q.get('depth', {}).get('sell', [{}])[0].get('price'),
-                    'high': ohlc.get('high'),
-                    'low': ohlc.get('low'),
-                    'open': ohlc.get('open'),
-                    'close': ohlc.get('close'),  # Previous close
-                    'volume': q.get('volume'),
-                    'change': q.get('change'),
-                    'change_percent': (q.get('change') / ohlc.get('close', 1) * 100) if (q.get('change') is not None and ohlc.get('close')) else 0
-                }
-            return None
-        except Exception as e:
-            print(f"Error fetching snapshot for {symbol}: {e}")
-            return None
+                if symbol in quote:
+                    q = quote[symbol]
+                    ohlc = q.get('ohlc', {})
+                    return {
+                        'last': q.get('last_price'),
+                        'bid': q.get('depth', {}).get('buy', [{}])[0].get('price'),
+                        'ask': q.get('depth', {}).get('sell', [{}])[0].get('price'),
+                        'high': ohlc.get('high'),
+                        'low': ohlc.get('low'),
+                        'open': ohlc.get('open'),
+                        'close': ohlc.get('close'),  # Previous close
+                        'volume': q.get('volume'),
+                        'change': q.get('change'),
+                        'change_percent': (q.get('change') / ohlc.get('close', 1) * 100) if (q.get('change') is not None and ohlc.get('close')) else 0
+                    }
+                return None
+            except KiteException as e:
+                if 'Too many requests' in str(e) and attempt < max_retries:
+                    # Exponential backoff: 2s, 4s
+                    wait_time = (attempt + 1) * 2
+                    print(f"⏳ {symbol}: Rate limit hit, waiting {wait_time}s...")
+                    time_module.sleep(wait_time)
+                    continue
+                else:
+                    print(f"Error fetching snapshot for {symbol}: {e}")
+                    return None
+            except Exception as e:
+                print(f"Error fetching snapshot for {symbol}: {e}")
+                return None
+
+        return None
 
 
 # Global client instance
@@ -433,33 +468,23 @@ def check_connection() -> Tuple[bool, str]:
 
 def fetch_stock_data(symbol: str, period: str = '2y') -> Optional[Dict]:
     """
-    Fetch stock data with multi-layer caching:
-    1. In-memory session cache (fastest - no DB hit)
-    2. Database cache (persisted across sessions)
-    3. Kite API (only if cache miss)
+    Fetch stock data from DATABASE CACHE ONLY (no Kite API calls).
+    Data must be pre-loaded using Load Data button in Settings.
+
+    This function is FAST - reads directly from SQLite database.
+    No network calls to Kite API are made.
 
     Args:
         symbol: Stock symbol in format 'NSE:RELIANCE' or 'RELIANCE'
-        period: Time period (2y, 1y, 6m, etc.)
+        period: Time period (unused - kept for backwards compatibility)
 
     Returns:
-        Dict with symbol, name, sector, history DataFrame, snapshot
+        Dict with symbol, name, sector, history DataFrame, or None if not cached
     """
     from models.database import get_database
     global _session_ohlcv_cache, _session_cache_date
 
     client = get_client()
-
-    # Check authentication
-    if not client.check_auth():
-        print(f"❌ {symbol}: Not authenticated with Kite Connect")
-        return None
-
-    # Parse period to days
-    period_map = {
-        '2y': 730, '1y': 365, '6m': 180, '3m': 90, '1m': 30
-    }
-    days = period_map.get(period, 365)
 
     # Ensure symbol format
     exchange, tradingsymbol = client.parse_symbol(symbol)
@@ -474,123 +499,53 @@ def fetch_stock_data(symbol: str, period: str = '2y') -> Optional[Dict]:
     # Check in-memory session cache first (fastest)
     if full_symbol in _session_ohlcv_cache:
         cached = _session_ohlcv_cache[full_symbol]
-        # Return cached data with fresh snapshot
-        snapshot = client.get_market_snapshot(full_symbol)
         return {
             'symbol': full_symbol,
             'name': cached['name'],
             'sector': cached['sector'],
             'history': cached['history'].copy(),
             'info': {},
-            'snapshot': snapshot,
-            'instrument_token': client.get_instrument_token(tradingsymbol, exchange)
+            'snapshot': None,
+            'instrument_token': None
         }
 
+    # Read from database cache
     db = get_database().get_connection()
 
-    # Check if we have fresh OHLCV cache (< 1 day old)
-    sync_row = db.execute(
-        'SELECT * FROM stock_data_sync WHERE symbol = ?',
-        (full_symbol,)
-    ).fetchone()
+    cached_rows = db.execute('''
+        SELECT date, open, high, low, close, volume
+        FROM stock_historical_data
+        WHERE symbol = ?
+        ORDER BY date ASC
+    ''', (full_symbol,)).fetchall()
 
-    use_cache = False
-    hist = None
-    today_str = datetime.now().strftime('%Y-%m-%d')
+    if not cached_rows or len(cached_rows) < 30:
+        db.close()
+        # No cached data - user needs to load data first
+        return None
 
-    if sync_row:
-        last_updated = datetime.fromisoformat(sync_row['last_updated'])
-        latest_date = sync_row['latest_date']
-
-        # Use cache if updated within 24 hours AND has today's date (or market is closed)
-        if datetime.now() - last_updated < timedelta(hours=24):
-            use_cache = True
-
-    # Try to use cached data
-    if use_cache:
-        cached_rows = db.execute('''
-            SELECT date, open, high, low, close, volume
-            FROM stock_historical_data
-            WHERE symbol = ?
-            ORDER BY date ASC
-        ''', (full_symbol,)).fetchall()
-
-        if cached_rows and len(cached_rows) >= 30:
-            hist = pd.DataFrame([
-                {
-                    'Date': row['date'],
-                    'Open': row['open'],
-                    'High': row['high'],
-                    'Low': row['low'],
-                    'Close': row['close'],
-                    'Volume': row['volume']
-                }
-                for row in cached_rows
-            ])
-            hist['Date'] = pd.to_datetime(hist['Date'])
-            hist.set_index('Date', inplace=True)
-            # Silent cache hit - no logging needed
-
-    # If cache miss or insufficient data, fetch from Kite
-    if hist is None or hist.empty or len(hist) < 30:
-        print(f"🔄 {full_symbol}: Fetching from Kite...")
-        hist = client.get_historical_data(
-            full_symbol, interval='day', days=days)
-
-        if hist is None or hist.empty or len(hist) < 30:
-            print(f"❌ {full_symbol}: Insufficient data")
-            db.close()
-            return None
-
-        # Cache the OHLCV data - only new rows
-        new_cached = 0
-        for date, row in hist.iterrows():
-            date_str = date.strftime('%Y-%m-%d')
-            # Check if already exists
-            existing = db.execute(
-                'SELECT 1 FROM stock_historical_data WHERE symbol = ? AND date = ?',
-                (full_symbol, date_str)
-            ).fetchone()
-
-            if not existing:
-                db.execute('''
-                    INSERT INTO stock_historical_data
-                    (symbol, date, open, high, low, close, volume)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    full_symbol,
-                    date_str,
-                    float(row['Open']),
-                    float(row['High']),
-                    float(row['Low']),
-                    float(row['Close']),
-                    int(row['Volume'])
-                ))
-                new_cached += 1
-
-        earliest_date = hist.index.min().strftime('%Y-%m-%d')
-        latest_date = hist.index.max().strftime('%Y-%m-%d')
-
-        db.execute('''
-            INSERT OR REPLACE INTO stock_data_sync
-            (symbol, last_updated, earliest_date, latest_date, record_count)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (full_symbol, datetime.now().isoformat(), earliest_date, latest_date, len(hist)))
-        db.commit()
-
-        if new_cached > 0:
-            print(f"✓ {full_symbol}: Cached {new_cached} new bars")
-
-    # Get current snapshot
-    snapshot = client.get_market_snapshot(full_symbol)
-
-    # Get instrument info for name (from cached instruments)
-    name = tradingsymbol  # Default to symbol
-    sector = 'Unknown'
+    # Build DataFrame from cache
+    hist = pd.DataFrame([
+        {
+            'Date': row['date'],
+            'Open': row['open'],
+            'High': row['high'],
+            'Low': row['low'],
+            'Close': row['close'],
+            'Volume': row['volume']
+        }
+        for row in cached_rows
+    ])
+    hist['Date'] = pd.to_datetime(hist['Date'])
+    hist.set_index('Date', inplace=True)
 
     db.close()
 
-    # Save to in-memory session cache for fast subsequent access
+    # Get instrument info
+    name = tradingsymbol
+    sector = 'Unknown'
+
+    # Save to session cache for fast subsequent access
     _session_ohlcv_cache[full_symbol] = {
         'name': name,
         'sector': sector,
@@ -603,8 +558,8 @@ def fetch_stock_data(symbol: str, period: str = '2y') -> Optional[Dict]:
         'sector': sector,
         'history': hist,
         'info': {},
-        'snapshot': snapshot,
-        'instrument_token': client.get_instrument_token(tradingsymbol, exchange)
+        'snapshot': None,
+        'instrument_token': None
     }
 
 

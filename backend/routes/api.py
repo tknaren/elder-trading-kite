@@ -51,6 +51,14 @@ def get_user_id():
     return getattr(g, 'user_id', 1)
 
 
+@api.teardown_app_request
+def close_db_connection(error):
+    """Close database connection at end of request"""
+    db = g.pop('db', None)
+    if db is not None:
+        db.close()
+
+
 # ============ HEALTH CHECK ============
 @api.route('/health', methods=['GET'])
 def health_check():
@@ -81,12 +89,12 @@ def weekly_screener():
     market = data.get('market', 'IN')
     watchlist_id = data.get('watchlist_id')
 
-    db = get_db()
     user_id = get_user_id()
 
-    # Get symbols from watchlist
+    # Get symbols from watchlist (quick DB operation)
     symbols = None
     if watchlist_id:
+        db = get_db()
         watchlist = db.execute(
             'SELECT symbols FROM watchlists WHERE id = ?',
             (watchlist_id,)
@@ -97,7 +105,8 @@ def weekly_screener():
     # If no specific watchlist requested and no symbols provided, use full NIFTY_100 list
     # symbols will be None, and run_weekly_screen will use the full list
 
-    # Run the screener
+    # Run the screener (this is a long-running operation)
+    # Don't hold database connection during this
     results = run_weekly_screen(market, symbols)
 
     # Calculate week boundaries
@@ -105,7 +114,8 @@ def weekly_screener():
     week_start = today - timedelta(days=today.weekday())
     week_end = week_start + timedelta(days=6)
 
-    # Save scan to database
+    # Save scan to database (quick DB operation)
+    db = get_db()
     db.execute('''
         INSERT INTO weekly_scans 
         (user_id, market, scan_date, week_start, week_end, results, summary)
@@ -735,17 +745,26 @@ def create_trade_bill():
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             user_id, data.get('ticker'), data.get('current_market_price'),
-            data.get('entry_price'), data.get('stop_loss'), data.get('target_price'),
-            data.get('quantity'), data.get('upper_channel'), data.get('lower_channel'),
-            data.get('target_pips'), data.get('stop_loss_pips'), data.get('max_qty_for_risk'),
+            data.get('entry_price'), data.get(
+                'stop_loss'), data.get('target_price'),
+            data.get('quantity'), data.get(
+                'upper_channel'), data.get('lower_channel'),
+            data.get('target_pips'), data.get(
+                'stop_loss_pips'), data.get('max_qty_for_risk'),
             data.get('other_charges', 0), data.get('max_risk'),
             data.get('risk_per_share'), data.get('position_size'),
-            data.get('risk_percent'), data.get('channel_height'), data.get('potential_gain'),
-            data.get('target_1_1_c'), data.get('target_1_2_b'), data.get('target_1_3_a'),
-            data.get('risk_amount_currency'), data.get('reward_amount_currency'),
-            data.get('risk_reward_ratio'), data.get('break_even'), data.get('trailing_stop'),
-            1 if data.get('is_filled') else 0, 1 if data.get('stop_entered') else 0,
-            1 if data.get('target_entered') else 0, 1 if data.get('journal_entered') else 0,
+            data.get('risk_percent'), data.get(
+                'channel_height'), data.get('potential_gain'),
+            data.get('target_1_1_c'), data.get(
+                'target_1_2_b'), data.get('target_1_3_a'),
+            data.get('risk_amount_currency'), data.get(
+                'reward_amount_currency'),
+            data.get('risk_reward_ratio'), data.get(
+                'break_even'), data.get('trailing_stop'),
+            1 if data.get('is_filled') else 0, 1 if data.get(
+                'stop_entered') else 0,
+            1 if data.get('target_entered') else 0, 1 if data.get(
+                'journal_entered') else 0,
             data.get('comments', ''), 'active', datetime.now().isoformat()
         ))
         conn.commit()
