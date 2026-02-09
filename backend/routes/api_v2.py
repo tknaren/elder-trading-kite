@@ -142,27 +142,36 @@ def load_market_data():
             for date, row in hist.iterrows():
                 date_str = date.strftime('%Y-%m-%d')
                 db.execute('''
-                    INSERT OR REPLACE INTO stock_historical_data
-                    (symbol, date, open, high, low, close, volume)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    MERGE INTO stock_historical_data AS target
+                    USING (SELECT ? AS symbol, ? AS date) AS source
+                    ON target.symbol = source.symbol AND target.date = source.date
+                    WHEN MATCHED THEN
+                        UPDATE SET [open] = ?, high = ?, low = ?, [close] = ?, volume = ?
+                    WHEN NOT MATCHED THEN
+                        INSERT (symbol, date, [open], high, low, [close], volume)
+                        VALUES (?, ?, ?, ?, ?, ?, ?);
                 ''', (
-                    full_symbol,
-                    date_str,
-                    float(row['Open']),
-                    float(row['High']),
-                    float(row['Low']),
-                    float(row['Close']),
-                    int(row['Volume'])
+                    full_symbol, date_str,
+                    float(row['Open']), float(row['High']), float(row['Low']), float(row['Close']), int(row['Volume']),
+                    full_symbol, date_str,
+                    float(row['Open']), float(row['High']), float(row['Low']), float(row['Close']), int(row['Volume'])
                 ))
 
             # Update sync record
             earliest_date = hist.index.min().strftime('%Y-%m-%d')
             latest_date = hist.index.max().strftime('%Y-%m-%d')
             db.execute('''
-                INSERT OR REPLACE INTO stock_data_sync
-                (symbol, last_updated, earliest_date, latest_date, record_count)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (full_symbol, datetime.now().isoformat(), earliest_date, latest_date, len(hist)))
+                MERGE INTO stock_data_sync AS target
+                USING (SELECT ? AS symbol) AS source
+                ON target.symbol = source.symbol
+                WHEN MATCHED THEN
+                    UPDATE SET last_updated = ?, earliest_date = ?, latest_date = ?, record_count = ?
+                WHEN NOT MATCHED THEN
+                    INSERT (symbol, last_updated, earliest_date, latest_date, record_count)
+                    VALUES (?, ?, ?, ?, ?);
+            ''', (full_symbol,
+                  datetime.now().isoformat(), earliest_date, latest_date, len(hist),
+                  full_symbol, datetime.now().isoformat(), earliest_date, latest_date, len(hist)))
 
             # Pre-calculate and cache ALL indicators
             indicators = calculate_all_indicators(
@@ -173,15 +182,7 @@ def load_market_data():
             latest_date_str = hist.index.max().strftime('%Y-%m-%d')
             latest_row = hist.iloc[-1]
 
-            db.execute('''
-                INSERT OR REPLACE INTO stock_indicators_daily
-                (symbol, date, close, ema_22, ema_50, ema_100, ema_200,
-                 macd_line, macd_signal, macd_histogram, rsi, stochastic,
-                 stoch_d, atr, force_index, kc_upper, kc_middle, kc_lower)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                full_symbol,
-                latest_date_str,
+            ind_values = (
                 float(latest_row['Close']),
                 float(indicators.get('ema_22', 0)),
                 float(indicators.get('ema_50', 0)),
@@ -198,14 +199,35 @@ def load_market_data():
                 float(indicators.get('kc_upper', 0)),
                 float(indicators.get('kc_middle', 0)),
                 float(indicators.get('kc_lower', 0))
-            ))
+            )
+            db.execute('''
+                MERGE INTO stock_indicators_daily AS target
+                USING (SELECT ? AS symbol, ? AS date) AS source
+                ON target.symbol = source.symbol AND target.date = source.date
+                WHEN MATCHED THEN
+                    UPDATE SET [close] = ?, ema_22 = ?, ema_50 = ?, ema_100 = ?, ema_200 = ?,
+                        macd_line = ?, macd_signal = ?, macd_histogram = ?, rsi = ?, stochastic = ?,
+                        stoch_d = ?, atr = ?, force_index = ?, kc_upper = ?, kc_middle = ?, kc_lower = ?
+                WHEN NOT MATCHED THEN
+                    INSERT (symbol, date, [close], ema_22, ema_50, ema_100, ema_200,
+                        macd_line, macd_signal, macd_histogram, rsi, stochastic,
+                        stoch_d, atr, force_index, kc_upper, kc_middle, kc_lower)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            ''', (full_symbol, latest_date_str) + ind_values +
+                 (full_symbol, latest_date_str) + ind_values)
 
             # Update indicator sync
             db.execute('''
-                INSERT OR REPLACE INTO stock_indicator_sync
-                (symbol, last_updated, last_daily_date, daily_record_count)
-                VALUES (?, ?, ?, 1)
-            ''', (full_symbol, datetime.now().isoformat(), latest_date_str))
+                MERGE INTO stock_indicator_sync AS target
+                USING (SELECT ? AS symbol) AS source
+                ON target.symbol = source.symbol
+                WHEN MATCHED THEN
+                    UPDATE SET last_updated = ?, last_daily_date = ?, daily_record_count = 1
+                WHEN NOT MATCHED THEN
+                    INSERT (symbol, last_updated, last_daily_date, daily_record_count)
+                    VALUES (?, ?, ?, 1);
+            ''', (full_symbol, datetime.now().isoformat(), latest_date_str,
+                  full_symbol, datetime.now().isoformat(), latest_date_str))
 
             symbols_loaded += 1
 
@@ -223,15 +245,10 @@ def load_market_data():
 
     # Update global refresh timestamp
     db.execute('''
-        INSERT OR REPLACE INTO account_settings
-        (id, user_id, account_name, last_data_refresh)
-        VALUES (
-            (SELECT id FROM account_settings WHERE user_id = ?),
-            ?,
-            (SELECT account_name FROM account_settings WHERE user_id = ?),
-            ?
-        )
-    ''', (user_id, user_id, user_id, datetime.now().isoformat()))
+        UPDATE account_settings
+        SET last_data_refresh = ?, updated_at = GETDATE()
+        WHERE user_id = ?
+    ''', (datetime.now().isoformat(), user_id))
     db.commit()
 
     return jsonify({
@@ -303,10 +320,9 @@ def get_stock_from_cache(symbol):
 
     # Get latest OHLCV data
     ohlcv = db.execute('''
-        SELECT * FROM stock_historical_data
+        SELECT TOP 1 * FROM stock_historical_data
         WHERE symbol = ?
         ORDER BY date DESC
-        LIMIT 1
     ''', (symbol,)).fetchone()
 
     if not ohlcv:
@@ -314,10 +330,9 @@ def get_stock_from_cache(symbol):
 
     # Get pre-calculated indicators
     indicators = db.execute('''
-        SELECT * FROM stock_indicators_daily
+        SELECT TOP 1 * FROM stock_indicators_daily
         WHERE symbol = ?
         ORDER BY date DESC
-        LIMIT 1
     ''', (symbol,)).fetchone()
 
     if not indicators:
@@ -399,7 +414,7 @@ def run_screener_v2():
     ))
     db.commit()
 
-    scan_id = db.execute('SELECT last_insert_rowid()').fetchone()[0]
+    scan_id = db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id']
     results['scan_id'] = scan_id
 
     return jsonify(results)
@@ -1037,7 +1052,7 @@ def create_bill_from_screener():
     ))
     db.commit()
 
-    bill_id = db.execute('SELECT last_insert_rowid()').fetchone()[0]
+    bill_id = db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id']
 
     return jsonify({
         'success': True,
@@ -1169,7 +1184,7 @@ def create_trade_journal():
     ))
     db.commit()
 
-    journal_id = cursor.lastrowid
+    journal_id = int(db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
     return jsonify({'success': True, 'id': journal_id}), 201
 
 
@@ -1309,10 +1324,12 @@ def add_trade_entry(journal_id):
     ))
     db.commit()
 
+    entry_id = int(db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
+
     # Update journal totals
     _recalculate_journal_totals(db, journal_id)
 
-    return jsonify({'success': True, 'id': cursor.lastrowid}), 201
+    return jsonify({'success': True, 'id': entry_id}), 201
 
 
 @api_v2.route('/trade-journal/<int:journal_id>/exit', methods=['POST'])
@@ -1351,10 +1368,12 @@ def add_trade_exit(journal_id):
     ))
     db.commit()
 
+    exit_id = int(db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
+
     # Update journal totals
     _recalculate_journal_totals(db, journal_id)
 
-    return jsonify({'success': True, 'id': cursor.lastrowid}), 201
+    return jsonify({'success': True, 'id': exit_id}), 201
 
 
 @api_v2.route('/trade-journal/entry/<int:entry_id>', methods=['DELETE'])
@@ -1462,11 +1481,11 @@ def create_journal_from_bill(bill_id):
     ))
     db.commit()
 
-    journal_id = cursor.lastrowid
+    journal_id = int(db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
 
     # Update trade bill to mark journal entered
     db.execute('''
-        UPDATE trade_bills SET journal_entered = 1, updated_at = CURRENT_TIMESTAMP
+        UPDATE trade_bills SET journal_entered = 1, updated_at = GETDATE()
         WHERE id = ?
     ''', (bill_id,))
     db.commit()
@@ -1573,8 +1592,8 @@ def sync_trade_log_from_kite():
             continue
 
         # Create trade log entry
-        side = 'Long' if trade['side'] == 'BUY' else 'Short'
-        status = 'open' if trade['side'] == 'BUY' else 'closed'
+        side = 'Long' if trade['transaction_type'] == 'BUY' else 'Short'
+        status = 'open' if trade['transaction_type'] == 'BUY' else 'closed'
 
         db.execute('''
             INSERT INTO trade_log (
@@ -1584,8 +1603,8 @@ def sync_trade_log_from_kite():
         ''', (
             user_id, trade['execution_time'], trade['symbol'],
             'EL - Elder System', side, trade['price'],
-            trade['quantity'], trade['commission'], status,
-            f"Auto-synced from Kite. Order ref: {trade['order_ref']}"
+            trade['quantity'], 0, status,
+            f"Auto-synced from Kite. Order ID: {trade['order_id']}"
         ))
         synced += 1
 
@@ -1689,9 +1708,9 @@ def get_workflow_status():
 
     # Get latest scan
     latest_scan = db.execute('''
-        SELECT * FROM weekly_scans 
-        WHERE user_id = ? 
-        ORDER BY scan_date DESC LIMIT 1
+        SELECT TOP 1 * FROM weekly_scans
+        WHERE user_id = ?
+        ORDER BY scan_date DESC
     ''', (user_id,)).fetchone()
 
     scan_summary = None

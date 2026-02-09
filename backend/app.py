@@ -1,28 +1,21 @@
 """
 Elder Trading System - Local Application v2
-Enhanced with connected workflow: Screener → Trade Bill → Kite Connect → Trade Log → Positions
+Enhanced with connected workflow: Screener -> Trade Bill -> Kite Connect -> Trade Log -> Positions
 
 Run with: python app.py
 Access at: http://localhost:5001
 
 Data Source: Kite Connect API (Zerodha)
+Database: SQL Server (KiteTraderDb)
 Market: NSE (NIFTY 100)
 Symbol Format: NSE:SYMBOL (e.g., NSE:RELIANCE, NSE:TCS)
-
-Features v2:
-- Screen 1 as mandatory gate
-- New high-scoring rules (divergence, false breakout, kangaroo tail, etc.)
-- Elder Entry/Stop/Target calculations
-- Kite Connect order placement from Trade Bills
-- GTT and GTT-OCO orders for bracket trading
-- NSE trade charges calculator (STT, GST, etc.)
-- Live position management with P/L tracking
 """
 
 from routes.api_v2 import api_v2
 from routes.api import api
 from routes.screener_api import screener_routes
 from models.database import Database, get_database
+from config import DatabaseConfig
 from flask import Flask, render_template
 import os
 import sys
@@ -41,14 +34,9 @@ def create_app():
     app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
     app.config['TEMPLATES_AUTO_RELOAD'] = True  # Auto-reload templates
 
-    # Database path - local data folder
-    data_dir = os.path.join(os.path.dirname(__file__), 'data')
-    os.makedirs(data_dir, exist_ok=True)
-    db_path = os.path.join(data_dir, 'elder_trading.db')
-    app.config['DATABASE_PATH'] = db_path
-
-    # Set environment variable for database module
-    os.environ['DATABASE_PATH'] = db_path
+    # SQL Server connection string from config
+    conn_str = DatabaseConfig.connection_string()
+    app.config['DB_CONNECTION_STRING'] = conn_str
 
     # Register API blueprints
     app.register_blueprint(api, url_prefix='/api')      # Original API
@@ -58,13 +46,13 @@ def create_app():
 
     # Initialize database (creates tables and default data)
     with app.app_context():
-        db = Database(db_path)
+        db = Database(conn_str)
         app.config['DB'] = db
 
         # Run migrations for v2 features
         try:
             from models.migrate_v2 import migrate_database
-            migrate_database(db_path)
+            migrate_database(conn_str)
         except Exception as e:
             print(f"Migration note: {e}")
 
@@ -91,8 +79,8 @@ if __name__ == '__main__':
     print("\n" + "="*50)
     print("  Elder Trading System - Local Server")
     print("="*50)
-    print("\n  Open in browser: http://localhost:5001")
-    print("  Data stored in: ./data/elder_trading.db")
+    print(f"\n  Database: SQL Server ({DatabaseConfig.display_info()})")
+    print("  Open in browser: http://localhost:5001")
     print("  Market: NSE (NIFTY 100)")
     print("  Broker: Kite Connect (Zerodha)")
     print("\n  Press Ctrl+C to stop the server")

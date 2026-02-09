@@ -1,242 +1,84 @@
 """
-Elder Trading System - Database Migration v2
-Adds new columns for connected workflow: Screener → Trade Bill → Kite Connect → Trade Log → Positions
+Elder Trading System - Database Migration v2 (SQL Server)
+All schema is now created in database.py _init_db().
+This module handles any incremental column additions for existing databases.
 """
 
-import sqlite3
-import os
+import pyodbc
 
 
-def migrate_database(db_path: str = None):
-    """Run database migrations to add new columns and tables"""
-    
-    if db_path is None:
-        db_path = os.environ.get('DATABASE_PATH', '')
-        if not db_path:
-            if os.path.exists('/home'):
-                db_path = '/home/data/elder_trading.db'
-            else:
-                db_path = 'elder_trading.db'
-    
-    conn = sqlite3.connect(db_path)
+def _column_exists(cursor, table_name, column_name):
+    """Check if a column exists in a table"""
+    cursor.execute("""
+        SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = ? AND COLUMN_NAME = ?
+    """, (table_name, column_name))
+    row = cursor.fetchone()
+    return row[0] > 0
+
+
+def migrate_database(connection_string: str = None):
+    """Run database migrations to add new columns if missing"""
+
+    if connection_string is None:
+        from config import DatabaseConfig
+        connection_string = DatabaseConfig.connection_string()
+
+    conn = pyodbc.connect(connection_string, timeout=30)
     cursor = conn.cursor()
-    
-    migrations = []
-    
-    # Migration 1: Add order_id and related columns to trade_bills
-    migrations.append("""
-        ALTER TABLE trade_bills ADD COLUMN order_id TEXT;
-    """)
-    
-    migrations.append("""
-        ALTER TABLE trade_bills ADD COLUMN signal_strength INTEGER;
-    """)
-    
-    migrations.append("""
-        ALTER TABLE trade_bills ADD COLUMN grade TEXT;
-    """)
-    
-    migrations.append("""
-        ALTER TABLE trade_bills ADD COLUMN symbol TEXT;
-    """)
-    
-    migrations.append("""
-        ALTER TABLE trade_bills ADD COLUMN market TEXT DEFAULT 'US';
-    """)
-    
-    migrations.append("""
-        ALTER TABLE trade_bills ADD COLUMN direction TEXT DEFAULT 'LONG';
-    """)
-    
-    migrations.append("""
-        ALTER TABLE trade_bills ADD COLUMN risk_amount REAL;
-    """)
-    
-    migrations.append("""
-        ALTER TABLE trade_bills ADD COLUMN position_value REAL;
-    """)
-    
-    # Migration 2: Add broker order tracking columns to trade_log
-    migrations.append("""
-        ALTER TABLE trade_log ADD COLUMN ibkr_order_id TEXT;
-    """)
 
-    migrations.append("""
-        ALTER TABLE trade_log ADD COLUMN ibkr_execution_id TEXT;
-    """)
-
-    migrations.append("""
-        ALTER TABLE trade_log ADD COLUMN trade_bill_id INTEGER;
-    """)
-
-    migrations.append("""
-        ALTER TABLE trade_log ADD COLUMN synced_from_ibkr BOOLEAN DEFAULT 0;
-    """)
-    
-    # Migration 3: Create positions tracking table
-    migrations.append("""
-        CREATE TABLE IF NOT EXISTS positions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            symbol TEXT NOT NULL,
-            conid INTEGER,
-            quantity INTEGER NOT NULL,
-            avg_price REAL NOT NULL,
-            current_price REAL,
-            market_value REAL,
-            unrealized_pnl REAL,
-            realized_pnl REAL,
-            pnl_percent REAL,
-            stop_loss REAL,
-            target REAL,
-            trade_bill_id INTEGER,
-            entry_date TEXT,
-            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            status TEXT DEFAULT 'open',
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (trade_bill_id) REFERENCES trade_bills(id)
-        );
-    """)
-    
-    # Migration 4: Create position alerts table
-    migrations.append("""
-        CREATE TABLE IF NOT EXISTS position_alerts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            position_id INTEGER NOT NULL,
-            symbol TEXT NOT NULL,
-            alert_type TEXT NOT NULL,
-            severity TEXT NOT NULL,
-            message TEXT NOT NULL,
-            action_suggested TEXT,
-            is_read BOOLEAN DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (position_id) REFERENCES positions(id)
-        );
-    """)
-    
-    # Migration 5: Create broker orders tracking table (legacy)
-    migrations.append("""
-        CREATE TABLE IF NOT EXISTS ibkr_orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            order_id TEXT NOT NULL,
-            symbol TEXT NOT NULL,
-            side TEXT NOT NULL,
-            order_type TEXT NOT NULL,
-            quantity INTEGER NOT NULL,
-            price REAL,
-            stop_price REAL,
-            status TEXT DEFAULT 'pending',
-            trade_bill_id INTEGER,
-            filled_quantity INTEGER DEFAULT 0,
-            filled_price REAL,
-            commission REAL DEFAULT 0,
-            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            filled_at TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (trade_bill_id) REFERENCES trade_bills(id)
-        );
-    """)
-    
-    # Migration 6: Add screener version to scans
-    migrations.append("""
-        ALTER TABLE weekly_scans ADD COLUMN screener_version TEXT DEFAULT '1.0';
-    """)
-
-    migrations.append("""
-        ALTER TABLE daily_scans ADD COLUMN screener_version TEXT DEFAULT '1.0';
-    """)
-
-    # Migration 7: Add Kite Connect credentials to account_settings
-    migrations.append("""
-        ALTER TABLE account_settings ADD COLUMN kite_api_key TEXT;
-    """)
-
-    migrations.append("""
-        ALTER TABLE account_settings ADD COLUMN kite_api_secret TEXT;
-    """)
-
-    migrations.append("""
-        ALTER TABLE account_settings ADD COLUMN kite_access_token TEXT;
-    """)
-
-    migrations.append("""
-        ALTER TABLE account_settings ADD COLUMN kite_token_expiry TEXT;
-    """)
-
-    # Migration 8: Create Kite orders tracking table
-    migrations.append("""
-        CREATE TABLE IF NOT EXISTS kite_orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            order_id TEXT NOT NULL,
-            symbol TEXT NOT NULL,
-            exchange TEXT DEFAULT 'NSE',
-            transaction_type TEXT NOT NULL,
-            order_type TEXT NOT NULL,
-            quantity INTEGER NOT NULL,
-            price REAL,
-            trigger_price REAL,
-            product TEXT DEFAULT 'CNC',
-            status TEXT DEFAULT 'pending',
-            trade_bill_id INTEGER,
-            filled_quantity INTEGER DEFAULT 0,
-            filled_price REAL,
-            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            filled_at TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (trade_bill_id) REFERENCES trade_bills(id)
-        );
-    """)
-
-    # Migration 9: Create GTT orders tracking table
-    migrations.append("""
-        CREATE TABLE IF NOT EXISTS kite_gtt_orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            trigger_id INTEGER NOT NULL,
-            symbol TEXT NOT NULL,
-            exchange TEXT DEFAULT 'NSE',
-            trigger_type TEXT NOT NULL,
-            trigger_values TEXT,
-            quantity INTEGER NOT NULL,
-            status TEXT DEFAULT 'active',
-            trade_bill_id INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            triggered_at TIMESTAMP,
-            expires_at TEXT,
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (trade_bill_id) REFERENCES trade_bills(id)
-        );
-    """)
-    
-    # Run migrations
     success = 0
     skipped = 0
     errors = []
-    
-    for migration in migrations:
+
+    # Define column additions: (table, column, sql_type_with_default)
+    column_migrations = [
+        ('trade_bills', 'order_id', 'NVARCHAR(100)'),
+        ('trade_bills', 'signal_strength', 'INT'),
+        ('trade_bills', 'grade', 'NVARCHAR(10)'),
+        ('trade_bills', 'symbol', 'NVARCHAR(100)'),
+        ('trade_bills', 'market', "NVARCHAR(10) DEFAULT 'IN'"),
+        ('trade_bills', 'direction', "NVARCHAR(20) DEFAULT 'LONG'"),
+        ('trade_bills', 'risk_amount', 'FLOAT'),
+        ('trade_bills', 'position_value', 'FLOAT'),
+        ('trade_bills', 'max_risk', 'FLOAT'),
+        ('trade_bills', 'other_charges', 'FLOAT DEFAULT 0'),
+        ('trade_log', 'ibkr_order_id', 'NVARCHAR(100)'),
+        ('trade_log', 'ibkr_execution_id', 'NVARCHAR(100)'),
+        ('trade_log', 'trade_bill_id', 'INT'),
+        ('trade_log', 'synced_from_ibkr', 'BIT DEFAULT 0'),
+        ('weekly_scans', 'screener_version', "NVARCHAR(20) DEFAULT '1.0'"),
+        ('daily_scans', 'screener_version', "NVARCHAR(20) DEFAULT '1.0'"),
+        ('account_settings', 'kite_api_key', 'NVARCHAR(200)'),
+        ('account_settings', 'kite_api_secret', 'NVARCHAR(200)'),
+        ('account_settings', 'kite_access_token', 'NVARCHAR(500)'),
+        ('account_settings', 'kite_token_expiry', 'NVARCHAR(50)'),
+        ('account_settings', 'last_data_refresh', 'NVARCHAR(50)'),
+    ]
+
+    for table, column, sql_type in column_migrations:
         try:
-            cursor.execute(migration)
-            success += 1
-        except sqlite3.OperationalError as e:
+            if not _column_exists(cursor, table, column):
+                cursor.execute(f"ALTER TABLE {table} ADD {column} {sql_type}")
+                success += 1
+            else:
+                skipped += 1
+        except pyodbc.Error as e:
             error_msg = str(e)
-            if 'duplicate column name' in error_msg.lower() or 'already exists' in error_msg.lower():
+            if 'duplicate' in error_msg.lower() or 'already exists' in error_msg.lower():
                 skipped += 1
             else:
-                errors.append(f"{migration[:50]}... -> {error_msg}")
-    
+                errors.append(f"{table}.{column} -> {error_msg}")
+
     conn.commit()
     conn.close()
-    
+
     print(f"Migration complete: {success} applied, {skipped} skipped, {len(errors)} errors")
     if errors:
         print("Errors:")
         for e in errors:
             print(f"  - {e}")
-    
+
     return {
         'success': success,
         'skipped': skipped,

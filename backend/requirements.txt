@@ -17,3 +17,6 @@ kiteconnect==5.0.1
 
 # Timezone support for NSE trading hours
 pytz==2024.1
+
+# SQL Server connectivity
+pyodbc>=4.0.39
