@@ -22,7 +22,8 @@ ENTRY/STOP/TARGET CALCULATION (Elder's Method):
 - TARGET: Keltner Channel Upper Band
 - STOP: Deepest historical EMA-22 penetration
 
-Data Source: IBKR Client Portal API
+Data Source: Kite Connect API (NSE)
+Symbol Format: NSE:SYMBOL (e.g., NSE:RELIANCE, NSE:TCS)
 """
 
 import pandas as pd
@@ -44,57 +45,39 @@ from services.indicator_config import (
     get_indicator_info,
     get_config_summary
 )
-from services.ibkr_client import fetch_stock_data, check_connection, get_client, convert_to_native
+from services.kite_client import fetch_stock_data, check_connection, get_client, convert_to_native
 
 
-# Default watchlists
-# Full NASDAQ 100 stocks
-NASDAQ_100 = [
-    # Top 50 by market cap
-    'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'AMD', 'AVGO', 'NFLX',
-    'COST', 'PEP', 'ADBE', 'CSCO', 'INTC', 'QCOM', 'TXN', 'INTU', 'AMAT', 'MU',
-    'LRCX', 'KLAC', 'SNPS', 'CDNS', 'MRVL', 'ON', 'NXPI', 'ADI', 'MCHP', 'FTNT',
-    'VRTX', 'CHTR', 'ASML', 'CRWD', 'PANW', 'MNST', 'TEAM', 'PAYX', 'AEP', 'REGN',
-    'DXCM', 'CPRT', 'PCAR', 'ALGN', 'AMGN', 'MRNA', 'XEL', 'WDAY', 'ABNB', 'MDLZ',
-    # Next 50
-    'GILD', 'ISRG', 'BKNG', 'ADP', 'SBUX', 'PYPL', 'CME', 'ORLY', 'IDXX', 'CTAS',
-    'MAR', 'CSX', 'ODFL', 'FAST', 'ROST', 'KDP', 'EXC', 'DLTR', 'BIIB', 'EA',
-    'VRSK', 'ANSS', 'ILMN', 'SIRI', 'ZS', 'DDOG', 'CTSH', 'WBD', 'EBAY', 'FANG',
-    'GFS', 'LCID', 'RIVN', 'CEG', 'TTD', 'GEHC', 'ZM', 'ROKU', 'OKTA', 'SPLK',
-    'DOCU', 'BILL', 'ENPH', 'SEDG', 'DASH', 'COIN', 'HOOD', 'SOFI', 'PLTR', 'NET'
-]
-
-# Keep backward compatibility
-NASDAQ_100_TOP = NASDAQ_100
-
-# NIFTY 50 + NIFTY NEXT 50 = 100 stocks
+# Default watchlist - NIFTY 100 with NSE:SYMBOL format
+# All symbols use exchange:tradingsymbol format required by Kite Connect
 NIFTY_100 = [
     # NIFTY 50
-    'RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'ICICIBANK.NS',
-    'HINDUNILVR.NS', 'SBIN.NS', 'BHARTIARTL.NS', 'ITC.NS', 'KOTAKBANK.NS',
-    'LT.NS', 'AXISBANK.NS', 'ASIANPAINT.NS', 'MARUTI.NS', 'TITAN.NS',
-    'SUNPHARMA.NS', 'ULTRACEMCO.NS', 'BAJFINANCE.NS', 'WIPRO.NS', 'HCLTECH.NS',
-    'TATAMOTORS.NS', 'POWERGRID.NS', 'NTPC.NS', 'M&M.NS', 'JSWSTEEL.NS',
-    'BAJAJFINSV.NS', 'ONGC.NS', 'TATASTEEL.NS', 'ADANIENT.NS', 'COALINDIA.NS',
-    'GRASIM.NS', 'TECHM.NS', 'HINDALCO.NS', 'INDUSINDBK.NS', 'DRREDDY.NS',
-    'APOLLOHOSP.NS', 'CIPLA.NS', 'EICHERMOT.NS', 'NESTLEIND.NS', 'DIVISLAB.NS',
-    'BRITANNIA.NS', 'BPCL.NS', 'ADANIPORTS.NS', 'TATACONSUM.NS', 'HEROMOTOCO.NS',
-    'SBILIFE.NS', 'HDFCLIFE.NS', 'BAJAJ-AUTO.NS', 'SHRIRAMFIN.NS', 'LTIM.NS',
+    'NSE:RELIANCE', 'NSE:TCS', 'NSE:HDFCBANK', 'NSE:INFY', 'NSE:ICICIBANK',
+    'NSE:HINDUNILVR', 'NSE:SBIN', 'NSE:BHARTIARTL', 'NSE:ITC', 'NSE:KOTAKBANK',
+    'NSE:LT', 'NSE:AXISBANK', 'NSE:ASIANPAINT', 'NSE:MARUTI', 'NSE:TITAN',
+    'NSE:SUNPHARMA', 'NSE:ULTRACEMCO', 'NSE:BAJFINANCE', 'NSE:WIPRO', 'NSE:HCLTECH',
+    'NSE:POWERGRID', 'NSE:NTPC', 'NSE:M&M', 'NSE:JSWSTEEL',
+    'NSE:BAJAJFINSV', 'NSE:ONGC', 'NSE:TATASTEEL', 'NSE:ADANIENT', 'NSE:COALINDIA',
+    'NSE:GRASIM', 'NSE:TECHM', 'NSE:HINDALCO', 'NSE:INDUSINDBK', 'NSE:DRREDDY',
+    'NSE:APOLLOHOSP', 'NSE:CIPLA', 'NSE:EICHERMOT', 'NSE:NESTLEIND', 'NSE:DIVISLAB',
+    'NSE:BRITANNIA', 'NSE:BPCL', 'NSE:ADANIPORTS', 'NSE:TATACONSUM', 'NSE:HEROMOTOCO',
+    'NSE:SBILIFE', 'NSE:HDFCLIFE', 'NSE:BAJAJ-AUTO', 'NSE:SHRIRAMFIN', 'NSE:LTIM',
     # NIFTY NEXT 50
-    'ABB.NS', 'ACC.NS', 'ADANIGREEN.NS', 'ADANIPOWER.NS', 'AMBUJACEM.NS',
-    'ATGL.NS', 'AUROPHARMA.NS', 'BANKBARODA.NS', 'BEL.NS', 'BERGEPAINT.NS',
-    'BOSCHLTD.NS', 'CANBK.NS', 'CHOLAFIN.NS', 'COLPAL.NS', 'DLF.NS',
-    'GAIL.NS', 'GODREJCP.NS', 'HAL.NS', 'HAVELLS.NS', 'ICICIPRULI.NS',
-    'IDEA.NS', 'IGL.NS', 'INDHOTEL.NS', 'INDIGO.NS', 'IOC.NS',
-    'IRCTC.NS', 'JINDALSTEL.NS', 'JSWENERGY.NS', 'LICI.NS', 'LUPIN.NS',
-    'MARICO.NS', 'MAXHEALTH.NS', 'MPHASIS.NS', 'NAUKRI.NS', 'NHPC.NS',
-    'OBEROIRLTY.NS', 'OFSS.NS', 'PAGEIND.NS', 'PFC.NS', 'PIDILITIND.NS',
-    'PNB.NS', 'POLYCAB.NS', 'RECLTD.NS', 'SRF.NS', 'TATAPOWER.NS',
-    'TORNTPHARM.NS', 'TRENT.NS', 'UNIONBANK.NS', 'VBL.NS', 'ZOMATO.NS'
+    'NSE:ABB', 'NSE:ACC', 'NSE:ADANIGREEN', 'NSE:ADANIPOWER', 'NSE:AMBUJACEM',
+    'NSE:ATGL', 'NSE:AUROPHARMA', 'NSE:BANKBARODA', 'NSE:BEL', 'NSE:BERGEPAINT',
+    'NSE:BOSCHLTD', 'NSE:CANBK', 'NSE:CHOLAFIN', 'NSE:COLPAL', 'NSE:DLF',
+    'NSE:GAIL', 'NSE:GODREJCP', 'NSE:HAL', 'NSE:HAVELLS', 'NSE:ICICIPRULI',
+    'NSE:IDEA', 'NSE:IGL', 'NSE:INDHOTEL', 'NSE:INDIGO', 'NSE:IOC',
+    'NSE:IRCTC', 'NSE:JINDALSTEL', 'NSE:JSWENERGY', 'NSE:LICI', 'NSE:LUPIN',
+    'NSE:MARICO', 'NSE:MAXHEALTH', 'NSE:MPHASIS', 'NSE:NAUKRI', 'NSE:NHPC',
+    'NSE:OBEROIRLTY', 'NSE:OFSS', 'NSE:PAGEIND', 'NSE:PFC', 'NSE:PIDILITIND',
+    'NSE:PNB', 'NSE:POLYCAB', 'NSE:RECLTD', 'NSE:SRF', 'NSE:TATAPOWER',
+    'NSE:TORNTPHARM', 'NSE:TRENT', 'NSE:UNIONBANK', 'NSE:VBL'
 ]
 
-# Keep backward compatibility
-NIFTY_50 = NIFTY_100
+# Backward compatibility aliases
+NIFTY_50 = NIFTY_100[:50]  # First 50 are NIFTY 50
+DEFAULT_STOCKS = NIFTY_100  # Default to NIFTY 100
 
 
 def analyze_weekly_trend(hist: pd.DataFrame) -> Dict:
@@ -665,10 +648,23 @@ def calculate_signal_strength_v2(indicators: Dict, weekly: Dict, hist: pd.DataFr
     # ═══════════════════════════════════════════════════════════════
 
     # 1. Price vs Keltner Channel positioning
-    price = indicators.get('price', 0)
-    kc_middle = indicators.get('kc_middle', price)
-    kc_lower = indicators.get('kc_lower', price * 0.97)
-    atr = indicators.get('atr', price * 0.02)
+    # Handle None values with safe defaults
+    price = indicators.get('price') or 0
+    if price == 0:
+        price = float(hist['Close'].iloc[-1]
+                      ) if hist is not None and len(hist) > 0 else 0
+
+    kc_middle = indicators.get('kc_middle')
+    if kc_middle is None:
+        kc_middle = price
+
+    kc_lower = indicators.get('kc_lower')
+    if kc_lower is None:
+        kc_lower = price * 0.97
+
+    atr = indicators.get('atr')
+    if atr is None or atr == 0:
+        atr = price * 0.02 if price > 0 else 1
 
     # Calculate extended Keltner levels
     # Lower(-1) = standard lower = Middle - 1*ATR
@@ -679,13 +675,14 @@ def calculate_signal_strength_v2(indicators: Dict, weekly: Dict, hist: pd.DataFr
     kc_score = 0
     kc_status = "Above mid-channel"
 
-    if price >= kc_lower_3 and price < kc_lower_1:
+    # Only compare if all values are valid numbers
+    if price > 0 and kc_lower_3 is not None and kc_lower_1 is not None and price >= kc_lower_3 and price < kc_lower_1:
         # Between Lower(-3) and Lower(-1) = Deep pullback
         kc_score = 2
         kc_status = f"Deep pullback zone (between KC-3 and KC-1)"
         signals.append('⭐⭐ Price in deep pullback zone')
         high_value_signals.append('KC_DEEP_PULLBACK')
-    elif price >= kc_lower_1 and price < kc_middle:
+    elif price > 0 and kc_lower_1 is not None and kc_middle is not None and price >= kc_lower_1 and price < kc_middle:
         # Between Lower(-1) and Mid = Normal pullback
         kc_score = 1
         kc_status = f"Normal pullback zone (between KC-1 and Mid)"
@@ -696,7 +693,9 @@ def calculate_signal_strength_v2(indicators: Dict, weekly: Dict, hist: pd.DataFr
         breakdown.append(f'+{kc_score}: Keltner Channel - {kc_status}')
 
     # 2. Force Index EMA(2) < 0
-    force_index = indicators.get('force_index_2', 0)
+    force_index = indicators.get('force_index_2')
+    if force_index is None:
+        force_index = 0
     if force_index < 0:
         score += 1
         breakdown.append(f'+1: Force Index EMA(2) < 0 ({force_index:.0f})')
@@ -704,7 +703,9 @@ def calculate_signal_strength_v2(indicators: Dict, weekly: Dict, hist: pd.DataFr
         high_value_signals.append('FORCE_INDEX_NEGATIVE')
 
     # 3. Stochastic < 50
-    stochastic = indicators.get('stochastic_k', 50)
+    stochastic = indicators.get('stochastic_k')
+    if stochastic is None:
+        stochastic = 50
     if stochastic < 50:
         score += 1
         breakdown.append(f'+1: Stochastic < 50 ({stochastic:.1f})')
@@ -946,25 +947,27 @@ def scan_stock_v2(symbol: str, config: Dict = None) -> Optional[Dict]:
     }
 
     # Save indicators to cache for next incremental calculation
-    try:
-        weekly_hist = hist.resample('W-FRI').agg({
-            'Open': 'first',
-            'High': 'max',
-            'Low': 'min',
-            'Close': 'last',
-            'Volume': 'sum'
-        }).dropna()
-        save_indicators_to_cache(symbol, hist, indicators, weekly_hist)
-    except Exception as e:
-        print(f"⚠️ {symbol}: Warning - could not cache indicators: {e}")
+    # DISABLED during screening to prevent database locking
+    # Cache updates will happen during off-peak times via background job
+    # try:
+    #     weekly_hist = hist.resample('W-FRI').agg({
+    #         'Open': 'first',
+    #         'High': 'max',
+    #         'Low': 'min',
+    #         'Close': 'last',
+    #         'Volume': 'sum'
+    #     }).dropna()
+    #     save_indicators_to_cache(symbol, hist, indicators, weekly_hist)
+    # except Exception as e:
+    #     print(f"⚠️ {symbol}: Warning - could not cache indicators: {e}")
 
     return convert_to_native(result)
 
 
-def run_weekly_screen_v2(market: str = 'US', symbols: List[str] = None) -> Dict:
-    """Run weekly screener v2 with corrected logic - Full 100 stocks"""
+def run_weekly_screen_v2(market: str = 'IN', symbols: List[str] = None) -> Dict:
+    """Run weekly screener v2 with corrected logic - NIFTY 100 stocks"""
     if symbols is None:
-        symbols = NASDAQ_100 if market == 'US' else NIFTY_100
+        symbols = NIFTY_100  # Always use NIFTY 100 (NSE market)
 
     results = []
     passed = []
@@ -1112,7 +1115,8 @@ def run_daily_screen_v2(weekly_results: List[Dict]) -> Dict:
 
 def save_indicators_to_cache(symbol: str, hist: pd.DataFrame, indicators: Dict, weekly_hist: pd.DataFrame = None) -> bool:
     """
-    Save calculated indicators to database cache for incremental calculation next time
+    Save calculated indicators to database cache - INCREMENTAL ONLY
+    Only saves new data that isn't already in the cache.
 
     Args:
         symbol: Stock symbol
@@ -1125,113 +1129,173 @@ def save_indicators_to_cache(symbol: str, hist: pd.DataFrame, indicators: Dict, 
     """
     from models.database import get_database
     from datetime import datetime
+    import time
 
-    try:
-        db = get_database().get_connection()
+    max_retries = 3
+    retry_delay = 0.5  # Start with 500ms delay
 
-        # Save daily indicators
-        if 'ema_22' in indicators and len(hist) > 0:
-            print(f"💾 {symbol}: Saving {len(hist)} daily indicators to cache...")
+    for attempt in range(max_retries):
+        db = None
+        try:
+            db = get_database().get_connection()
 
-            for date, row in hist.iterrows():
-                date_str = date.strftime('%Y-%m-%d')
-                close = float(row['Close']) if isinstance(
-                    row['Close'], (int, float)) else None
+            # Check what we already have cached
+            sync_row = db.execute(
+                'SELECT last_daily_date, last_weekly_date FROM stock_indicator_sync WHERE symbol = ?',
+                (symbol,)
+            ).fetchone()
 
-                db.execute('''
-                    INSERT OR REPLACE INTO stock_indicators_daily
-                    (symbol, date, close, ema_22, ema_50, ema_100, ema_200, 
-                     macd_line, macd_signal, macd_histogram, rsi, stochastic, 
-                     stoch_d, atr, force_index, kc_upper, kc_middle, kc_lower)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    symbol,
-                    date_str,
-                    close,
-                    float(row.get('EMA_22', 0)) if pd.notna(
-                        row.get('EMA_22')) else None,
-                    float(row.get('EMA_50', 0)) if pd.notna(
-                        row.get('EMA_50')) else None,
-                    float(row.get('EMA_100', 0)) if pd.notna(
-                        row.get('EMA_100')) else None,
-                    float(row.get('EMA_200', 0)) if pd.notna(
-                        row.get('EMA_200')) else None,
-                    float(row.get('MACD_Line', 0)) if pd.notna(
-                        row.get('MACD_Line')) else None,
-                    float(row.get('MACD_Signal', 0)) if pd.notna(
-                        row.get('MACD_Signal')) else None,
-                    float(row.get('MACD_Histogram', 0)) if pd.notna(
-                        row.get('MACD_Histogram')) else None,
-                    float(row.get('RSI_14', 0)) if pd.notna(
-                        row.get('RSI_14')) else None,
-                    float(row.get('Stochastic', 0)) if pd.notna(
-                        row.get('Stochastic')) else None,
-                    float(row.get('Stochastic_D', 0)) if pd.notna(
-                        row.get('Stochastic_D')) else None,
-                    float(row.get('ATR', 0)) if pd.notna(
-                        row.get('ATR')) else None,
-                    float(row.get('Force_Index', 0)) if pd.notna(
-                        row.get('Force_Index')) else None,
-                    float(row.get('KC_Upper', 0)) if pd.notna(
-                        row.get('KC_Upper')) else None,
-                    float(row.get('KC_Middle', 0)) if pd.notna(
-                        row.get('KC_Middle')) else None,
-                    float(row.get('KC_Lower', 0)) if pd.notna(
-                        row.get('KC_Lower')) else None
-                ))
+            last_daily_date = sync_row['last_daily_date'] if sync_row else None
+            last_weekly_date = sync_row['last_weekly_date'] if sync_row else None
 
-        # Update indicator sync record
-        if len(hist) > 0:
-            latest_date = hist.index.max().strftime('%Y-%m-%d')
-            db.execute('''
-                INSERT OR REPLACE INTO stock_indicator_sync
-                (symbol, last_updated, last_daily_date, daily_record_count)
-                VALUES (?, ?, ?, 
-                    (SELECT COUNT(*) FROM stock_indicators_daily WHERE symbol = ?))
-            ''', (symbol, datetime.now().isoformat(), latest_date, symbol))
+            # Only save daily indicators for NEW dates
+            if 'ema_22' in indicators and len(hist) > 0:
+                latest_date = hist.index.max().strftime('%Y-%m-%d')
 
-        # Save weekly indicators if provided
-        if weekly_hist is not None and len(weekly_hist) > 0:
-            print(
-                f"💾 {symbol}: Saving {len(weekly_hist)} weekly indicators to cache...")
+                # Skip if already cached for today
+                if last_daily_date and last_daily_date >= latest_date:
+                    db.close()
+                    return True  # Already up to date
 
-            for date, row in weekly_hist.iterrows():
-                date_str = date.strftime('%Y-%m-%d')
-                close = float(row['Close']) if isinstance(
-                    row['Close'], (int, float)) else None
+                # Only save rows after the last cached date
+                new_rows = 0
+                for date, row in hist.iterrows():
+                    date_str = date.strftime('%Y-%m-%d')
 
-                db.execute('''
-                    INSERT OR REPLACE INTO stock_indicators_weekly
-                    (symbol, week_end_date, close, ema_22, ema_50, ema_100, ema_200,
-                     macd_line, macd_signal, macd_histogram)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    symbol,
-                    date_str,
-                    close,
-                    float(row.get('EMA_22', 0)) if pd.notna(
-                        row.get('EMA_22')) else None,
-                    float(row.get('EMA_50', 0)) if pd.notna(
-                        row.get('EMA_50')) else None,
-                    float(row.get('EMA_100', 0)) if pd.notna(
-                        row.get('EMA_100')) else None,
-                    float(row.get('EMA_200', 0)) if pd.notna(
-                        row.get('EMA_200')) else None,
-                    float(row.get('MACD_Line', 0)) if pd.notna(
-                        row.get('MACD_Line')) else None,
-                    float(row.get('MACD_Signal', 0)) if pd.notna(
-                        row.get('MACD_Signal')) else None,
-                    float(row.get('MACD_Histogram', 0)) if pd.notna(
-                        row.get('MACD_Histogram')) else None
-                ))
+                    # Skip if already cached
+                    if last_daily_date and date_str <= last_daily_date:
+                        continue
 
-        db.commit()
-        db.close()
-        print(f"✅ {symbol}: Indicators cached successfully")
-        return True
+                    close = float(row['Close']) if isinstance(
+                        row['Close'], (int, float)) else None
 
-    except Exception as e:
-        print(f"❌ {symbol}: Error saving indicators to cache: {e}")
-        return False
+                    db.execute('''
+                        INSERT OR REPLACE INTO stock_indicators_daily
+                        (symbol, date, close, ema_22, ema_50, ema_100, ema_200,
+                         macd_line, macd_signal, macd_histogram, rsi, stochastic,
+                         stoch_d, atr, force_index, kc_upper, kc_middle, kc_lower)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        symbol,
+                        date_str,
+                        close,
+                        float(row.get('EMA_22', 0)) if pd.notna(
+                            row.get('EMA_22')) else None,
+                        float(row.get('EMA_50', 0)) if pd.notna(
+                            row.get('EMA_50')) else None,
+                        float(row.get('EMA_100', 0)) if pd.notna(
+                            row.get('EMA_100')) else None,
+                        float(row.get('EMA_200', 0)) if pd.notna(
+                            row.get('EMA_200')) else None,
+                        float(row.get('MACD_Line', 0)) if pd.notna(
+                            row.get('MACD_Line')) else None,
+                        float(row.get('MACD_Signal', 0)) if pd.notna(
+                            row.get('MACD_Signal')) else None,
+                        float(row.get('MACD_Histogram', 0)) if pd.notna(
+                            row.get('MACD_Histogram')) else None,
+                        float(row.get('RSI_14', 0)) if pd.notna(
+                            row.get('RSI_14')) else None,
+                        float(row.get('Stochastic', 0)) if pd.notna(
+                            row.get('Stochastic')) else None,
+                        float(row.get('Stochastic_D', 0)) if pd.notna(
+                            row.get('Stochastic_D')) else None,
+                        float(row.get('ATR', 0)) if pd.notna(
+                            row.get('ATR')) else None,
+                        float(row.get('Force_Index', 0)) if pd.notna(
+                            row.get('Force_Index')) else None,
+                        float(row.get('KC_Upper', 0)) if pd.notna(
+                            row.get('KC_Upper')) else None,
+                        float(row.get('KC_Middle', 0)) if pd.notna(
+                            row.get('KC_Middle')) else None,
+                        float(row.get('KC_Lower', 0)) if pd.notna(
+                            row.get('KC_Lower')) else None
+                    ))
+                    new_rows += 1
 
+                # Update indicator sync record
+                if new_rows > 0:
+                    db.execute('''
+                        INSERT OR REPLACE INTO stock_indicator_sync
+                        (symbol, last_updated, last_daily_date, daily_record_count)
+                        VALUES (?, ?, ?,
+                            (SELECT COUNT(*) FROM stock_indicators_daily WHERE symbol = ?))
+                    ''', (symbol, datetime.now().isoformat(), latest_date, symbol))
 
+            # Save weekly indicators - also incremental
+            if weekly_hist is not None and len(weekly_hist) > 0:
+                latest_weekly = weekly_hist.index.max().strftime('%Y-%m-%d')
+
+                # Skip if already cached for this week
+                if not (last_weekly_date and last_weekly_date >= latest_weekly):
+                    new_weekly = 0
+                    for date, row in weekly_hist.iterrows():
+                        date_str = date.strftime('%Y-%m-%d')
+
+                        # Skip if already cached
+                        if last_weekly_date and date_str <= last_weekly_date:
+                            continue
+
+                        close = float(row['Close']) if isinstance(
+                            row['Close'], (int, float)) else None
+
+                        db.execute('''
+                            INSERT OR REPLACE INTO stock_indicators_weekly
+                            (symbol, week_end_date, close, ema_22, ema_50, ema_100, ema_200,
+                             macd_line, macd_signal, macd_histogram)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            symbol,
+                            date_str,
+                            close,
+                            float(row.get('EMA_22', 0)) if pd.notna(
+                                row.get('EMA_22')) else None,
+                            float(row.get('EMA_50', 0)) if pd.notna(
+                                row.get('EMA_50')) else None,
+                            float(row.get('EMA_100', 0)) if pd.notna(
+                                row.get('EMA_100')) else None,
+                            float(row.get('EMA_200', 0)) if pd.notna(
+                                row.get('EMA_200')) else None,
+                            float(row.get('MACD_Line', 0)) if pd.notna(
+                                row.get('MACD_Line')) else None,
+                            float(row.get('MACD_Signal', 0)) if pd.notna(
+                                row.get('MACD_Signal')) else None,
+                            float(row.get('MACD_Histogram', 0)) if pd.notna(
+                                row.get('MACD_Histogram')) else None
+                        ))
+                        new_weekly += 1
+
+                    # Update weekly date in sync record
+                    if new_weekly > 0:
+                        db.execute('''
+                            UPDATE stock_indicator_sync
+                            SET last_weekly_date = ?, weekly_record_count =
+                                (SELECT COUNT(*) FROM stock_indicators_weekly WHERE symbol = ?)
+                            WHERE symbol = ?
+                        ''', (latest_weekly, symbol, symbol))
+
+            # Commit all changes in a single transaction
+            db.commit()
+            db.close()
+            return True
+
+        except Exception as e:
+            # Close connection if open
+            if db:
+                try:
+                    db.close()
+                except:
+                    pass
+
+            # Check if it's a database locked error
+            if 'database is locked' in str(e).lower() and attempt < max_retries - 1:
+                # Wait with exponential backoff before retrying
+                time.sleep(retry_delay * (2 ** attempt))
+                continue
+            else:
+                # For other errors or final retry, just log and return
+                if attempt == max_retries - 1:
+                    print(
+                        f"❌ {symbol}: Error saving indicators to cache after {max_retries} attempts: {e}")
+                return False
+
+    return False

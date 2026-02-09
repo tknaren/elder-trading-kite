@@ -18,7 +18,6 @@ from services.indicator_config import (
     get_config_summary
 )
 from services.candlestick_patterns import CANDLESTICK_PATTERNS
-from services.ibkr_client import check_connection, get_client
 
 api = Blueprint('api', __name__, url_prefix='/api')
 
@@ -52,6 +51,14 @@ def get_user_id():
     return getattr(g, 'user_id', 1)
 
 
+@api.teardown_app_request
+def close_db_connection(error):
+    """Close database connection at end of request"""
+    db = g.pop('db', None)
+    if db is not None:
+        db.close()
+
+
 # ============ HEALTH CHECK ============
 @api.route('/health', methods=['GET'])
 def health_check():
@@ -59,19 +66,9 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.utcnow().isoformat(),
-        'version': '2.0.0'
-    })
-
-
-@api.route('/ibkr/status', methods=['GET'])
-def ibkr_status():
-    """Check IBKR Gateway connection status"""
-    connected, message = check_connection()
-    return jsonify({
-        'connected': connected,
-        'message': message,
-        'gateway_url': 'https://localhost:5000',
-        'instructions': 'Start Client Portal Gateway and login at https://localhost:5000' if not connected else None
+        'version': '2.0.0',
+        'market': 'NSE',
+        'broker': 'Kite Connect'
     })
 
 
@@ -89,15 +86,15 @@ def weekly_screener():
         Complete scan results with all stocks and indicators
     """
     data = request.get_json() or {}
-    market = data.get('market', 'US')
+    market = data.get('market', 'IN')
     watchlist_id = data.get('watchlist_id')
 
-    db = get_db()
     user_id = get_user_id()
 
-    # Get symbols from watchlist
+    # Get symbols from watchlist (quick DB operation)
     symbols = None
     if watchlist_id:
+        db = get_db()
         watchlist = db.execute(
             'SELECT symbols FROM watchlists WHERE id = ?',
             (watchlist_id,)
@@ -105,11 +102,11 @@ def weekly_screener():
         if watchlist:
             symbols = json.loads(watchlist['symbols'])
 
-    # If no specific watchlist requested and no symbols provided, use full market list (not default watchlist)
-    # This ensures we always scan the full NASDAQ_100 or NIFTY_100
+    # If no specific watchlist requested and no symbols provided, use full NIFTY_100 list
     # symbols will be None, and run_weekly_screen will use the full list
 
-    # Run the screener
+    # Run the screener (this is a long-running operation)
+    # Don't hold database connection during this
     results = run_weekly_screen(market, symbols)
 
     # Calculate week boundaries
@@ -117,7 +114,8 @@ def weekly_screener():
     week_start = today - timedelta(days=today.weekday())
     week_end = week_start + timedelta(days=6)
 
-    # Save scan to database
+    # Save scan to database (quick DB operation)
+    db = get_db()
     db.execute('''
         INSERT INTO weekly_scans 
         (user_id, market, scan_date, week_start, week_end, results, summary)
@@ -291,7 +289,7 @@ def get_bearish_patterns():
 @api.route('/screener/weekly/latest', methods=['GET'])
 def get_latest_weekly():
     """Get latest weekly scan for current week"""
-    market = request.args.get('market', 'US')
+    market = request.args.get('market', 'IN')
 
     today = datetime.now().date()
     week_start = today - timedelta(days=today.weekday())
@@ -739,12 +737,12 @@ def create_trade_bill():
             INSERT INTO trade_bills (
                 user_id, ticker, current_market_price, entry_price, stop_loss, target_price,
                 quantity, upper_channel, lower_channel, target_pips, stop_loss_pips,
-                max_qty_for_risk, overnight_charges, risk_per_share, position_size,
+                max_qty_for_risk, other_charges, max_risk, risk_per_share, position_size,
                 risk_percent, channel_height, potential_gain, target_1_1_c, target_1_2_b,
                 target_1_3_a, risk_amount_currency, reward_amount_currency, risk_reward_ratio,
                 break_even, trailing_stop, is_filled, stop_entered, target_entered,
                 journal_entered, comments, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             user_id, data.get('ticker'), data.get('current_market_price'),
             data.get('entry_price'), data.get(
@@ -753,8 +751,8 @@ def create_trade_bill():
                 'upper_channel'), data.get('lower_channel'),
             data.get('target_pips'), data.get(
                 'stop_loss_pips'), data.get('max_qty_for_risk'),
-            data.get('overnight_charges'), data.get(
-                'risk_per_share'), data.get('position_size'),
+            data.get('other_charges', 0), data.get('max_risk'),
+            data.get('risk_per_share'), data.get('position_size'),
             data.get('risk_percent'), data.get(
                 'channel_height'), data.get('potential_gain'),
             data.get('target_1_1_c'), data.get(
@@ -1107,7 +1105,7 @@ def save_indicator_filters():
 def get_favorites():
     """Get all favorite stocks for current market with price data"""
     user_id = get_user_id()
-    market = request.args.get('market', 'US')
+    market = request.args.get('market', 'IN')
     db = get_db()
 
     favorites = db.execute('''
@@ -1152,7 +1150,7 @@ def toggle_favorite(symbol):
     """Toggle favorite status for a stock"""
     user_id = get_user_id()
     data = request.get_json() or {}
-    market = data.get('market', 'US')
+    market = data.get('market', 'IN')
     notes = data.get('notes', '')
     db = get_db()
 
@@ -1184,7 +1182,7 @@ def toggle_favorite(symbol):
 def remove_favorite(symbol):
     """Remove a stock from favorites"""
     user_id = get_user_id()
-    market = request.args.get('market', 'US')
+    market = request.args.get('market', 'IN')
     db = get_db()
 
     db.execute('''
@@ -1201,7 +1199,7 @@ def update_favorite_notes(symbol):
     """Update notes for a favorite stock"""
     user_id = get_user_id()
     data = request.get_json() or {}
-    market = data.get('market', 'US')
+    market = data.get('market', 'IN')
     notes = data.get('notes', '')
     db = get_db()
 
@@ -1219,7 +1217,7 @@ def update_favorite_notes(symbol):
 def check_favorite(symbol):
     """Check if stock is favorited"""
     user_id = get_user_id()
-    market = request.args.get('market', 'US')
+    market = request.args.get('market', 'IN')
     db = get_db()
 
     favorite = db.execute('''
@@ -1238,7 +1236,7 @@ def run_backtest():
 
     data = request.get_json() or {}
     symbol = data.get('symbol', '').upper()
-    market = data.get('market', 'US')
+    market = data.get('market', 'IN')
     lookback_days = data.get('lookback_days', 90)
     config = data.get('config', {})
 
@@ -1257,7 +1255,7 @@ def run_backtest():
 @api.route('/backtest/available-stocks', methods=['GET'])
 def get_backtest_stocks():
     """Get list of available stocks for backtesting"""
-    market = request.args.get('market', 'US')
+    market = request.args.get('market', 'IN')
 
     # Get stocks that have at least 90 days of historical data
     db = get_db()
@@ -1275,5 +1273,3 @@ def get_backtest_stocks():
         'stocks': [s['symbol'] for s in stocks],
         'count': len(stocks)
     })
-
-

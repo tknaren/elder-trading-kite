@@ -13,8 +13,6 @@ Filter Conditions (All must be TRUE):
 Shows all indicator values in the results grid.
 """
 
-import os
-import csv
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -419,52 +417,17 @@ def run_rsi_macd_screener(
     }
 
 
-# Stock list loader
+# Stock list - NIFTY 100 (NSE India)
+from services.screener_v2 import NIFTY_100
 
 
-def load_nasdaq_stocks_from_csv():
+def get_stock_list(market: str = 'IN'):
     """
-    Load NASDAQ stocks from CSV file with company details
-
-    Returns:
-        Tuple of (symbols: List[str], stock_info_map: Dict[str, Dict])
-        where stock_info_map contains Name, Market Cap, Sector, Industry for each symbol
-    """
-    csv_path = os.path.join(os.path.dirname(__file__),
-                            '..', '..', 'docs', 'nasdaq_screener.csv')
-    symbols = []
-    stock_info_map = {}
-
-    try:
-        with open(csv_path, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                symbol = row.get('Symbol', '').strip()
-                if symbol:
-                    symbols.append(symbol)
-                    stock_info_map[symbol] = {
-                        'Name': row.get('Name', '').strip(),
-                        'Market Cap': row.get('Market Cap', '').strip(),
-                        'Sector': row.get('Sector', '').strip(),
-                        'Industry': row.get('Industry', '').strip()
-                    }
-    except Exception as e:
-        print(f"Error loading NASDAQ stocks from CSV: {e}")
-        # Return empty if file not found or error
-        return [], {}
-
-    return symbols, stock_info_map
-
-
-def get_stock_list(market: str = 'US'):
-    """
-    Get available stock list with company information
+    Get NIFTY 100 stock list for NSE
 
     Returns:
         Tuple of (symbols: List[str], stock_info_map: Dict[str, Dict])
     """
-    if market.upper() == 'US':
-        return load_nasdaq_stocks_from_csv()
-    else:
-        # For non-US markets, return empty for now
-        return [], {}
+    # Return NIFTY 100 symbols with empty info map (company details fetched from Kite)
+    stock_info_map = {symbol: {'Name': '', 'Market Cap': '', 'Sector': '', 'Industry': ''} for symbol in NIFTY_100}
+    return NIFTY_100, stock_info_map

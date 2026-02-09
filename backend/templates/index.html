@@ -29,12 +29,12 @@
             <header class="h-14 bg-[#111827] border-b border-gray-700 px-6 flex items-center justify-between sticky top-0 z-10">
                 <div id="header-stats" class="flex gap-6 text-sm"></div>
                 <div class="flex items-center gap-4">
-                    <div id="ibkr-status" class="text-xs px-2 py-1 rounded"></div>
-                    <select id="market" class="bg-[#1f2937] border border-gray-600 rounded px-3 py-1.5 text-sm">
-                        <option value="US">🇺🇸 NASDAQ</option>
-                        <option value="IN">🇮🇳 NSE</option>
-                    </select>
+                    <div id="market-status" class="text-xs px-2 py-1 rounded bg-gray-700 text-gray-400"></div>
+                    <div id="kite-status" class="text-xs px-2 py-1 rounded cursor-pointer"></div>
+                    <span class="text-xs text-gray-500">🇮🇳 NIFTY 100</span>
                 </div>
+                <!-- Hidden market field for backward compatibility -->
+                <input type="hidden" id="market" value="IN">
             </header>
             <div class="p-6" id="content"></div>
         </main>
@@ -61,6 +61,7 @@
         {id:'rsi-macd-screener', icon:'📈', label:'RSI+MACD'},
         {id:'trade-bill', icon:'💼', label:'Trade Bill'},
         {id:'trade-bills', icon:'📋', label:'Trade Bills'},
+        {id:'trade-journal', icon:'📓', label:'Trade Journal'},
         {id:'journal-dashboard', icon:'📈', label:'Dashboard'},
         {id:'trade-log', icon:'📝', label:'Trade Log'},
         {id:'trade-summary', icon:'📈', label:'Trade Summary'},
@@ -129,8 +130,8 @@
     }
 
     function renderHeader() {
-        const s = settings[0] || {trading_capital:6000, risk_per_trade:2, currency:'GBP'};
-        const sym = s.currency==='GBP'?'£':s.currency==='INR'?'₹':'$';
+        const s = settings[0] || {trading_capital:500000, risk_per_trade:2, currency:'INR'};
+        const sym = '₹';  // Always INR for NSE
         document.getElementById('header-stats').innerHTML = `
             <div><span class="text-gray-500">Capital:</span> <span class="font-mono text-blue-400">${sym}${s.trading_capital?.toLocaleString()}</span></div>
             <div><span class="text-gray-500">Max Risk:</span> <span class="font-mono text-red-400">${sym}${(s.trading_capital*s.risk_per_trade/100).toFixed(0)}</span></div>
@@ -147,6 +148,7 @@
         else if(currentTab==='rsi-macd-screener') c.innerHTML = rsiMacdScreenerView();
         else if(currentTab==='trade-bill') { c.innerHTML = tradeBillView(); triggerTradeBillCalc(); }
         else if(currentTab==='trade-bills') c.innerHTML = await tradeBillsView();
+        else if(currentTab==='trade-journal') c.innerHTML = await tradeJournalView();
         else if(currentTab==='journal-dashboard') c.innerHTML = await journalDashboardView();
         else if(currentTab==='trade-log') c.innerHTML = await tradeLogView();
         else if(currentTab==='trade-summary') c.innerHTML = await tradeSummaryView();
@@ -155,7 +157,7 @@
         else if(currentTab==='favorites') c.innerHTML = await favoritesView();
         else if(currentTab==='account') c.innerHTML = await accountView();
         else if(currentTab==='checklist') c.innerHTML = checklistView();
-        else if(currentTab==='settings') c.innerHTML = settingsView();
+        else if(currentTab==='settings') { c.innerHTML = settingsView(); loadDataStatus(); }
     }
 
     // ========== SCREENER ==========
@@ -226,7 +228,7 @@
                                                 <div class="font-mono font-bold">${r.symbol}</div>
                                                 <div class="text-xs text-gray-500 truncate max-w-[100px]">${r.name||''}</div>
                                             </td>
-                                            <td class="p-3 font-mono">$${r.price?.toFixed(2)}</td>
+                                            <td class="p-3 font-mono">₹${r.price?.toFixed(2)}</td>
                                             <td class="p-3 font-mono ${r.change>=0?'text-green-400':'text-red-400'}">${r.change>=0?'+':''}${r.change?.toFixed(2)}</td>
                                             <td class="p-3 text-center">
                                                 <span class="px-2 py-1 rounded text-xs font-bold ${
@@ -366,14 +368,14 @@
                     <div>
                         <h3 class="font-bold text-lg mb-3 text-blue-400">📊 Indicator Values</h3>
                         <div class="space-y-2 bg-[#1f2937] rounded-lg p-4">
-                            <div class="flex justify-between"><span class="text-gray-400">Price</span><span class="font-mono">$${stock.price?.toFixed(2)}</span></div>
-                            <div class="flex justify-between"><span class="text-gray-400">EMA 22</span><span class="font-mono">$${stock.ema_22?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Price</span><span class="font-mono">₹${stock.price?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">EMA 22</span><span class="font-mono">₹${stock.ema_22?.toFixed(2)}</span></div>
                             <div class="flex justify-between"><span class="text-gray-400">Price vs EMA</span><span class="font-mono ${stock.price_vs_ema<=0?'text-green-400':'text-red-400'}">${stock.price_vs_ema?.toFixed(1)}%</span></div>
                             <div class="flex justify-between"><span class="text-gray-400">MACD Histogram</span><span class="font-mono">${stock.macd_histogram?.toFixed(4)}</span></div>
                             <div class="flex justify-between"><span class="text-gray-400">Force Index</span><span class="font-mono ${stock.force_index<0?'text-green-400':'text-red-400'}">${stock.force_index?.toFixed(0)}</span></div>
                             <div class="flex justify-between"><span class="text-gray-400">Stochastic</span><span class="font-mono">${stock.stochastic?.toFixed(1)}</span></div>
                             <div class="flex justify-between"><span class="text-gray-400">RSI</span><span class="font-mono">${stock.rsi?.toFixed(1)}</span></div>
-                            <div class="flex justify-between"><span class="text-gray-400">ATR</span><span class="font-mono">$${stock.atr?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">ATR</span><span class="font-mono">₹${stock.atr?.toFixed(2)}</span></div>
                         </div>
 
                         <h3 class="font-bold text-lg mb-3 mt-6 text-purple-400">🕯️ Candlestick Patterns</h3>
@@ -411,10 +413,10 @@
 
                         <h3 class="font-bold text-lg mb-3 mt-6 text-yellow-400">🎯 Trade Levels</h3>
                         <div class="space-y-2 bg-[#1f2937] rounded-lg p-4">
-                            <div class="flex justify-between"><span class="text-gray-400">Entry</span><span class="font-mono text-blue-400">$${stock.entry?.toFixed(2)}</span></div>
-                            <div class="flex justify-between"><span class="text-gray-400">Stop Loss</span><span class="font-mono text-red-400">$${stock.stop_loss?.toFixed(2)}</span></div>
-                            <div class="flex justify-between"><span class="text-gray-400">Target 1</span><span class="font-mono text-green-400">$${stock.target_b?.toFixed(2)}</span></div>
-                            <div class="flex justify-between"><span class="text-gray-400">Target 2</span><span class="font-mono text-green-400">$${stock.target_a?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Entry</span><span class="font-mono text-blue-400">₹${stock.entry?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Stop Loss</span><span class="font-mono text-red-400">₹${stock.stop_loss?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Target 1</span><span class="font-mono text-green-400">₹${stock.target_b?.toFixed(2)}</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Target 2</span><span class="font-mono text-green-400">₹${stock.target_a?.toFixed(2)}</span></div>
                             <div class="flex justify-between"><span class="text-gray-400">Risk</span><span class="font-mono">${stock.risk_percent?.toFixed(1)}%</span></div>
                         </div>
                     </div>
@@ -652,7 +654,7 @@
             list.innerHTML = matches.map(s => `
                 <div onclick="selectStock('${s.symbol}')" class="px-3 py-2 hover:bg-[#1f2937] cursor-pointer text-sm">
                     <div class="font-mono font-bold text-blue-400">${s.symbol}</div>
-                    <div class="text-xs text-gray-500">${s.name} - $${s.price?.toFixed(2)}</div>
+                    <div class="text-xs text-gray-500">${s.name} - ₹${s.price?.toFixed(2)}</div>
                 </div>
             `).join('');
         } catch(e) {
@@ -660,10 +662,39 @@
         }
     }
 
-    function selectStock(symbol) {
+    async function selectStock(symbol) {
         document.getElementById('tb-ticker').value = symbol;
         document.getElementById('ticker-suggestions').innerHTML = '';
-        toast(`Stock ${symbol} selected!`, 'success');
+
+        try {
+            // Fetch from DATABASE CACHE only (no API calls) - fast!
+            const resp = await fetch(`/api/v2/data/stock/${encodeURIComponent(symbol)}`);
+            const quote = await resp.json();
+
+            if (quote.error) {
+                toast(quote.error, 'warning');
+                return;
+            }
+
+            if (quote && quote.price) {
+                // Auto-populate Trade Bill fields from cached data
+                document.getElementById('tb-cmp').value = quote.price.toFixed(2);
+                document.getElementById('tb-entry').value = quote.suggested_entry.toFixed(2);
+                document.getElementById('tb-sl').value = quote.suggested_stop.toFixed(2);
+                document.getElementById('tb-target').value = quote.suggested_target.toFixed(2);
+                document.getElementById('tb-uc').value = quote.kc_upper_3.toFixed(2);
+                document.getElementById('tb-lc').value = quote.kc_lower_3.toFixed(2);
+
+                // Trigger calculations
+                autoCalculateTradeBill();
+                toast(`${symbol} loaded (${quote.date})`, 'success');
+            } else {
+                toast(`No cached data for ${symbol}. Load data first.`, 'warning');
+            }
+        } catch(e) {
+            console.error('Error fetching stock data:', e);
+            toast(`Error: ${e.message}. Load data from Settings first.`, 'error');
+        }
     }
 
     // ========== HISTORICAL SCREENER (formerly Backtest) ==========
@@ -673,11 +704,11 @@
     async function backtestView() {
         // Load available stocks
         try {
-            const resp = await fetch('/api/v2/historical-screener/stocks?market=US');
+            const resp = await fetch('/api/v2/historical-screener/stocks?market=IN');
             const data = await resp.json();
             historicalStocks = data.stocks || [];
         } catch(e) {
-            historicalStocks = ['AAPL','MSFT','GOOGL','AMZN','NVDA','META','TSLA','AMD','AVGO','NFLX'];
+            historicalStocks = ['NSE:RELIANCE','NSE:TCS','NSE:HDFCBANK','NSE:INFY','NSE:ICICIBANK','NSE:HINDUNILVR','NSE:SBIN','NSE:BHARTIARTL','NSE:ITC','NSE:KOTAKBANK'];
         }
         
         const html = `
@@ -691,7 +722,7 @@
                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <!-- Left: Stock Selection -->
                         <div>
-                            <label class="block text-sm font-medium text-gray-300 mb-2">Select Stocks (NASDAQ 100)</label>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Select Stocks (NIFTY 100)</label>
                             <div class="flex gap-2 mb-2">
                                 <button onclick="selectAllStocks()" class="text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded">Select All</button>
                                 <button onclick="clearAllStocks()" class="text-xs bg-gray-600 hover:bg-gray-700 text-white px-3 py-1 rounded">Clear All</button>
@@ -734,9 +765,8 @@
                             
                             <div>
                                 <label class="block text-sm font-medium text-gray-300 mb-2">Market</label>
-                                <select id="hs-market" class="w-full bg-[#1f2937] border border-gray-600 rounded-lg px-3 py-2 text-white" onchange="changeMarket()">
-                                    <option value="US">US Market (NASDAQ 100)</option>
-                                    <option value="India">India Market (NIFTY 100)</option>
+                                <select id="hs-market" class="w-full bg-[#1f2937] border border-gray-600 rounded-lg px-3 py-2 text-white" disabled>
+                                    <option value="IN" selected>🇮🇳 NSE (NIFTY 100)</option>
                                 </select>
                             </div>
                         </div>
@@ -971,7 +1001,7 @@
     let candlestickRsiLevel = 30;
     let candlestickSelectedPatterns = [];
     function candlestickScreenerView() {
-        const market = document.getElementById('market')?.value || 'US';
+        const market = document.getElementById('market')?.value || 'IN';
 
         
         const resultsHtml = candlestickResults.length > 0 ? `
@@ -997,7 +1027,7 @@
                                 <tr class="hover:bg-gray-700/50 ${s.filters_match ? 'bg-green-900/20' : ''}">
                                     <td class="px-3 py-2 font-medium text-blue-400">${s.symbol}</td>
                                     <td class="px-3 py-2">${s.date}</td>
-                                    <td class="px-3 py-2 text-right">$${s.close}</td>
+                                    <td class="px-3 py-2 text-right">₹${s.close}</td>
                                     <td class="px-3 py-2">
                                         ${(s.patterns || []).map(p => `<span class="px-2 py-0.5 text-xs rounded ${p.includes('Hammer') ? 'bg-green-600/30 text-green-400' : p.includes('Engulfing') ? 'bg-blue-600/30 text-blue-400' : 'bg-purple-600/30 text-purple-400'}">${p}</span>`).join(' ')}
                                     </td>
@@ -1083,7 +1113,7 @@
         render();
         
         try {
-            const market = document.getElementById('market')?.value || 'US';
+            const market = document.getElementById('market')?.value || 'IN';
             
             const res = await fetch('/api/v2/screener/candlestick/run', {
                 method: 'POST',
@@ -1116,18 +1146,14 @@
     let rsiMacdLookbackDays = 180;
     
     function rsiMacdScreenerView() {
-        const market = document.getElementById('market')?.value || 'US';
-        const stocks = market === 'US' ? [
-            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'AMD', 'AVGO', 'NFLX',
-            'COST', 'PEP', 'ADBE', 'CSCO', 'INTC', 'QCOM', 'TXN', 'INTU', 'AMAT', 'MU',
-            'LRCX', 'KLAC', 'SNPS', 'CDNS', 'MRVL', 'ON', 'NXPI', 'ADI', 'MCHP', 'FTNT',
-            'VRTX', 'CHTR', 'ASML', 'CRWD', 'MNST', 'TEAM', 'PAYX', 'AEP', 'CPRT', 'PCAR',
-            'AMGN', 'MRNA', 'XEL', 'WDAY', 'ABNB', 'MDLZ', 'ANSS', 'DDOG', 'ODFL', 'GOOG'
-        ] : [
-            'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK', 'HINDUNILVR', 'SBIN', 
-            'BHARTIARTL', 'ITC', 'KOTAKBANK', 'LT', 'AXISBANK', 'ASIANPAINT', 'MARUTI', 
-            'TITAN', 'SUNPHARMA', 'ULTRACEMCO', 'BAJFINANCE', 'WIPRO', 'HCLTECH',
-            'TATAMOTORS', 'POWERGRID', 'NTPC', 'M&M', 'JSWSTEEL'
+        const market = 'IN';
+        // NIFTY 100 stocks for NSE India
+        const stocks = [
+            'NSE:RELIANCE', 'NSE:TCS', 'NSE:HDFCBANK', 'NSE:INFY', 'NSE:ICICIBANK',
+            'NSE:HINDUNILVR', 'NSE:SBIN', 'NSE:BHARTIARTL', 'NSE:ITC', 'NSE:KOTAKBANK',
+            'NSE:LT', 'NSE:AXISBANK', 'NSE:ASIANPAINT', 'NSE:MARUTI', 'NSE:TITAN',
+            'NSE:SUNPHARMA', 'NSE:ULTRACEMCO', 'NSE:BAJFINANCE', 'NSE:WIPRO', 'NSE:HCLTECH',
+            'NSE:POWERGRID', 'NSE:NTPC', 'NSE:M&M', 'NSE:JSWSTEEL'
         ];
         
         if (rsiMacdSelectedStocks.length === 0) rsiMacdSelectedStocks = stocks.slice(0, 20);
@@ -1157,7 +1183,7 @@
                                 <tr class="hover:bg-gray-700/50 ${s.conditions?.macd_crossing_up ? 'bg-green-900/20' : ''}">
                                     <td class="px-3 py-2 font-medium text-blue-400">${s.symbol}</td>
                                     <td class="px-3 py-2">${s.date}</td>
-                                    <td class="px-3 py-2 text-right">$${s.close}</td>
+                                    <td class="px-3 py-2 text-right">₹${s.close}</td>
                                     <td class="px-3 py-2">
                                         <span class="px-2 py-0.5 text-xs rounded ${s.conditions?.macd_crossing_up ? 'bg-green-600/30 text-green-400' : 'bg-blue-600/30 text-blue-400'}">
                                             ${s.signal_type || 'RSI+MACD'}
@@ -1199,7 +1225,7 @@
                         </div>
                         <div>
                             <label class="block text-sm font-medium mb-1">Market</label>
-                            <div class="py-2 text-gray-400">Using: ${market === 'US' ? '🇺🇸 NASDAQ' : '🇮🇳 NSE'}</div>
+                            <div class="py-2 text-gray-400">Using: 🇮🇳 NSE (NIFTY 100)</div>
                         </div>
                         <div>
                             <label class="block text-sm font-medium mb-1">Selected: ${rsiMacdSelectedStocks.length}</label>
@@ -1236,7 +1262,7 @@
         render();
         
         try {
-            const market = document.getElementById('market')?.value || 'US';
+            const market = document.getElementById('market')?.value || 'IN';
             const symbols = rsiMacdSelectedStocks.map(s => market === 'IN' ? s + '.NS' : s);
             
             const res = await fetch('/api/v2/screener/rsi-macd/run', {
@@ -1263,9 +1289,9 @@
     // ========== TRADE BILL ==========
     function tradeBillView() {
         const tb = window.tradeBillTemplate || {};
-        const s = settings[0] || {trading_capital:6000, risk_per_trade:2, currency:'GBP'};
-        const sym = '$';  // Always use $ for clarity
-        
+        const s = settings[0] || {trading_capital:500000, risk_per_trade:2, currency:'INR'};
+        const sym = '₹';  // Always INR for NSE
+
         return `
             <div class="space-y-6 max-w-5xl">
                 <div class="flex justify-between items-center">
@@ -1281,7 +1307,7 @@
                     </div>
                     <div>
                         <span class="text-gray-400">Max Risk (${s.risk_per_trade}%):</span>
-                        <span class="font-mono font-bold text-red-400 ml-2">${sym}${(s.trading_capital * s.risk_per_trade / 100).toFixed(2)}</span>
+                        <span class="font-mono font-bold text-red-400 ml-2">${sym}${(s.trading_capital * s.risk_per_trade / 100).toFixed(0)}</span>
                     </div>
                 </div>
 
@@ -1290,17 +1316,17 @@
                     <h3 class="font-bold text-lg text-blue-400">Trade Info</h3>
                     <div class="grid grid-cols-3 gap-4">
                         <div>
-                            <label class="text-sm text-gray-400">Ticker</label>
-                            <input id="tb-ticker" value="${tb.ticker||''}" placeholder="AAPL" onkeyup="handleTickerTypeahead(event)" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono">
+                            <label class="text-sm text-gray-400">Ticker (NSE)</label>
+                            <input id="tb-ticker" value="${tb.ticker||''}" placeholder="NSE:RELIANCE" onkeyup="handleTickerTypeahead(event)" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono">
                             <div id="ticker-suggestions" class="mt-1 bg-[#1f2937] rounded-lg border border-gray-600 max-h-40 overflow-y-auto"></div>
                         </div>
-                        <div><label class="text-sm text-gray-400">Current Market Price (${sym})</label><input id="tb-cmp" type="number" value="${tb.current_market_price||''}" step="0.01" placeholder="150.25" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
-                        <div><label class="text-sm text-gray-400">Entry Price (${sym})</label><input id="tb-entry" type="number" value="${tb.entry_price||''}" step="0.01" placeholder="148.50" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Current Market Price (${sym})</label><input id="tb-cmp" type="number" value="${tb.current_market_price||''}" step="0.05" placeholder="2500.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Entry Price (${sym})</label><input id="tb-entry" type="number" value="${tb.entry_price||''}" step="0.05" placeholder="2450.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                     </div>
                     <div class="grid grid-cols-3 gap-4">
-                        <div><label class="text-sm text-gray-400">Stop Loss (${sym})</label><input id="tb-sl" type="number" value="${tb.stop_loss||''}" step="0.01" placeholder="145.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
-                        <div><label class="text-sm text-gray-400">Target (${sym})</label><input id="tb-target" type="number" value="${tb.target_price||''}" step="0.01" placeholder="155.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
-                        <div><label class="text-sm text-gray-400">Quantity (shares)</label><input id="tb-qty" type="number" value="${tb.quantity||''}" step="0.01" placeholder="auto" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Stop Loss (${sym})</label><input id="tb-sl" type="number" value="${tb.stop_loss||''}" step="0.05" placeholder="2400.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Target (${sym})</label><input id="tb-target" type="number" value="${tb.target_price||''}" step="0.05" placeholder="2600.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Quantity (whole shares)</label><input id="tb-qty" type="number" value="${tb.quantity||''}" step="1" min="1" placeholder="auto" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                     </div>
                     <div class="grid grid-cols-4 gap-4">
                         <div><label class="text-sm text-gray-400">Upper Channel (${sym})</label><input id="tb-uc" type="number" value="${tb.upper_channel||''}" step="0.01" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
@@ -1314,14 +1340,14 @@
                 <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
                     <h3 class="font-bold text-lg text-red-400">📉 Trade Risk</h3>
                     <div class="grid grid-cols-3 gap-4">
-                        <div><label class="text-sm text-gray-400">Max Qty for Risk</label><input id="tb-maxqty" type="number" value="${tb.max_qty_for_risk||''}" step="1" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
-                        <div><label class="text-sm text-gray-400">Overnight Charges (${sym})</label><input id="tb-oc" type="number" value="${tb.overnight_charges||0}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Max Risk (${sym})</label><input id="tb-maxrisk" type="text" value="${tb.max_risk||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                        <div><label class="text-sm text-gray-400">Risk % <span class="text-xs text-gray-500">(from settings)</span></label><input id="tb-rp" type="number" value="${tb.risk_percent||''}" step="0.01" oninput="recalcFromRiskPercent()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                         <div><label class="text-sm text-gray-400">Risk per Share (${sym})</label><input id="tb-rps" type="number" value="${tb.risk_per_share||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
                     </div>
                     <div class="grid grid-cols-3 gap-4">
-                        <div><label class="text-sm text-gray-400">Position Size (${sym})</label><input id="tb-ps" type="number" value="${tb.position_size||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
-                        <div><label class="text-sm text-gray-400">Risk %</label><input id="tb-rp" type="number" value="${tb.risk_percent||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
-                        <div></div>
+                        <div><label class="text-sm text-gray-400">Max Qty for Risk</label><input id="tb-maxqty" type="number" value="${tb.max_qty_for_risk||''}" step="1" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                        <div><label class="text-sm text-gray-400">Position Size (${sym})</label><input id="tb-ps" type="text" value="${tb.position_size||''}" oninput="recalcFromPositionSize()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Other Charges (${sym})</label><input id="tb-oc" type="number" value="${tb.other_charges||0}" step="0.01" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                     </div>
                 </div>
 
@@ -1331,16 +1357,16 @@
                     <div class="grid grid-cols-3 gap-4">
                         <div><label class="text-sm text-gray-400">Channel Height (${sym})</label><input id="tb-ch" type="number" value="${tb.channel_height||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
                         <div><label class="text-sm text-gray-400">Potential Gain (${sym})</label><input id="tb-pg" type="number" value="${tb.potential_gain||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
-                        <div><label class="text-sm text-gray-400">C Target 1:1 (${sym})</label><input id="tb-c" type="number" value="${tb.target_1_1_c||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-yellow-900/30"></div>
+                        <div><label class="text-sm text-gray-400">C Target (10% of CH from Entry) (${sym})</label><input id="tb-c" type="number" value="${tb.target_1_1_c||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-yellow-900/30"></div>
                     </div>
                     <div class="grid grid-cols-3 gap-4">
-                        <div><label class="text-sm text-gray-400">B Target 1:2 (${sym}) <span class="text-xs text-green-400">★ Recommended</span></label><input id="tb-b" type="number" value="${tb.target_1_2_b||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-green-600 rounded-lg font-mono bg-green-900/30"></div>
-                        <div><label class="text-sm text-gray-400">A Target 1:3 (${sym})</label><input id="tb-a" type="number" value="${tb.target_1_3_a||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-blue-900/30"></div>
+                        <div><label class="text-sm text-gray-400">B Target (20% of CH from Entry) (${sym}) <span class="text-xs text-green-400">★ Recommended</span></label><input id="tb-b" type="number" value="${tb.target_1_2_b||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-green-600 rounded-lg font-mono bg-green-900/30"></div>
+                        <div><label class="text-sm text-gray-400">A Target (30% of CH from Entry) (${sym})</label><input id="tb-a" type="number" value="${tb.target_1_3_a||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-blue-900/30"></div>
                         <div></div>
                     </div>
                     <div class="grid grid-cols-3 gap-4">
-                        <div><label class="text-sm text-gray-400">Risk (${sym})</label><input id="tb-risk" type="number" value="${tb.risk_amount_currency||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-red-900/30" readonly></div>
-                        <div><label class="text-sm text-gray-400">Reward (${sym}) <span class="text-xs text-gray-500">(B target)</span></label><input id="tb-reward" type="number" value="${tb.reward_amount_currency||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-green-900/30"></div>
+                        <div><label class="text-sm text-gray-400">Risk (${sym})</label><input id="tb-risk" type="text" value="${tb.risk_amount_currency||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-red-900/30" readonly></div>
+                        <div><label class="text-sm text-gray-400">Reward (${sym}) <span class="text-xs text-gray-500">(B target)</span></label><input id="tb-reward" type="text" value="${tb.reward_amount_currency||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-green-900/30" readonly></div>
                         <div><label class="text-sm text-gray-400">R:R Ratio</label><input id="tb-rrr" type="number" value="${tb.risk_reward_ratio||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
                     </div>
                 </div>
@@ -1381,30 +1407,41 @@
 
                 <!-- Elder Calculation Reference -->
                 <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
-                    <h3 class="font-bold text-lg text-gray-400 mb-3">📖 Calculation Reference</h3>
+                    <h3 class="font-bold text-lg text-gray-400 mb-3">📖 Calculation Reference (KCB 20,10,1)</h3>
                     <div class="grid grid-cols-2 gap-4 text-xs text-gray-500">
                         <div class="space-y-1">
+                            <p><span class="text-red-400">Max Risk</span> = Capital × (Risk % ÷ 100)</p>
                             <p><span class="text-blue-400">Risk per Share</span> = Entry − Stop Loss</p>
-                            <p><span class="text-blue-400">Risk %</span> = (Risk per Share ÷ Entry) × 100</p>
-                            <p><span class="text-blue-400">Max Qty</span> = Max Risk ÷ Risk per Share</p>
-                            <p><span class="text-blue-400">Position Size</span> = Entry × Quantity</p>
-                            <p><span class="text-blue-400">Target/SL Pips</span> = Distance × 100</p>
+                            <p><span class="text-blue-400">Max Qty for Risk</span> = Max Risk ÷ Risk per Share</p>
+                            <p><span class="text-blue-400">Position Size</span> = Quantity × Entry</p>
+                            <p><span class="text-blue-400">Target Pips</span> = Target − Entry (in ₹)</p>
+                            <p><span class="text-blue-400">SL Pips</span> = Entry − Stop Loss (in ₹)</p>
                         </div>
                         <div class="space-y-1">
                             <p><span class="text-blue-400">Channel Height</span> = Upper − Lower Channel</p>
-                            <p><span class="text-yellow-400">C Target</span> = Entry + (Channel × 0.10)</p>
-                            <p><span class="text-green-400">B Target</span> = Entry + (Channel × 0.20)</p>
-                            <p><span class="text-blue-400">A Target</span> = Entry + (Channel × 0.30)</p>
-                            <p><span class="text-green-400">R:R</span> = Reward ÷ Risk</p>
+                            <p><span class="text-yellow-400">C Target (10%)</span> = Entry + (Channel × 0.10)</p>
+                            <p><span class="text-green-400">B Target (20%)</span> = Entry + (Channel × 0.20)</p>
+                            <p><span class="text-blue-400">A Target (30%)</span> = Entry + (Channel × 0.30)</p>
+                            <p><span class="text-red-400">Risk</span> = SL Pips × Quantity</p>
+                            <p><span class="text-green-400">Reward</span> = Target Pips × Quantity</p>
+                            <p><span class="text-purple-400">R:R Ratio</span> = Reward ÷ Risk</p>
                         </div>
                     </div>
-                    <p class="text-xs text-gray-600 mt-2">Potential Gain % = ((Upper Channel − Entry) ÷ Entry) × 100 (max 9.9%)</p>
+                    <p class="text-xs text-gray-600 mt-2">Upper/Lower Channels = KC Middle ± (3 × ATR). Potential Gain % = ((Upper − Entry) ÷ Entry) × 100</p>
                 </div>
 
-                <!-- Save Button -->
-                <div class="flex gap-2">
-                    <button onclick="calculateTradeBillMetrics()" class="flex-1 py-3 bg-purple-600 rounded-lg font-medium hover:bg-purple-700">🔢 Calculate Metrics</button>
-                    <button onclick="saveTradeBill()" class="flex-1 py-3 bg-green-600 rounded-lg font-medium hover:bg-green-700 disabled:opacity-50" id="save-btn">💾 Save Trade Bill</button>
+                <!-- Action Buttons -->
+                <div class="space-y-3">
+                    <div class="flex gap-2">
+                        <button onclick="calculateTradeBillMetrics()" class="flex-1 py-3 bg-purple-600 rounded-lg font-medium hover:bg-purple-700">🔢 Calculate Metrics</button>
+                        <button onclick="saveTradeBill()" class="flex-1 py-3 bg-green-600 rounded-lg font-medium hover:bg-green-700 disabled:opacity-50" id="save-btn">💾 Save Trade Bill</button>
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="fillJournalFromBill()" class="flex-1 py-3 bg-blue-600 rounded-lg font-medium hover:bg-blue-700" id="fill-journal-btn" disabled>📓 Fill Journal</button>
+                        <button onclick="placeGttOrder()" class="flex-1 py-3 bg-orange-600 rounded-lg font-medium hover:bg-orange-700" id="gtt-btn" disabled>📊 Place GTT Order</button>
+                        <button onclick="placeOcoSellOrder()" class="flex-1 py-3 bg-red-600 rounded-lg font-medium hover:bg-red-700" id="oco-btn" disabled>🎯 Place OCO Sell</button>
+                    </div>
+                    <p class="text-xs text-gray-500 text-center">Save the Trade Bill first to enable Journal and Order buttons</p>
                 </div>
             </div>
         `;
@@ -1432,90 +1469,142 @@
         const cmp = parseFloat(document.getElementById('tb-cmp').value) || 0;
         const upperChannel = parseFloat(document.getElementById('tb-uc').value) || 0;
         const lowerChannel = parseFloat(document.getElementById('tb-lc').value) || 0;
-        const manualQty = parseFloat(document.getElementById('tb-qty').value) || 0;
-        const overnightCharges = parseFloat(document.getElementById('tb-oc').value) || 0;
-        
-        const s = settings[0] || {trading_capital: 6000, risk_per_trade: 2, currency: 'GBP'};
+        const manualQty = parseInt(document.getElementById('tb-qty').value) || 0;  // Whole shares only
+        const otherCharges = parseFloat(document.getElementById('tb-oc').value) || 0;
+
+        const s = settings[0] || {trading_capital: 500000, risk_per_trade: 2, currency: 'INR'};
         const acSize = s.trading_capital;
         const riskPerTradePercent = s.risk_per_trade;
 
         // Need at least entry and stop loss
         if (!entry || !sl) return;
 
-        // === CALCULATIONS MATCHING .NET APP (LONG direction) ===
-        
-        // Risk per Share = Entry - Stop Loss
+        // === CALCULATIONS FOR NSE (LONG direction) ===
+        // NSE requires whole shares - no fractional trading
+
+        // 8. Risk per Share = Entry - SL
         const riskPerShare = Math.round((entry - sl) * 100) / 100;
         if (riskPerShare <= 0) return;  // Invalid stop loss
-        
-        // Risk per Share % = (Risk per Share / Entry) × 100
-        const riskPerSharePercent = Math.round((riskPerShare / entry) * 100 * 100) / 100;
-        
-        // Max Risk = Account Size × (Risk% / 100)
-        const maxRisk = Math.round(acSize * (riskPerTradePercent / 100) * 100) / 100;
-        
-        // Max Qty for Risk = Max Risk / Risk per Share
-        const maxQtyRisk = riskPerShare > 0 ? Math.round(maxRisk / riskPerShare * 100) / 100 : 0;
-        
-        // Quantity (use manual if entered, otherwise maxQtyRisk)
+
+        // 5. Max Risk = Account Size × (Risk% / 100) - from settings
+        const maxRisk = Math.round(acSize * (riskPerTradePercent / 100));
+
+        // 6. Max Qty for Risk = Max Risk / SL Pips (Risk per Share)
+        const maxQtyRisk = riskPerShare > 0 ? Math.floor(maxRisk / riskPerShare) : 0;
+
+        // Quantity (use manual if entered, otherwise maxQtyRisk) - WHOLE SHARES ONLY
         const quantity = manualQty > 0 ? manualQty : maxQtyRisk;
-        
-        // Trade Size (Position Size) = Quantity × Entry
-        const tradeSize = Math.round(quantity * entry * 100) / 100;
-        
-        // Target Pips = (Target - Entry) × 100
-        const targetPips = target ? Math.round((target - entry) * 100 * 100) / 100 : 0;
-        
-        // SL Pips = (Entry - Stop Loss) × 100
-        const stopLossPips = Math.round((entry - sl) * 100 * 100) / 100;
-        
-        // Channel Height = Upper Channel - Lower Channel
+
+        // 9. Position Size = Quantity × Entry Price
+        const positionSize = Math.round(quantity * entry);
+
+        // 4. Target Pips = Target - Entry (distance in ₹)
+        const targetPips = target ? Math.round((target - entry) * 100) / 100 : 0;
+
+        // 4. SL Pips = Entry - Stop Loss (distance in ₹)
+        const stopLossPips = Math.round((entry - sl) * 100) / 100;
+
+        // 11. Channel Height = Upper Channel - Lower Channel (in ₹)
         const channelHeight = upperChannel && lowerChannel ? Math.round((upperChannel - lowerChannel) * 100) / 100 : 0;
-        
-        // A, B, C Targets based on Channel Height (Elder's channel trading)
-        // A Target = Entry + (Channel Height × 0.30)
-        // B Target = Entry + (Channel Height × 0.20)
+
+        // 12. A, B, C Targets based on Channel Height
         // C Target = Entry + (Channel Height × 0.10)
-        const aTrade = channelHeight > 0 ? Math.round((entry + (channelHeight * 0.30)) * 100) / 100 : 0;
-        const bTrade = channelHeight > 0 ? Math.round((entry + (channelHeight * 0.20)) * 100) / 100 : 0;
+        // B Target = Entry + (Channel Height × 0.20)
+        // A Target = Entry + (Channel Height × 0.30)
         const cTrade = channelHeight > 0 ? Math.round((entry + (channelHeight * 0.10)) * 100) / 100 : 0;
-        
+        const bTrade = channelHeight > 0 ? Math.round((entry + (channelHeight * 0.20)) * 100) / 100 : 0;
+        const aTrade = channelHeight > 0 ? Math.round((entry + (channelHeight * 0.30)) * 100) / 100 : 0;
+
         // Potential Gain % = ((Upper Channel - Entry) / Entry) × 100 (capped at 9.9%)
         let potentialGain = upperChannel > 0 ? Math.round(((upperChannel - entry) / entry) * 100 * 100) / 100 : 0;
         if (potentialGain >= 10) potentialGain = 9.9;
-        
-        // Risk = (Entry - Stop Loss) × Quantity (hard stop risk)
-        const risk = Math.round(riskPerShare * quantity * 100) / 100;
-        // Reward = (Target - Entry) × Quantity
-        const reward = target ? Math.round((target - entry) * quantity * 100) / 100 : 0;
-        
-        // R:R Ratio = Reward / Risk (as a decimal number)
+
+        // 14. Risk (₹) = SL Pips × Quantity
+        const risk = Math.round(stopLossPips * quantity);
+
+        // 15. Reward (₹) = Target Pips × Quantity
+        const reward = targetPips > 0 ? Math.round(targetPips * quantity) : 0;
+
+        // 16. R:R Ratio = Reward / Risk
         const riskRewardRatio = risk > 0 && reward > 0 ? Math.round((reward / risk) * 100) / 100 : 0;
-        
-        // Break Even = Entry (or Entry + overnight charges per share)
-        const breakEven = quantity > 0 && overnightCharges > 0 ? Math.round((entry + (overnightCharges / quantity)) * 100) / 100 : entry;
-        
+
+        // Break Even = Entry + (Other Charges / Quantity)
+        const breakEven = quantity > 0 && otherCharges > 0 ? Math.round((entry + (otherCharges / quantity)) * 100) / 100 : entry;
+
         // Trailing Stop = Stop Loss initially
         const trailingStop = sl;
 
-        // Update all form fields
-        if (!manualQty) document.getElementById('tb-qty').value = quantity.toFixed(2);
+        // Update all form fields - WHOLE SHARES for quantity
+        if (!manualQty) document.getElementById('tb-qty').value = quantity;  // No decimals
         document.getElementById('tb-tp').value = targetPips.toFixed(2);
         document.getElementById('tb-slp').value = stopLossPips.toFixed(2);
-        document.getElementById('tb-maxqty').value = maxQtyRisk.toFixed(2);
+        document.getElementById('tb-maxrisk').value = maxRisk.toLocaleString();  // Max Risk amount
+        document.getElementById('tb-maxqty').value = maxQtyRisk;  // Whole number
         document.getElementById('tb-rps').value = riskPerShare.toFixed(2);
-        document.getElementById('tb-ps').value = tradeSize.toFixed(2);
-        document.getElementById('tb-rp').value = riskPerSharePercent.toFixed(2);
+        document.getElementById('tb-ps').value = positionSize.toLocaleString();  // Format with commas for INR
+        document.getElementById('tb-rp').value = riskPerTradePercent.toFixed(2);  // Risk % from settings
         document.getElementById('tb-ch').value = channelHeight.toFixed(2);
         document.getElementById('tb-pg').value = potentialGain.toFixed(2);
         document.getElementById('tb-c').value = cTrade.toFixed(2);
         document.getElementById('tb-b').value = bTrade.toFixed(2);
         document.getElementById('tb-a').value = aTrade.toFixed(2);
-        document.getElementById('tb-risk').value = risk.toFixed(2);
-        document.getElementById('tb-reward').value = reward.toFixed(2);
+        document.getElementById('tb-risk').value = risk.toLocaleString();  // Format with commas
+        document.getElementById('tb-reward').value = reward.toLocaleString();  // Format with commas
         document.getElementById('tb-rrr').value = riskRewardRatio;
         document.getElementById('tb-be').value = breakEven.toFixed(2);
         document.getElementById('tb-ts').value = trailingStop.toFixed(2);
+        
+        // Debug log to verify calculations
+        console.log('Trade Bill Calculated:', {
+            maxRisk, positionSize, risk, reward,
+            quantity, entry, sl, target,
+            riskPerShare, targetPips, stopLossPips
+        });
+    }
+
+    // 9. Recalculate from Position Size - when user manually changes position size
+    function recalcFromPositionSize() {
+        const entry = parseFloat(document.getElementById('tb-entry').value) || 0;
+        const positionSizeStr = document.getElementById('tb-ps').value.replace(/,/g, '');
+        const newPositionSize = parseFloat(positionSizeStr) || 0;
+
+        if (!entry || !newPositionSize) return;
+
+        // Quantity = Position Size / Entry Price (whole shares)
+        const newQty = Math.floor(newPositionSize / entry);
+        document.getElementById('tb-qty').value = newQty;
+
+        // Recalculate everything with new quantity
+        autoCalculateTradeBill();
+    }
+
+    // 10. Recalculate from Risk % - when user manually changes risk percentage
+    function recalcFromRiskPercent() {
+        const entry = parseFloat(document.getElementById('tb-entry').value) || 0;
+        const sl = parseFloat(document.getElementById('tb-sl').value) || 0;
+        const newRiskPercent = parseFloat(document.getElementById('tb-rp').value) || 0;
+
+        if (!entry || !sl || !newRiskPercent) return;
+
+        const s = settings[0] || {trading_capital: 500000};
+        const acSize = s.trading_capital;
+
+        // Risk per Share = Entry - SL
+        const riskPerShare = entry - sl;
+        if (riskPerShare <= 0) return;
+
+        // New Max Risk based on user-entered risk %
+        const newMaxRisk = Math.round(acSize * (newRiskPercent / 100));
+
+        // New Max Qty = New Max Risk / Risk per Share
+        const newQty = Math.floor(newMaxRisk / riskPerShare);
+
+        // Update quantity and position size
+        document.getElementById('tb-qty').value = newQty;
+        document.getElementById('tb-maxrisk').value = newMaxRisk.toLocaleString();
+
+        // Recalculate everything with new values
+        autoCalculateTradeBill();
     }
 
     async function saveTradeBill() {
@@ -1527,29 +1616,36 @@
             return;
         }
 
+        // Parse position_size and risk values (remove commas for INR formatted numbers)
+        const positionSizeStr = document.getElementById('tb-ps').value.replace(/,/g, '');
+        const maxRiskStr = document.getElementById('tb-maxrisk').value.replace(/,/g, '');
+        const riskStr = document.getElementById('tb-risk').value.replace(/,/g, '');
+        const rewardStr = document.getElementById('tb-reward').value.replace(/,/g, '');
+
         const data = {
             ticker: ticker,
             current_market_price: parseFloat(document.getElementById('tb-cmp').value) || null,
             entry_price: parseFloat(document.getElementById('tb-entry').value),
             stop_loss: parseFloat(document.getElementById('tb-sl').value),
             target_price: parseFloat(document.getElementById('tb-target').value),
-            quantity: parseFloat(document.getElementById('tb-qty').value),
+            quantity: parseInt(document.getElementById('tb-qty').value) || 0,  // Whole shares
             upper_channel: parseFloat(document.getElementById('tb-uc').value) || null,
             lower_channel: parseFloat(document.getElementById('tb-lc').value) || null,
             target_pips: parseFloat(document.getElementById('tb-tp').value) || null,
             stop_loss_pips: parseFloat(document.getElementById('tb-slp').value) || null,
-            max_qty_for_risk: parseFloat(document.getElementById('tb-maxqty').value) || null,
-            overnight_charges: parseFloat(document.getElementById('tb-oc').value) || 0,
+            max_risk: parseFloat(maxRiskStr) || null,
+            max_qty_for_risk: parseInt(document.getElementById('tb-maxqty').value) || null,
+            other_charges: parseFloat(document.getElementById('tb-oc').value) || 0,
             risk_per_share: parseFloat(document.getElementById('tb-rps').value) || null,
-            position_size: parseFloat(document.getElementById('tb-ps').value) || null,
+            position_size: parseFloat(positionSizeStr) || null,
             risk_percent: parseFloat(document.getElementById('tb-rp').value) || null,
             channel_height: parseFloat(document.getElementById('tb-ch').value) || null,
             potential_gain: parseFloat(document.getElementById('tb-pg').value) || null,
             target_1_1_c: parseFloat(document.getElementById('tb-c').value) || null,
             target_1_2_b: parseFloat(document.getElementById('tb-b').value) || null,
             target_1_3_a: parseFloat(document.getElementById('tb-a').value) || null,
-            risk_amount_currency: parseFloat(document.getElementById('tb-risk').value) || null,
-            reward_amount_currency: parseFloat(document.getElementById('tb-reward').value) || null,
+            risk_amount_currency: parseFloat(riskStr) || null,
+            reward_amount_currency: parseFloat(rewardStr) || null,
             risk_reward_ratio: parseFloat(document.getElementById('tb-rrr').value) || null,
             break_even: parseFloat(document.getElementById('tb-be').value) || null,
             trailing_stop: parseFloat(document.getElementById('tb-ts').value) || null,
@@ -1563,26 +1659,149 @@
         try {
             const tb = window.tradeBillTemplate || {};
             let result;
-            
+
             if (tb.id) {
                 // Update existing
                 result = await api('PUT', `/trade-bills/${tb.id}`, data);
                 if (result.success) {
                     toast(`Trade Bill for ${ticker} updated!`, 'success');
+                    window.currentBillId = tb.id;
                 }
             } else {
                 // Create new
                 result = await api('POST', '/trade-bills', data);
                 if (result.success || result.id) {
                     toast(`Trade Bill for ${ticker} saved!`, 'success');
+                    window.currentBillId = result.id;
                 }
             }
-            
-            window.tradeBillTemplate = null;
-            await switchTab('trade-bills');
+
+            // Enable action buttons after save
+            if (window.currentBillId) {
+                document.getElementById('fill-journal-btn').disabled = false;
+                document.getElementById('gtt-btn').disabled = false;
+                document.getElementById('oco-btn').disabled = false;
+            }
         } catch(e) {
             toast('Error saving Trade Bill: ' + e.message, 'error');
             console.error('Save error:', e);
+        }
+    }
+
+    // Fill Journal from saved Trade Bill
+    async function fillJournalFromBill() {
+        if (!window.currentBillId) {
+            toast('Please save the Trade Bill first', 'error');
+            return;
+        }
+
+        try {
+            const result = await fetch(`/api/v2/trade-journal/from-bill/${window.currentBillId}`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            });
+            const data = await result.json();
+
+            if (data.success) {
+                toast('Journal created! Opening Trade Journal...', 'success');
+                window.currentJournalId = data.id;
+                await switchTab('trade-journal');
+            } else {
+                toast(data.error || 'Failed to create journal', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    // Place GTT Order from Trade Bill
+    async function placeGttOrder() {
+        if (!window.currentBillId) {
+            toast('Please save the Trade Bill first', 'error');
+            return;
+        }
+
+        const entry = parseFloat(document.getElementById('tb-entry').value);
+        const qty = parseInt(document.getElementById('tb-qty').value);
+        const ticker = document.getElementById('tb-ticker').value;
+
+        if (!entry || !qty || !ticker) {
+            toast('Missing entry price, quantity or ticker', 'error');
+            return;
+        }
+
+        if (!confirm(`Place GTT BUY order for ${qty} shares of ${ticker} at ₹${entry}?`)) {
+            return;
+        }
+
+        try {
+            const result = await fetch('/api/v2/kite/gtt', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    symbol: ticker,
+                    transaction_type: 'BUY',
+                    trigger_price: entry,
+                    quantity: qty,
+                    order_type: 'LIMIT',
+                    price: entry
+                })
+            });
+            const data = await result.json();
+
+            if (data.success) {
+                toast(`GTT Order placed! ID: ${data.trigger_id}`, 'success');
+            } else {
+                toast(data.error || 'Failed to place GTT order', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    // Place OCO Sell Order (Stop Loss + Target)
+    async function placeOcoSellOrder() {
+        if (!window.currentBillId) {
+            toast('Please save the Trade Bill first', 'error');
+            return;
+        }
+
+        const sl = parseFloat(document.getElementById('tb-sl').value);
+        const target = parseFloat(document.getElementById('tb-target').value);
+        const qty = parseInt(document.getElementById('tb-qty').value);
+        const ticker = document.getElementById('tb-ticker').value;
+
+        if (!sl || !target || !qty || !ticker) {
+            toast('Missing stop loss, target, quantity or ticker', 'error');
+            return;
+        }
+
+        if (!confirm(`Place OCO SELL order for ${qty} shares of ${ticker}?\n\nStop Loss: ₹${sl}\nTarget: ₹${target}`)) {
+            return;
+        }
+
+        try {
+            const result = await fetch('/api/v2/kite/gtt-oco', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    symbol: ticker,
+                    quantity: qty,
+                    stop_loss_trigger: sl,
+                    stop_loss_price: sl * 0.99,  // 1% below trigger for limit order
+                    target_trigger: target,
+                    target_price: target
+                })
+            });
+            const data = await result.json();
+
+            if (data.success) {
+                toast(`OCO Sell Order placed! ID: ${data.trigger_id}`, 'success');
+            } else {
+                toast(data.error || 'Failed to place OCO order', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
         }
     }
 
@@ -1590,8 +1809,7 @@
     async function tradeBillsView() {
         try {
             const bills = await api('GET', '/trade-bills');
-            const s = settings[0] || {currency:'USD'};
-            const sym = s.currency==='GBP'?'£':s.currency==='INR'?'₹':'$';
+            const sym = '₹';  // Always INR for NSE
 
             if (!Array.isArray(bills)) {
                 return `<div class="text-red-400">Error: API returned invalid data</div>`;
@@ -1686,11 +1904,506 @@
         }
     }
 
+    // ========== TRADE JOURNAL V2 ==========
+    let currentJournal = null;
+
+    async function tradeJournalView() {
+        const sym = '₹';
+        let journals = [];
+
+        try {
+            const resp = await fetch('/api/v2/trade-journal');
+            const data = await resp.json();
+            journals = data.journals || [];
+        } catch(e) {
+            console.log('No journals yet');
+        }
+
+        // If editing a specific journal
+        if (window.currentJournalId) {
+            try {
+                const resp = await fetch(`/api/v2/trade-journal/${window.currentJournalId}`);
+                currentJournal = await resp.json();
+            } catch(e) {
+                currentJournal = null;
+            }
+        }
+
+        const j = currentJournal || {};
+        const entries = j.entries || [];
+        const exits = j.exits || [];
+
+        const entryTactics = ['Limit Order', 'Market Order', 'Stop Order', 'Scale In', 'Breakout'];
+        const exitTactics = ['Target Hit', 'Stop Loss Hit', 'Trailing Stop', 'Time Exit', 'Scale Out', 'Manual'];
+        const orderTypes = ['CNC', 'MIS', 'NRML'];
+        const mentalStates = ['Confident', 'Neutral', 'Anxious', 'FOMO', 'Revenge'];
+        const directions = ['Long', 'Short'];
+        const statuses = ['open', 'closed', 'cancelled'];
+        const grades = ['A', 'B', 'C', 'D', 'F'];
+
+        return `
+            <div class="space-y-4">
+                <!-- Header with tabs -->
+                <div class="flex justify-between items-center border-b border-gray-700 pb-2">
+                    <div class="flex gap-4">
+                        <button onclick="showJournalForm()" class="px-4 py-2 ${currentJournal ? 'bg-blue-600' : 'bg-gray-700'} rounded-t-lg">TradeJournal</button>
+                        <button onclick="showJournalRecords()" class="px-4 py-2 ${!currentJournal ? 'bg-blue-600' : 'bg-gray-700'} rounded-t-lg">Records</button>
+                    </div>
+                    <button onclick="newJournal()" class="px-4 py-2 bg-green-600 rounded-lg hover:bg-green-700">+ New Journal</button>
+                </div>
+
+                ${currentJournal ? `
+                <!-- Trade Journal Form (matching screenshot layout) -->
+                <div class="bg-[#111827] rounded-xl p-4 border border-gray-700">
+                    <div class="grid grid-cols-4 gap-4">
+                        <!-- Ticker Info -->
+                        <div class="border border-gray-600 rounded p-3 space-y-2">
+                            <h4 class="text-sm font-bold text-gray-400 border-b border-gray-600 pb-1">Ticker Info</h4>
+                            <div class="grid grid-cols-2 gap-2 text-xs">
+                                <div><label class="text-gray-500">Ticker</label><input id="tj-ticker" value="${j.ticker||''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                                <div><label class="text-gray-500">Journal Date</label><input type="date" id="tj-date" value="${j.journal_date||new Date().toISOString().split('T')[0]}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded"></div>
+                                <div><label class="text-gray-500">CMP</label><input type="number" id="tj-cmp" value="${j.cmp||''}" step="0.01" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                                <div><label class="text-gray-500">Remaining Qty</label><input type="number" id="tj-remaining" value="${j.remaining_qty||0}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                                <div><label class="text-gray-500">Direction</label><select id="tj-direction" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded">${directions.map(d => `<option ${j.direction===d?'selected':''}>${d}</option>`).join('')}</select></div>
+                                <div><label class="text-gray-500">Order Type</label><select id="tj-ordertype" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded">${orderTypes.map(o => `<option ${j.order_type===o?'selected':''}>${o}</option>`).join('')}</select></div>
+                                <div><label class="text-gray-500">Status</label><select id="tj-status" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded">${statuses.map(s => `<option ${j.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
+                                <div><label class="text-gray-500">Mental State</label><select id="tj-mental" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded">${mentalStates.map(m => `<option ${j.mental_state===m?'selected':''}>${m}</option>`).join('')}</select></div>
+                            </div>
+                        </div>
+
+                        <!-- Trade Setup -->
+                        <div class="border border-gray-600 rounded p-3 space-y-2">
+                            <h4 class="text-sm font-bold text-gray-400 border-b border-gray-600 pb-1">Trade Setup</h4>
+                            <div class="grid grid-cols-2 gap-2 text-xs">
+                                <div><label class="text-gray-500">Entry</label><input type="number" id="tj-entry" value="${j.entry_price||''}" step="0.01" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                                <div><label class="text-gray-500">Quantity</label><input type="number" id="tj-qty" value="${j.quantity||''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                                <div><label class="text-gray-500">Target</label><input type="number" id="tj-target" value="${j.target_price||''}" step="0.01" class="w-full px-2 py-1 bg-green-900/30 border border-green-600 rounded font-mono"></div>
+                                <div><label class="text-gray-500">Stop Loss</label><input type="number" id="tj-sl" value="${j.stop_loss||''}" step="0.01" class="w-full px-2 py-1 bg-red-900/30 border border-red-600 rounded font-mono"></div>
+                                <div class="col-span-2"><label class="text-gray-500">RR Ratio</label><input type="number" id="tj-rr" value="${j.rr_ratio||''}" step="0.01" class="w-full px-2 py-1 bg-yellow-900/30 border border-yellow-600 rounded font-mono" readonly></div>
+                            </div>
+                        </div>
+
+                        <!-- Risk -->
+                        <div class="border border-red-600/30 rounded p-3 space-y-2">
+                            <h4 class="text-sm font-bold text-red-400 border-b border-gray-600 pb-1">Risk</h4>
+                            <div class="grid grid-cols-1 gap-2 text-xs">
+                                <div><label class="text-gray-500">Potential Loss</label><input type="number" id="tj-potloss" value="${j.potential_loss||''}" class="w-full px-2 py-1 bg-red-900/20 border border-gray-600 rounded font-mono" readonly></div>
+                                <div><label class="text-gray-500">Trailing Stop</label><input type="number" id="tj-trailing" value="${j.trailing_stop||''}" step="0.01" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                                <div><label class="text-gray-500">New Target</label><input type="number" id="tj-newtarget" value="${j.new_target||''}" step="0.01" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                            </div>
+                        </div>
+
+                        <!-- Reward -->
+                        <div class="border border-green-600/30 rounded p-3 space-y-2">
+                            <h4 class="text-sm font-bold text-green-400 border-b border-gray-600 pb-1">Reward</h4>
+                            <div class="grid grid-cols-1 gap-2 text-xs">
+                                <div><label class="text-gray-500">Potential Gain</label><input type="number" id="tj-potgain" value="${j.potential_gain||''}" class="w-full px-2 py-1 bg-green-900/20 border border-gray-600 rounded font-mono" readonly></div>
+                                <div><label class="text-gray-500">1:3 A-Target</label><input type="number" id="tj-targeta" value="${j.target_a||''}" step="0.01" class="w-full px-2 py-1 bg-green-900/30 border border-gray-600 rounded font-mono"></div>
+                                <div><label class="text-gray-500">1:2 B-Target</label><input type="number" id="tj-targetb" value="${j.target_b||''}" step="0.01" class="w-full px-2 py-1 bg-green-900/30 border border-gray-600 rounded font-mono"></div>
+                                <div><label class="text-gray-500">1:1 C-Target</label><input type="number" id="tj-targetc" value="${j.target_c||''}" step="0.01" class="w-full px-2 py-1 bg-yellow-900/30 border border-gray-600 rounded font-mono"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Entries Section -->
+                <div class="bg-[#111827] rounded-xl p-4 border border-gray-700">
+                    <div class="flex justify-between items-center mb-3">
+                        <h4 class="font-bold text-blue-400">Entries</h4>
+                        <div class="flex gap-2 items-center text-xs">
+                            <label class="text-gray-500">Entry Tactic</label>
+                            <select id="tj-entry-tactic" class="px-2 py-1 bg-[#1f2937] border border-gray-600 rounded">${entryTactics.map(t => `<option ${j.entry_tactic===t?'selected':''}>${t}</option>`).join('')}</select>
+                            <label class="text-gray-500 ml-2">Reason</label>
+                            <input id="tj-entry-reason" value="${j.entry_reason||''}" placeholder="Reason for entry" class="px-2 py-1 bg-[#1f2937] border border-gray-600 rounded flex-1">
+                            <button onclick="addEntryRow(${j.id})" class="px-3 py-1 bg-green-600 rounded hover:bg-green-700">+ Add Entry</button>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs">
+                            <thead class="bg-[#1f2937]">
+                                <tr>
+                                    <th class="p-2 text-left text-gray-400">Entry Date</th>
+                                    <th class="p-2 text-right text-gray-400">Quantity</th>
+                                    <th class="p-2 text-right text-gray-400">Order Price</th>
+                                    <th class="p-2 text-right text-gray-400">Filled Price</th>
+                                    <th class="p-2 text-right text-gray-400">Slippage</th>
+                                    <th class="p-2 text-right text-gray-400">Commission</th>
+                                    <th class="p-2 text-right text-gray-400">Position Size</th>
+                                    <th class="p-2 text-right text-gray-400">Day High</th>
+                                    <th class="p-2 text-right text-gray-400">Day Low</th>
+                                    <th class="p-2 text-center text-gray-400">Grade</th>
+                                    <th class="p-2 text-center text-gray-400">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${entries.length > 0 ? entries.map(e => `
+                                    <tr class="border-t border-gray-700">
+                                        <td class="p-2 font-mono">${e.entry_datetime?.split('T')[0] || '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.quantity || '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.order_price ? sym + e.order_price.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.filled_price ? sym + e.filled_price.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono ${(e.slippage||0) > 0 ? 'text-red-400' : ''}">${e.slippage ? sym + e.slippage.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.commission ? sym + e.commission.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.position_size ? sym + e.position_size.toLocaleString() : '-'}</td>
+                                        <td class="p-2 text-right font-mono text-green-400">${e.day_high ? sym + e.day_high.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono text-red-400">${e.day_low ? sym + e.day_low.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-center"><span class="px-2 py-0.5 rounded ${e.grade==='A' ? 'bg-green-500/20 text-green-400' : e.grade==='B' ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-500/20 text-gray-400'}">${e.grade || '-'}</span></td>
+                                        <td class="p-2 text-center"><button onclick="deleteEntry(${e.id})" class="text-red-400 hover:text-red-300">🗑️</button></td>
+                                    </tr>
+                                `).join('') : '<tr><td colspan="11" class="p-4 text-center text-gray-500">No entries yet. Add your first entry above.</td></tr>'}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Exits Section -->
+                <div class="bg-[#111827] rounded-xl p-4 border border-gray-700">
+                    <div class="flex justify-between items-center mb-3">
+                        <h4 class="font-bold text-orange-400">Exits</h4>
+                        <div class="flex gap-2 items-center text-xs">
+                            <label class="text-gray-500">Exit Tactic</label>
+                            <select id="tj-exit-tactic" class="px-2 py-1 bg-[#1f2937] border border-gray-600 rounded">${exitTactics.map(t => `<option ${j.exit_tactic===t?'selected':''}>${t}</option>`).join('')}</select>
+                            <label class="text-gray-500 ml-2">Reason</label>
+                            <input id="tj-exit-reason" value="${j.exit_reason||''}" placeholder="Reason for exit" class="px-2 py-1 bg-[#1f2937] border border-gray-600 rounded flex-1">
+                            <button onclick="addExitRow(${j.id})" class="px-3 py-1 bg-orange-600 rounded hover:bg-orange-700">+ Add Exit</button>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs">
+                            <thead class="bg-[#1f2937]">
+                                <tr>
+                                    <th class="p-2 text-left text-gray-400">Exit Date</th>
+                                    <th class="p-2 text-right text-gray-400">Quantity</th>
+                                    <th class="p-2 text-right text-gray-400">Order Price</th>
+                                    <th class="p-2 text-right text-gray-400">Filled Price</th>
+                                    <th class="p-2 text-right text-gray-400">Slippage</th>
+                                    <th class="p-2 text-right text-gray-400">Commission</th>
+                                    <th class="p-2 text-right text-gray-400">Position Size</th>
+                                    <th class="p-2 text-right text-gray-400">Day High</th>
+                                    <th class="p-2 text-right text-gray-400">Day Low</th>
+                                    <th class="p-2 text-center text-gray-400">Grade</th>
+                                    <th class="p-2 text-center text-gray-400">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${exits.length > 0 ? exits.map(e => `
+                                    <tr class="border-t border-gray-700">
+                                        <td class="p-2 font-mono">${e.exit_datetime?.split('T')[0] || '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.quantity || '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.order_price ? sym + e.order_price.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.filled_price ? sym + e.filled_price.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono ${(e.slippage||0) > 0 ? 'text-red-400' : ''}">${e.slippage ? sym + e.slippage.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.commission ? sym + e.commission.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.position_size ? sym + e.position_size.toLocaleString() : '-'}</td>
+                                        <td class="p-2 text-right font-mono text-green-400">${e.day_high ? sym + e.day_high.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono text-red-400">${e.day_low ? sym + e.day_low.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-center"><span class="px-2 py-0.5 rounded ${e.grade==='A' ? 'bg-green-500/20 text-green-400' : e.grade==='B' ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-500/20 text-gray-400'}">${e.grade || '-'}</span></td>
+                                        <td class="p-2 text-center"><button onclick="deleteExit(${e.id})" class="text-red-400 hover:text-red-300">🗑️</button></td>
+                                    </tr>
+                                `).join('') : '<tr><td colspan="11" class="p-4 text-center text-gray-500">No exits yet. Add your first exit above.</td></tr>'}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Results Section -->
+                <div class="bg-[#111827] rounded-xl p-4 border border-gray-700">
+                    <h4 class="font-bold text-purple-400 mb-3">Results</h4>
+                    <div class="grid grid-cols-6 gap-4 text-xs">
+                        <div><label class="text-gray-500">First Entry Date</label><input id="tj-firstentry" value="${j.first_entry_date||''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Total Shares</label><input id="tj-totalshares" value="${j.total_shares||''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Avg Entry</label><input id="tj-avgentry" value="${j.avg_entry ? sym + j.avg_entry.toFixed(2) : ''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Gain/Loss %</label><input id="tj-glpct" value="${j.gain_loss_percent ? j.gain_loss_percent.toFixed(2) + '%' : ''}" class="w-full px-2 py-1 ${(j.gain_loss_percent||0) >= 0 ? 'bg-green-900/20' : 'bg-red-900/20'} border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">High During Trade</label><input id="tj-hdt" value="${j.high_during_trade ? sym + j.high_during_trade.toFixed(2) : ''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Max Drawdown</label><input id="tj-maxdd" value="${j.max_drawdown ? sym + j.max_drawdown.toFixed(2) : ''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+
+                        <div><label class="text-gray-500">Last Exit Date</label><input id="tj-lastexit" value="${j.last_exit_date||''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Trade Grade</label><select id="tj-grade" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded">${grades.map(g => `<option ${j.trade_grade===g?'selected':''}>${g}</option>`).join('')}</select></div>
+                        <div><label class="text-gray-500">Avg Exit</label><input id="tj-avgexit" value="${j.avg_exit ? sym + j.avg_exit.toFixed(2) : ''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Gain/Loss ${sym}</label><input id="tj-glamount" value="${j.gain_loss_amount ? sym + j.gain_loss_amount.toFixed(2) : ''}" class="w-full px-2 py-1 ${(j.gain_loss_amount||0) >= 0 ? 'bg-green-900/20' : 'bg-red-900/20'} border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Low During Trade</label><input id="tj-ldt" value="${j.low_during_trade ? sym + j.low_during_trade.toFixed(2) : ''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">% Captured</label><input id="tj-captured" value="${j.percent_captured ? j.percent_captured.toFixed(1) + '%' : ''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                    </div>
+                </div>
+
+                <!-- Comments Section -->
+                <div class="bg-[#111827] rounded-xl p-4 border border-gray-700">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="text-sm text-gray-400">Open Trade Comments</label>
+                            <textarea id="tj-comments" class="w-full h-20 mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded text-sm">${j.open_trade_comments||''}</textarea>
+                        </div>
+                        <div>
+                            <label class="text-sm text-gray-400">Followup Analysis</label>
+                            <textarea id="tj-followup" class="w-full h-20 mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded text-sm">${j.followup_analysis||''}</textarea>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="flex gap-2">
+                    <button onclick="saveJournal()" class="flex-1 py-3 bg-green-600 rounded-lg font-medium hover:bg-green-700">💾 Save Journal</button>
+                    <button onclick="clearJournal()" class="flex-1 py-3 bg-gray-600 rounded-lg font-medium hover:bg-gray-700">🗑️ Clear</button>
+                </div>
+                ` : `
+                <!-- Journal Records List -->
+                <div class="bg-[#111827] rounded-xl border border-gray-700 overflow-hidden">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs">
+                            <thead class="bg-[#1f2937]">
+                                <tr>
+                                    <th class="p-2 text-left text-gray-400">Date</th>
+                                    <th class="p-2 text-left text-gray-400">Ticker</th>
+                                    <th class="p-2 text-center text-gray-400">Dir</th>
+                                    <th class="p-2 text-right text-gray-400">Entry</th>
+                                    <th class="p-2 text-right text-gray-400">Qty</th>
+                                    <th class="p-2 text-right text-gray-400">Target</th>
+                                    <th class="p-2 text-right text-gray-400">SL</th>
+                                    <th class="p-2 text-right text-gray-400">Gain/Loss</th>
+                                    <th class="p-2 text-center text-gray-400">Status</th>
+                                    <th class="p-2 text-center text-gray-400">Grade</th>
+                                    <th class="p-2 text-center text-gray-400">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${journals.length > 0 ? journals.map(j => `
+                                    <tr class="border-t border-gray-700 hover:bg-[#1f2937]/50 cursor-pointer" onclick="editJournal(${j.id})">
+                                        <td class="p-2 font-mono">${j.journal_date || '-'}</td>
+                                        <td class="p-2 font-mono font-bold">${j.ticker}</td>
+                                        <td class="p-2 text-center"><span class="${j.direction === 'Long' ? 'text-green-400' : 'text-red-400'}">${j.direction === 'Long' ? '▲' : '▼'}</span></td>
+                                        <td class="p-2 text-right font-mono">${j.entry_price ? sym + j.entry_price.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${j.quantity || '-'}</td>
+                                        <td class="p-2 text-right font-mono text-green-400">${j.target_price ? sym + j.target_price.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono text-red-400">${j.stop_loss ? sym + j.stop_loss.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono ${(j.gain_loss_amount||0) >= 0 ? 'text-green-400' : 'text-red-400'}">${j.gain_loss_amount ? sym + j.gain_loss_amount.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-center"><span class="px-2 py-0.5 rounded text-xs ${j.status==='closed' ? 'bg-gray-500/20 text-gray-400' : 'bg-blue-500/20 text-blue-400'}">${j.status}</span></td>
+                                        <td class="p-2 text-center"><span class="px-2 py-0.5 rounded ${j.trade_grade==='A' ? 'bg-green-500/20 text-green-400' : j.trade_grade==='B' ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-500/20 text-gray-400'}">${j.trade_grade || '-'}</span></td>
+                                        <td class="p-2 text-center">
+                                            <button onclick="event.stopPropagation(); editJournal(${j.id})" class="text-blue-400 hover:text-blue-300 mr-2">✏️</button>
+                                            <button onclick="event.stopPropagation(); deleteJournal(${j.id})" class="text-red-400 hover:text-red-300">🗑️</button>
+                                        </td>
+                                    </tr>
+                                `).join('') : '<tr><td colspan="11" class="p-8 text-center text-gray-500">No journal entries yet. Create one from Trade Bill or click + New Journal.</td></tr>'}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                `}
+            </div>
+        `;
+    }
+
+    function showJournalForm() {
+        // Already showing form, do nothing
+    }
+
+    function showJournalRecords() {
+        window.currentJournalId = null;
+        currentJournal = null;
+        render();
+    }
+
+    function newJournal() {
+        window.currentJournalId = 'new';
+        currentJournal = {id: null};
+        render();
+    }
+
+    async function editJournal(id) {
+        window.currentJournalId = id;
+        await render();
+    }
+
+    async function deleteJournal(id) {
+        if (!confirm('Delete this journal entry?')) return;
+
+        try {
+            await fetch(`/api/v2/trade-journal/${id}`, {method: 'DELETE'});
+            toast('Journal deleted', 'success');
+            window.currentJournalId = null;
+            currentJournal = null;
+            await render();
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    function clearJournal() {
+        window.currentJournalId = null;
+        currentJournal = null;
+        render();
+    }
+
+    async function saveJournal() {
+        const data = {
+            ticker: document.getElementById('tj-ticker').value,
+            journal_date: document.getElementById('tj-date').value,
+            cmp: parseFloat(document.getElementById('tj-cmp').value) || null,
+            direction: document.getElementById('tj-direction').value,
+            order_type: document.getElementById('tj-ordertype').value,
+            status: document.getElementById('tj-status').value,
+            mental_state: document.getElementById('tj-mental').value,
+            entry_price: parseFloat(document.getElementById('tj-entry').value) || null,
+            quantity: parseInt(document.getElementById('tj-qty').value) || null,
+            target_price: parseFloat(document.getElementById('tj-target').value) || null,
+            stop_loss: parseFloat(document.getElementById('tj-sl').value) || null,
+            trailing_stop: parseFloat(document.getElementById('tj-trailing').value) || null,
+            new_target: parseFloat(document.getElementById('tj-newtarget').value) || null,
+            target_a: parseFloat(document.getElementById('tj-targeta').value) || null,
+            target_b: parseFloat(document.getElementById('tj-targetb').value) || null,
+            target_c: parseFloat(document.getElementById('tj-targetc').value) || null,
+            entry_tactic: document.getElementById('tj-entry-tactic').value,
+            entry_reason: document.getElementById('tj-entry-reason').value,
+            exit_tactic: document.getElementById('tj-exit-tactic').value,
+            exit_reason: document.getElementById('tj-exit-reason').value,
+            trade_grade: document.getElementById('tj-grade').value,
+            open_trade_comments: document.getElementById('tj-comments').value,
+            followup_analysis: document.getElementById('tj-followup').value
+        };
+
+        // Calculate derived fields
+        if (data.entry_price && data.stop_loss && data.quantity) {
+            data.potential_loss = Math.abs(data.entry_price - data.stop_loss) * data.quantity;
+        }
+        if (data.entry_price && data.target_price && data.quantity) {
+            data.potential_gain = Math.abs(data.target_price - data.entry_price) * data.quantity;
+        }
+        if (data.potential_loss && data.potential_gain) {
+            data.rr_ratio = data.potential_gain / data.potential_loss;
+        }
+
+        try {
+            let result;
+            if (currentJournal && currentJournal.id) {
+                // Update
+                result = await fetch(`/api/v2/trade-journal/${currentJournal.id}`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+            } else {
+                // Create
+                result = await fetch('/api/v2/trade-journal', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+            }
+
+            const res = await result.json();
+            if (res.success || res.id) {
+                toast('Journal saved!', 'success');
+                if (res.id) window.currentJournalId = res.id;
+                await render();
+            } else {
+                toast(res.error || 'Failed to save', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    async function addEntryRow(journalId) {
+        if (!journalId) {
+            toast('Save journal first', 'error');
+            return;
+        }
+
+        const entry = {
+            entry_datetime: new Date().toISOString(),
+            quantity: parseInt(document.getElementById('tj-qty').value) || 0,
+            order_price: parseFloat(document.getElementById('tj-entry').value) || 0,
+            filled_price: parseFloat(document.getElementById('tj-entry').value) || 0,
+            slippage: 0,
+            commission: 0,
+            position_size: 0
+        };
+
+        entry.position_size = entry.filled_price * entry.quantity;
+
+        try {
+            const result = await fetch(`/api/v2/trade-journal/${journalId}/entry`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(entry)
+            });
+            const res = await result.json();
+            if (res.success) {
+                toast('Entry added!', 'success');
+                await render();
+            } else {
+                toast(res.error || 'Failed to add entry', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    async function addExitRow(journalId) {
+        if (!journalId) {
+            toast('Save journal first', 'error');
+            return;
+        }
+
+        const exit = {
+            exit_datetime: new Date().toISOString(),
+            quantity: parseInt(document.getElementById('tj-qty').value) || 0,
+            order_price: parseFloat(document.getElementById('tj-target').value) || 0,
+            filled_price: parseFloat(document.getElementById('tj-target').value) || 0,
+            slippage: 0,
+            commission: 0,
+            position_size: 0
+        };
+
+        exit.position_size = exit.filled_price * exit.quantity;
+
+        try {
+            const result = await fetch(`/api/v2/trade-journal/${journalId}/exit`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(exit)
+            });
+            const res = await result.json();
+            if (res.success) {
+                toast('Exit added!', 'success');
+                await render();
+            } else {
+                toast(res.error || 'Failed to add exit', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    async function deleteEntry(entryId) {
+        if (!confirm('Delete this entry?')) return;
+
+        try {
+            await fetch(`/api/v2/trade-journal/entry/${entryId}`, {method: 'DELETE'});
+            toast('Entry deleted', 'success');
+            await render();
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    async function deleteExit(exitId) {
+        if (!confirm('Delete this exit?')) return;
+
+        try {
+            await fetch(`/api/v2/trade-journal/exit/${exitId}`, {method: 'DELETE'});
+            toast('Exit deleted', 'success');
+            await render();
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
     // ========== ACCOUNT INFO ==========
     async function accountView() {
         try {
             const account = await api('GET', '/account/info');
-            const sym = account.currency==='GBP'?'£':account.currency==='INR'?'₹':'$';
+            const sym = '₹';  // Always INR for NSE
 
             return `
                 <div class="space-y-6 max-w-4xl">
@@ -1805,8 +2518,8 @@
             const avgWin = winners.length > 0 ? winners.reduce((sum, t) => sum + t.net_pnl, 0) / winners.length : 0;
             const avgLoss = losers.length > 0 ? losers.reduce((sum, t) => sum + Math.abs(t.net_pnl), 0) / losers.length : 0;
             const expectancy = closedTrades.length > 0 ? totalPnL / closedTrades.length : 0;
-            const s = settings[0] || {trading_capital: 6000};
-            const sym = '$';
+            const s = settings[0] || {trading_capital: 500000};
+            const sym = '₹';  // Always INR for NSE
             
             return `
                 <div class="space-y-6">
@@ -1910,8 +2623,8 @@
     async function tradeLogView() {
         const strategies = ['SE - Canon', 'SE - White Marubozu', 'EL - Daily Swing', 'EL - False Breakout', 'EL - LC Bounce', 'CI - Trending Stocks'];
         const mistakes = ['Tight Stop Loss', 'Entered Early', 'Entered Late', 'FOMO', 'Revenge Trading', 'Stock In News', 'Rule Deviation', 'Staying Long'];
-        const s = settings[0] || {trading_capital: 6000};
-        const sym = '$';
+        const s = settings[0] || {trading_capital: 500000};
+        const sym = '₹';  // Always INR for NSE
         
         let trades = [];
         try {
@@ -1935,7 +2648,7 @@
                     
                     <div class="grid grid-cols-6 gap-4 mb-4">
                         <div><label class="text-xs text-gray-400">Entry Date</label><input type="datetime-local" id="tl-entry-date" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
-                        <div><label class="text-xs text-gray-400">Symbol</label><input id="tl-symbol" placeholder="AAPL" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
+                        <div><label class="text-xs text-gray-400">Symbol</label><input id="tl-symbol" placeholder="NSE:RELIANCE" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
                         <div><label class="text-xs text-gray-400">Strategy</label><select id="tl-strategy" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm">${strategies.map(s => `<option>${s}</option>`).join('')}</select></div>
                         <div><label class="text-xs text-gray-400">Direction</label><select id="tl-direction" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm"><option>Long</option><option>Short</option></select></div>
                         <div><label class="text-xs text-gray-400">Entry Price (${sym})</label><input type="number" id="tl-entry" step="0.01" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
@@ -2067,8 +2780,8 @@
             const response = await api('GET', '/trade-log');
             const trades = response.trades || [];
             const closed = trades.filter(t => t.exit_date);
-            const s = settings[0] || {trading_capital: 6000};
-            const sym = '$';
+            const s = settings[0] || {trading_capital: 500000};
+            const sym = '₹';  // Always INR for NSE
             
             // Calculate by strategy
             const strategies = {};
@@ -2135,7 +2848,7 @@
             const response = await api('GET', '/trade-log');
             const trades = response.trades || [];
             const closed = trades.filter(t => t.exit_date);
-            const sym = '$';
+            const sym = '₹';  // Always INR for NSE
             
             // Group by date
             const byDate = {};
@@ -2238,7 +2951,7 @@
             const response = await api('GET', '/trade-log');
             const trades = response.trades || [];
             const closed = trades.filter(t => t.exit_date);
-            const sym = '$';
+            const sym = '₹';  // Always INR for NSE
             
             // Group by mistake
             const byMistake = {};
@@ -2340,9 +3053,8 @@
                             <p class="text-gray-500 text-sm">Your watched stocks with price data</p>
                         </div>
                         <div class="flex gap-2">
-                            <select id="fav-market" onchange="favoritesMarketChanged()" class="bg-[#1f2937] border border-gray-600 rounded px-3 py-2 text-sm">
-                                <option value="US" ${market === 'US' ? 'selected' : ''}>🇺🇸 NASDAQ</option>
-                                <option value="IN" ${market === 'IN' ? 'selected' : ''}>🇮🇳 NSE</option>
+                            <select id="fav-market" class="bg-[#1f2937] border border-gray-600 rounded px-3 py-2 text-sm" disabled>
+                                <option value="IN" selected>🇮🇳 NSE (NIFTY 100)</option>
                             </select>
                         </div>
                     </div>
@@ -2603,7 +3315,7 @@
             
             // Show warning if no data was fetched
             if (result.diagnostics && result.diagnostics.symbols_with_data === 0) {
-                toast('⚠️ No data available! Make sure IBKR Gateway is connected.', 'warning');
+                toast('⚠️ No data available! Make sure Kite Connect is authenticated.', 'warning');
             } else {
                 toast(`Scan complete! Found ${allSignals.length} signals`, 'success');
             }
@@ -2642,8 +3354,8 @@
             html += `
                 <div class="col-span-full mt-4 p-4 bg-red-900/30 border border-red-700 rounded-lg text-center">
                     <p class="text-red-400 font-semibold">⚠️ No Data Available</p>
-                    <p class="text-sm text-gray-400 mt-1">Make sure IBKR Gateway is running and authenticated.</p>
-                    <p class="text-xs text-gray-500 mt-1">The historical screener needs live IBKR connection to fetch stock data.</p>
+                    <p class="text-sm text-gray-400 mt-1">Make sure Kite Connect is authenticated.</p>
+                    <p class="text-xs text-gray-500 mt-1">The historical screener needs Kite Connect to fetch stock data.</p>
                 </div>
             `;
         }
@@ -2874,29 +3586,243 @@
 
     // ========== SETTINGS ==========
     function settingsView() {
-        const s = settings[0] || {account_name:'ISA', trading_capital:6000, risk_per_trade:2, max_monthly_drawdown:6, target_rr:2, currency:'GBP'};
+        const s = settings[0] || {account_name:'Trading Account', trading_capital:500000, risk_per_trade:2, max_monthly_drawdown:6, target_rr:2, currency:'INR'};
         return `
             <div class="space-y-6 max-w-2xl">
                 <h2 class="text-xl font-bold">⚙️ Account Settings</h2>
-                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
-                    <div><label class="text-sm text-gray-400">Account Name</label><input id="s-name" value="${s.account_name||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg"></div>
+
+                <!-- Kite Connect API Settings -->
+                <div class="bg-[#111827] rounded-xl p-6 border border-blue-500/30 space-y-4">
+                    <h3 class="font-bold text-blue-400 flex items-center gap-2">
+                        <span>🔐</span> Kite Connect API (Zerodha)
+                    </h3>
+                    <p class="text-sm text-gray-500">Get your API Key and Secret from <a href="https://developers.kite.trade" target="_blank" class="text-blue-400 hover:underline">Kite Connect Developer Console</a></p>
+
                     <div class="grid grid-cols-2 gap-4">
-                        <div><label class="text-sm text-gray-400">Trading Capital</label><input type="number" id="s-capital" value="${s.trading_capital}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
-                        <div><label class="text-sm text-gray-400">Currency</label><select id="s-currency" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg">
-                            <option ${s.currency==='GBP'?'selected':''}>GBP</option>
-                            <option ${s.currency==='USD'?'selected':''}>USD</option>
-                            <option ${s.currency==='INR'?'selected':''}>INR</option>
-                        </select></div>
+                        <div>
+                            <label class="text-sm text-gray-400">API Key</label>
+                            <input id="s-kite-api-key" type="text" value="${s.kite_api_key||''}" placeholder="Your Kite API Key"
+                                class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono text-sm">
+                        </div>
+                        <div>
+                            <label class="text-sm text-gray-400">API Secret</label>
+                            <input id="s-kite-api-secret" type="password" value="${s.kite_api_secret||''}" placeholder="Your Kite API Secret"
+                                class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono text-sm">
+                        </div>
                     </div>
+
+                    <div class="flex gap-2">
+                        <button onclick="saveKiteCredentials()" class="px-4 py-2 bg-blue-600 rounded-lg hover:bg-blue-700">
+                            💾 Save API Credentials
+                        </button>
+                        <button onclick="showKiteLoginModal()" class="px-4 py-2 bg-green-600 rounded-lg hover:bg-green-700">
+                            🔗 Login to Kite
+                        </button>
+                    </div>
+
+                    ${s.kite_access_token ? `
+                        <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-3 text-sm">
+                            <span class="text-green-400">✓ Currently logged in</span>
+                            <span class="text-gray-500 ml-2">(Token expires: ${s.kite_token_expiry || 'End of day'})</span>
+                        </div>
+                    ` : `
+                        <div class="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 text-sm">
+                            <span class="text-yellow-400">⚠️ Not logged in</span>
+                            <span class="text-gray-500 ml-2">- Login required each trading day</span>
+                        </div>
+                    `}
+                </div>
+
+                <!-- Trading Settings -->
+                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
+                    <h3 class="font-bold text-gray-300">📊 Trading Settings</h3>
+
+                    <div><label class="text-sm text-gray-400">Account Name</label><input id="s-name" value="${s.account_name||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg"></div>
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <div><label class="text-sm text-gray-400">Trading Capital (₹)</label><input type="number" id="s-capital" value="${s.trading_capital}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Broker</label><input id="s-broker" value="${s.broker||'Zerodha'}" disabled class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg text-gray-500"></div>
+                    </div>
+
                     <div class="grid grid-cols-3 gap-4">
                         <div><label class="text-sm text-gray-400">Risk % per Trade</label><input type="number" id="s-risk" value="${s.risk_per_trade}" step="0.5" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                         <div><label class="text-sm text-gray-400">Max Monthly DD %</label><input type="number" id="s-dd" value="${s.max_monthly_drawdown}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                         <div><label class="text-sm text-gray-400">Target R:R</label><input type="number" id="s-rr" value="${s.target_rr}" step="0.5" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                     </div>
-                    <button onclick="saveSettings()" class="w-full py-3 bg-blue-600 rounded-lg font-medium hover:bg-blue-700">💾 Save Settings</button>
+
+                    <button onclick="saveSettings()" class="w-full py-3 bg-blue-600 rounded-lg font-medium hover:bg-blue-700">💾 Save Trading Settings</button>
+                </div>
+
+                <!-- Data Management -->
+                <div class="bg-[#111827] rounded-xl p-6 border border-green-500/30 space-y-4">
+                    <h3 class="font-bold text-green-400 flex items-center gap-2">
+                        <span>📊</span> Data Management
+                    </h3>
+                    <p class="text-sm text-gray-500">Load NIFTY 100 historical data and pre-calculate all indicators. Run this once daily after market close.</p>
+
+                    <div id="data-status" class="bg-[#1f2937] p-4 rounded-lg space-y-2">
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Last Data Refresh:</span>
+                            <span id="last-refresh-date" class="font-mono text-white">Loading...</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Symbols Cached:</span>
+                            <span id="symbols-cached" class="font-mono text-white">-</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400">Data Range:</span>
+                            <span id="data-range" class="font-mono text-white">-</span>
+                        </div>
+                        <div id="data-stale-warning" class="hidden bg-yellow-500/10 border border-yellow-500/30 rounded p-2 text-sm text-yellow-400 mt-2">
+                            ⚠️ Data is stale. Please load fresh data after market close.
+                        </div>
+                    </div>
+
+                    <div class="flex gap-2">
+                        <button id="load-data-btn" onclick="loadMarketData()" class="flex-1 py-3 bg-green-600 rounded-lg font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed">
+                            📥 Load Market Data
+                        </button>
+                    </div>
+
+                    <div id="load-progress" class="hidden">
+                        <div class="flex items-center gap-2 text-sm text-gray-400">
+                            <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span id="load-progress-text">Loading data...</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- NSE Trading Info -->
+                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
+                    <h3 class="font-bold text-gray-300 mb-3">📈 NSE Trading Info</h3>
+                    <div class="grid grid-cols-2 gap-4 text-sm">
+                        <div class="bg-[#1f2937] p-3 rounded-lg">
+                            <p class="text-gray-500">Trading Hours</p>
+                            <p class="font-mono text-white">9:15 AM - 3:30 PM IST</p>
+                        </div>
+                        <div class="bg-[#1f2937] p-3 rounded-lg">
+                            <p class="text-gray-500">Market</p>
+                            <p class="font-mono text-white">NSE (NIFTY 100)</p>
+                        </div>
+                        <div class="bg-[#1f2937] p-3 rounded-lg">
+                            <p class="text-gray-500">Currency</p>
+                            <p class="font-mono text-white">INR (₹)</p>
+                        </div>
+                        <div class="bg-[#1f2937] p-3 rounded-lg">
+                            <p class="text-gray-500">Delivery Brokerage</p>
+                            <p class="font-mono text-green-400">₹0 (Free)</p>
+                        </div>
+                    </div>
                 </div>
             </div>
         `;
+    }
+
+    // ========== DATA MANAGEMENT ==========
+    async function loadDataStatus() {
+        try {
+            const resp = await fetch('/api/v2/data/status');
+            const status = await resp.json();
+
+            const lastRefreshEl = document.getElementById('last-refresh-date');
+            const symbolsCachedEl = document.getElementById('symbols-cached');
+            const dataRangeEl = document.getElementById('data-range');
+            const staleWarningEl = document.getElementById('data-stale-warning');
+
+            if (lastRefreshEl) {
+                if (status.last_refresh) {
+                    const date = new Date(status.last_refresh);
+                    lastRefreshEl.textContent = date.toLocaleString('en-IN', {
+                        dateStyle: 'medium',
+                        timeStyle: 'short'
+                    });
+                    lastRefreshEl.className = status.is_stale ? 'font-mono text-yellow-400' : 'font-mono text-green-400';
+                } else {
+                    lastRefreshEl.textContent = 'Never';
+                    lastRefreshEl.className = 'font-mono text-red-400';
+                }
+            }
+
+            if (symbolsCachedEl) {
+                symbolsCachedEl.textContent = status.symbols_cached || '0';
+            }
+
+            if (dataRangeEl && status.data_from && status.data_to) {
+                dataRangeEl.textContent = `${status.data_from} to ${status.data_to}`;
+            }
+
+            if (staleWarningEl) {
+                staleWarningEl.classList.toggle('hidden', !status.is_stale);
+            }
+        } catch(e) {
+            console.error('Error loading data status:', e);
+        }
+    }
+
+    async function loadMarketData() {
+        const btn = document.getElementById('load-data-btn');
+        const progress = document.getElementById('load-progress');
+        const progressText = document.getElementById('load-progress-text');
+
+        btn.disabled = true;
+        btn.textContent = '⏳ Loading...';
+        progress.classList.remove('hidden');
+        progressText.textContent = 'Connecting to Kite...';
+
+        try {
+            const resp = await fetch('/api/v2/data/load', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            });
+            const result = await resp.json();
+
+            if (result.success) {
+                if (result.skipped) {
+                    toast('Data already loaded for today!', 'info');
+                } else {
+                    toast(`Loaded ${result.symbols_loaded} symbols successfully!`, 'success');
+                    if (result.symbols_failed && result.symbols_failed.length > 0) {
+                        console.warn('Failed symbols:', result.symbols_failed);
+                    }
+                }
+                await loadDataStatus();
+            } else {
+                toast(result.error || 'Failed to load data', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '📥 Load Market Data';
+            progress.classList.add('hidden');
+        }
+    }
+
+    async function saveKiteCredentials() {
+        const apiKey = document.getElementById('s-kite-api-key').value.trim();
+        const apiSecret = document.getElementById('s-kite-api-secret').value.trim();
+
+        if (!apiKey || !apiSecret) {
+            toast('Please enter both API Key and Secret', 'error');
+            return;
+        }
+
+        try {
+            await api('PUT', '/account/info', {
+                kite_api_key: apiKey,
+                kite_api_secret: apiSecret
+            });
+            toast('API credentials saved!', 'success');
+            // Reload settings
+            const response = await api('GET', '/account/info');
+            settings = [response];
+            await render();
+        } catch(e) {
+            toast('Error saving credentials: ' + e.message, 'error');
+        }
     }
 
     async function saveSettings() {
@@ -2906,8 +3832,8 @@
             risk_per_trade: parseFloat(document.getElementById('s-risk').value),
             max_monthly_drawdown: parseFloat(document.getElementById('s-dd').value),
             target_rr: parseFloat(document.getElementById('s-rr').value),
-            currency: document.getElementById('s-currency').value,
-            market: document.getElementById('market').value
+            currency: 'INR',  // Always INR for NSE
+            market: 'IN'  // Always IN for NSE
         };
         try {
             await api('PUT', '/account/info', data);
@@ -2955,24 +3881,117 @@
         `;
     }
 
-    // ========== IBKR STATUS ==========
-    async function checkIBKRStatus() {
+    // ========== KITE CONNECT STATUS ==========
+    async function checkKiteStatus() {
         try {
-            const status = await api('GET', '/ibkr/status');
-            const el = document.getElementById('ibkr-status');
+            const status = await api('GET', '/v2/kite/status');
+            const el = document.getElementById('kite-status');
+            const marketEl = document.getElementById('market-status');
+
+            // Update market status
+            if (status.market) {
+                if (status.market.is_open) {
+                    marketEl.className = 'text-xs px-2 py-1 rounded bg-green-500/20 text-green-400';
+                    marketEl.textContent = '● NSE Open';
+                } else {
+                    marketEl.className = 'text-xs px-2 py-1 rounded bg-gray-700 text-gray-400';
+                    marketEl.textContent = '● NSE Closed';
+                    marketEl.title = status.market.message;
+                }
+            }
+
+            // Update Kite connection status
             if (status.connected) {
                 el.className = 'text-xs px-2 py-1 rounded bg-green-500/20 text-green-400';
-                el.textContent = '● IBKR Connected';
+                el.textContent = '● Kite Connected';
+                el.onclick = null;
             } else {
-                el.className = 'text-xs px-2 py-1 rounded bg-red-500/20 text-red-400 cursor-pointer';
-                el.textContent = '● IBKR Disconnected';
-                el.title = status.message;
-                el.onclick = () => alert(status.message + '\n\n' + (status.instructions || ''));
+                el.className = 'text-xs px-2 py-1 rounded bg-yellow-500/20 text-yellow-400 cursor-pointer';
+                el.textContent = '● Kite Login Required';
+                el.title = status.message + ' (Click to login)';
+                el.onclick = () => showKiteLoginModal();
             }
         } catch(e) {
-            const el = document.getElementById('ibkr-status');
+            const el = document.getElementById('kite-status');
             el.className = 'text-xs px-2 py-1 rounded bg-red-500/20 text-red-400';
-            el.textContent = '● Gateway Error';
+            el.textContent = '● Connection Error';
+        }
+    }
+
+    async function showKiteLoginModal() {
+        document.getElementById('modal').classList.remove('hidden');
+        document.getElementById('modal-body').innerHTML = `
+            <div class="p-6">
+                <div class="flex justify-between items-start mb-6">
+                    <div>
+                        <h2 class="text-2xl font-bold">🔐 Kite Connect Login</h2>
+                        <p class="text-gray-500">Login to Zerodha Kite to enable trading</p>
+                    </div>
+                    <button onclick="closeModal()" class="text-gray-400 hover:text-white text-2xl">&times;</button>
+                </div>
+
+                <div class="space-y-4">
+                    <div class="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
+                        <h3 class="font-bold text-blue-400 mb-2">Step 1: Open Kite Login</h3>
+                        <p class="text-sm text-gray-400 mb-3">Click the button below to open Kite login page. After logging in, you'll be redirected with a request token.</p>
+                        <button onclick="openKiteLogin()" class="px-4 py-2 bg-blue-600 rounded-lg hover:bg-blue-700">
+                            🔗 Open Kite Login
+                        </button>
+                    </div>
+
+                    <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-4">
+                        <h3 class="font-bold text-green-400 mb-2">Step 2: Paste Request Token</h3>
+                        <p class="text-sm text-gray-400 mb-3">After login, copy the request_token from the URL and paste it below.</p>
+                        <div class="flex gap-2">
+                            <input type="text" id="kite-request-token" placeholder="Paste request_token here..."
+                                class="flex-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg text-white">
+                            <button onclick="authenticateKite()" class="px-4 py-2 bg-green-600 rounded-lg hover:bg-green-700">
+                                ✓ Authenticate
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="bg-gray-700/50 rounded-lg p-4 text-sm text-gray-400">
+                        <p><strong>Note:</strong> Kite login is required each trading day. The session expires at midnight.</p>
+                        <p class="mt-2">Make sure you have configured your API Key and Secret in Settings first.</p>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    async function openKiteLogin() {
+        try {
+            const response = await api('GET', '/v2/kite/login-url');
+            if (response.success) {
+                window.open(response.login_url, '_blank');
+                toast('Kite login page opened. Complete login and copy the request_token.', 'info');
+            } else {
+                toast(response.error || 'Could not get login URL', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    async function authenticateKite() {
+        const token = document.getElementById('kite-request-token').value.trim();
+        if (!token) {
+            toast('Please enter the request token', 'error');
+            return;
+        }
+
+        try {
+            const response = await api('POST', '/v2/kite/authenticate', { request_token: token });
+            if (response.success) {
+                toast('Successfully logged in to Kite!', 'success');
+                closeModal();
+                await checkKiteStatus();
+            } else {
+                toast(response.error || 'Authentication failed', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
         }
     }
 
@@ -2983,18 +4002,18 @@
             settings = [account];
         } catch(e) {
             console.log('Could not load account info:', e);
-            settings = [{trading_capital:6000, risk_per_trade:2, currency:'GBP'}];
+            settings = [{trading_capital:500000, risk_per_trade:2, currency:'INR'}];
         }
-        
+
         const cl = await api('GET', '/checklist');
         checklist = cl.items || {};
-        await checkIBKRStatus();
+        await checkKiteStatus();
         renderNav();
         renderHeader();
         await render();
-        
-        // Check IBKR status every 30 seconds
-        setInterval(checkIBKRStatus, 30000);
+
+        // Check Kite status every 30 seconds
+        setInterval(checkKiteStatus, 30000);
     }
 
     init();

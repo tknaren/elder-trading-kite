@@ -31,7 +31,9 @@ ENTRY/STOP/TARGET (Elder Method):
 - Target: Keltner Channel Upper Band
 - Stop: Below deepest historical EMA-22 penetration
 
-Data Source: IBKR Client Portal API
+Data Source: Kite Connect API (Zerodha)
+Market: NSE (NIFTY 100)
+Symbol Format: NSE:SYMBOL (e.g., NSE:RELIANCE, NSE:TCS)
 """
 
 # Import v2 functions as the default implementation
@@ -46,8 +48,9 @@ from services.screener_v2 import (
     detect_false_breakout,
     detect_force_index_spike,
     calculate_ema_penetration_history,
-    NASDAQ_100_TOP,
-    NIFTY_50
+    NIFTY_50,
+    NIFTY_100,
+    DEFAULT_STOCKS
 )
 
 # Re-export for backward compatibility
@@ -62,8 +65,7 @@ __all__ = [
     'detect_false_breakout',
     'detect_force_index_spike',
     'calculate_ema_penetration_history',
-    'NASDAQ_100_TOP',
-    'NIFTY_50'
+    'NIFTY_50',
+    'NIFTY_100',
+    'DEFAULT_STOCKS'
 ]
-
-

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(del \"C:\\Users\\tknar\\.claude-worktrees\\backend\\thirsty-euler\\backend\\services\\ibkr_client.py\" \"C:\\Users\\tknar\\.claude-worktrees\\backend\\thirsty-euler\\backend\\services\\ibkr_orders.py\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

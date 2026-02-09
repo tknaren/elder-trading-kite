@@ -36,9 +36,14 @@ class Database:
             print(f"Warning: Could not create db directory: {e}")
 
     def get_connection(self):
-        """Get database connection"""
-        conn = sqlite3.connect(self.db_path)
+        """Get database connection with proper settings"""
+        conn = sqlite3.connect(self.db_path, timeout=30.0,
+                               check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        # Enable WAL mode for better concurrency
+        conn.execute('PRAGMA journal_mode=WAL')
+        # Set busy timeout
+        conn.execute('PRAGMA busy_timeout=30000')
         return conn
 
     def _init_db(self):
@@ -58,14 +63,18 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 account_name TEXT NOT NULL,
-                market TEXT NOT NULL,
+                market TEXT DEFAULT 'IN',
                 trading_capital REAL NOT NULL,
                 risk_per_trade REAL DEFAULT 2.0,
                 max_monthly_drawdown REAL DEFAULT 6.0,
                 target_rr REAL DEFAULT 2.0,
                 max_open_positions INTEGER DEFAULT 5,
-                currency TEXT DEFAULT 'USD',
-                broker TEXT,
+                currency TEXT DEFAULT 'INR',
+                broker TEXT DEFAULT 'Zerodha',
+                kite_api_key TEXT,
+                kite_api_secret TEXT,
+                kite_access_token TEXT,
+                kite_token_expiry TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id)
@@ -369,8 +378,146 @@ class Database:
         conn.commit()
         conn.close()
 
+        # Run schema migrations
+        self._run_migrations()
+
         # Initialize default data
         self._init_defaults()
+
+    def _run_migrations(self):
+        """Run database schema migrations"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        # Check if max_risk column exists in trade_bills
+        cursor.execute("PRAGMA table_info(trade_bills)")
+        columns = [col[1] for col in cursor.fetchall()]
+
+        # Migration 1: Add max_risk column to trade_bills
+        if 'max_risk' not in columns:
+            try:
+                cursor.execute(
+                    'ALTER TABLE trade_bills ADD COLUMN max_risk REAL')
+                print("Migration: Added max_risk column to trade_bills")
+            except Exception as e:
+                print(f"Migration warning (max_risk): {e}")
+
+        # Migration 2: Add other_charges column (keeping overnight_charges for backward compatibility)
+        if 'other_charges' not in columns:
+            try:
+                cursor.execute(
+                    'ALTER TABLE trade_bills ADD COLUMN other_charges REAL DEFAULT 0')
+                # Copy existing overnight_charges values to other_charges
+                cursor.execute(
+                    'UPDATE trade_bills SET other_charges = overnight_charges WHERE overnight_charges IS NOT NULL')
+                print("Migration: Added other_charges column to trade_bills")
+            except Exception as e:
+                print(f"Migration warning (other_charges): {e}")
+
+        # Migration 3: Create trade_journal_v2 table for enhanced journal
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS trade_journal_v2 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                trade_bill_id INTEGER,
+                -- Ticker Info
+                ticker TEXT NOT NULL,
+                cmp REAL,
+                direction TEXT DEFAULT 'Long',
+                status TEXT DEFAULT 'open',
+                journal_date DATE DEFAULT CURRENT_DATE,
+                remaining_qty INTEGER DEFAULT 0,
+                order_type TEXT,
+                mental_state TEXT,
+                -- Trade Setup
+                entry_price REAL,
+                quantity INTEGER,
+                target_price REAL,
+                stop_loss REAL,
+                rr_ratio REAL,
+                -- Risk
+                potential_loss REAL,
+                trailing_stop REAL,
+                new_target REAL,
+                -- Reward
+                potential_gain REAL,
+                target_a REAL,
+                target_b REAL,
+                target_c REAL,
+                -- Entry/Exit tactics
+                entry_tactic TEXT,
+                entry_reason TEXT,
+                exit_tactic TEXT,
+                exit_reason TEXT,
+                -- Results (calculated)
+                first_entry_date TEXT,
+                last_exit_date TEXT,
+                total_shares INTEGER,
+                avg_entry REAL,
+                avg_exit REAL,
+                trade_grade TEXT,
+                gain_loss_percent REAL,
+                gain_loss_amount REAL,
+                high_during_trade REAL,
+                low_during_trade REAL,
+                max_drawdown REAL,
+                percent_captured REAL,
+                -- Notes
+                open_trade_comments TEXT,
+                followup_analysis TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (trade_bill_id) REFERENCES trade_bills(id)
+            )
+        ''')
+
+        # Migration 4: Create trade_entries table for multiple entries per trade
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS trade_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                journal_id INTEGER NOT NULL,
+                entry_datetime TEXT,
+                quantity INTEGER,
+                order_price REAL,
+                filled_price REAL,
+                slippage REAL,
+                commission REAL,
+                position_size REAL,
+                day_high REAL,
+                day_low REAL,
+                grade TEXT,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (journal_id) REFERENCES trade_journal_v2(id) ON DELETE CASCADE
+            )
+        ''')
+
+        # Migration 5: Create trade_exits table for multiple exits per trade
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS trade_exits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                journal_id INTEGER NOT NULL,
+                exit_datetime TEXT,
+                quantity INTEGER,
+                order_price REAL,
+                filled_price REAL,
+                slippage REAL,
+                commission REAL,
+                position_size REAL,
+                day_high REAL,
+                day_low REAL,
+                grade TEXT,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (journal_id) REFERENCES trade_journal_v2(id) ON DELETE CASCADE
+            )
+        ''')
+
+        print("Migration: Created trade_journal_v2, trade_entries, trade_exits tables")
+
+        conn.commit()
+        conn.close()
 
     def _init_defaults(self):
         """Initialize default user, strategies, and watchlists"""
@@ -445,48 +592,43 @@ class Database:
                     VALUES (?, ?, ?, ?, ?)
                 ''', (strategy_id, name, label, json.dumps(options), i))
 
-            # Default watchlists
-            nasdaq_100 = [
-                # Top 50 by market cap
-                'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'AMD', 'AVGO', 'NFLX',
-                'COST', 'PEP', 'ADBE', 'CSCO', 'INTC', 'QCOM', 'TXN', 'INTU', 'AMAT', 'MU',
-                'LRCX', 'KLAC', 'SNPS', 'CDNS', 'MRVL', 'ON', 'NXPI', 'ADI', 'MCHP', 'FTNT',
-                'VRTX', 'CHTR', 'ASML', 'CRWD', 'PANW', 'MNST', 'TEAM', 'PAYX', 'AEP', 'REGN',
-                'DXCM', 'CPRT', 'PCAR', 'ALGN', 'AMGN', 'MRNA', 'XEL', 'WDAY', 'ABNB', 'MDLZ',
-                # Next 50
-                'GILD', 'ISRG', 'BKNG', 'ADP', 'SBUX', 'PYPL', 'CME', 'ORLY', 'IDXX', 'CTAS',
-                'MAR', 'CSX', 'ODFL', 'FAST', 'ROST', 'KDP', 'EXC', 'DLTR', 'BIIB', 'EA',
-                'VRSK', 'ANSS', 'ILMN', 'SIRI', 'ZS', 'DDOG', 'CTSH', 'WBD', 'EBAY', 'FANG',
-                'GFS', 'LCID', 'RIVN', 'CEG', 'TTD', 'GEHC', 'ZM', 'ROKU', 'OKTA', 'SPLK',
-                'DOCU', 'BILL', 'ENPH', 'SEDG', 'DASH', 'COIN', 'HOOD', 'SOFI', 'PLTR', 'NET'
+            # Default watchlist - NIFTY 100 with NSE: format
+            nifty_100 = [
+                # NIFTY 50
+                'NSE:RELIANCE', 'NSE:TCS', 'NSE:HDFCBANK', 'NSE:INFY', 'NSE:ICICIBANK',
+                'NSE:HINDUNILVR', 'NSE:SBIN', 'NSE:BHARTIARTL', 'NSE:ITC', 'NSE:KOTAKBANK',
+                'NSE:LT', 'NSE:AXISBANK', 'NSE:ASIANPAINT', 'NSE:MARUTI', 'NSE:TITAN',
+                'NSE:SUNPHARMA', 'NSE:ULTRACEMCO', 'NSE:BAJFINANCE', 'NSE:WIPRO', 'NSE:HCLTECH',
+                'NSE:POWERGRID', 'NSE:NTPC', 'NSE:M&M', 'NSE:JSWSTEEL',
+                'NSE:BAJAJFINSV', 'NSE:ONGC', 'NSE:TATASTEEL', 'NSE:ADANIENT', 'NSE:COALINDIA',
+                'NSE:GRASIM', 'NSE:TECHM', 'NSE:HINDALCO', 'NSE:INDUSINDBK', 'NSE:DRREDDY',
+                'NSE:APOLLOHOSP', 'NSE:CIPLA', 'NSE:EICHERMOT', 'NSE:NESTLEIND', 'NSE:DIVISLAB',
+                'NSE:BRITANNIA', 'NSE:BPCL', 'NSE:ADANIPORTS', 'NSE:TATACONSUM', 'NSE:HEROMOTOCO',
+                'NSE:SBILIFE', 'NSE:HDFCLIFE', 'NSE:BAJAJ-AUTO', 'NSE:SHRIRAMFIN', 'NSE:LTIM',
+                # NIFTY NEXT 50
+                'NSE:ABB', 'NSE:ACC', 'NSE:ADANIGREEN', 'NSE:ADANIPOWER', 'NSE:AMBUJACEM',
+                'NSE:ATGL', 'NSE:AUROPHARMA', 'NSE:BANKBARODA', 'NSE:BEL', 'NSE:BERGEPAINT',
+                'NSE:BOSCHLTD', 'NSE:CANBK', 'NSE:CHOLAFIN', 'NSE:COLPAL', 'NSE:DLF',
+                'NSE:GAIL', 'NSE:GODREJCP', 'NSE:HAL', 'NSE:HAVELLS', 'NSE:ICICIPRULI',
+                'NSE:IDEA', 'NSE:IGL', 'NSE:INDHOTEL', 'NSE:INDIGO', 'NSE:IOC',
+                'NSE:IRCTC', 'NSE:JINDALSTEL', 'NSE:JSWENERGY', 'NSE:LICI', 'NSE:LUPIN',
+                'NSE:MARICO', 'NSE:MAXHEALTH', 'NSE:MPHASIS', 'NSE:NAUKRI', 'NSE:NHPC',
+                'NSE:OBEROIRLTY', 'NSE:OFSS', 'NSE:PAGEIND', 'NSE:PFC', 'NSE:PIDILITIND',
+                'NSE:PNB', 'NSE:POLYCAB', 'NSE:RECLTD', 'NSE:SRF', 'NSE:TATAPOWER',
+                'NSE:TORNTPHARM', 'NSE:TRENT', 'NSE:UNIONBANK', 'NSE:VBL'
             ]
 
-            nifty_50 = ['RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS',
-                        'ICICIBANK.NS', 'HINDUNILVR.NS', 'SBIN.NS', 'BHARTIARTL.NS',
-                        'ITC.NS', 'KOTAKBANK.NS', 'LT.NS', 'AXISBANK.NS']
-
             conn.execute('''
                 INSERT INTO watchlists (user_id, name, market, symbols, is_default)
                 VALUES (?, ?, ?, ?, ?)
-            ''', (user_id, 'NASDAQ 100', 'US', json.dumps(nasdaq_100), 1))
+            ''', (user_id, 'NIFTY 100', 'IN', json.dumps(nifty_100), 1))
 
+            # Default account settings - NSE/Zerodha only
             conn.execute('''
-                INSERT INTO watchlists (user_id, name, market, symbols, is_default)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (user_id, 'NIFTY 50', 'IN', json.dumps(nifty_50), 1))
-
-            # Default account settings
-            conn.execute('''
-                INSERT INTO account_settings 
+                INSERT INTO account_settings
                 (user_id, account_name, market, trading_capital, currency, broker)
                 VALUES (?, ?, ?, ?, ?, ?)
-            ''', (user_id, 'ISA Account', 'US', 6000, 'GBP', 'Trading212'))
-
-            conn.execute('''
-                INSERT INTO account_settings 
-                (user_id, account_name, market, trading_capital, currency, broker)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (user_id, 'Zerodha Account', 'IN', 570749, 'INR', 'Zerodha'))
+            ''', (user_id, 'Trading Account', 'IN', 500000, 'INR', 'Zerodha'))
 
             conn.commit()
 
