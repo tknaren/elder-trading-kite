@@ -47,7 +47,7 @@
 
     <script>
     const API = '/api';
-    let currentTab = 'screener';
+    let currentTab = 'journal-dashboard';
     let selectedStock = null;  // Store stock for trade bill creation
     let settings = [];
     let weeklyData = null;
@@ -55,16 +55,22 @@
     let isLoading = false;  // Track loading state
 
     const tabs = [
-        {id:'screener', icon:'🔍', label:'Screener'},
-        {id:'backtest', icon:'📊', label:'Signal Scanner'},
-        {id:'candlestick-screener', icon:'🕯️', label:'Candlestick'},
-        {id:'rsi-macd-screener', icon:'📈', label:'RSI+MACD'},
-        {id:'trade-bill', icon:'💼', label:'Trade Bill'},
-        {id:'trade-bills', icon:'📋', label:'Trade Bills'},
-        {id:'trade-journal', icon:'📓', label:'Trade Journal'},
         {id:'journal-dashboard', icon:'📈', label:'Dashboard'},
-        {id:'trade-log', icon:'📝', label:'Trade Log'},
-        {id:'trade-summary', icon:'📈', label:'Trade Summary'},
+        {section: 'Screeners', items: [
+            {id:'screener', icon:'🔍', label:'Screener'},
+            {id:'backtest', icon:'📊', label:'Signal Scanner'},
+            {id:'candlestick-screener', icon:'🕯️', label:'Candlestick'},
+            {id:'rsi-macd-screener', icon:'📈', label:'RSI+MACD'}
+        ]},
+        {section: 'Trade Bill', items: [
+            {id:'trade-bill', icon:'💼', label:'Trade Bill'},
+            {id:'trade-bills', icon:'📋', label:'Trade Bills'}
+        ]},
+        {section: 'Trade Journal', items: [
+            {id:'trade-journal', icon:'📓', label:'Trade Journal'},
+            {id:'trade-log', icon:'📝', label:'Trade Log'},
+            {id:'trade-summary', icon:'📊', label:'Trade Summary'}
+        ]},
         {id:'pnl-tracker', icon:'💵', label:'P&L Tracker'},
         {id:'mistakes', icon:'⚠️', label:'Mistakes'},
         {id:'favorites', icon:'⭐', label:'Favorites'},
@@ -122,11 +128,29 @@
     });
 
     function renderNav() {
-        document.getElementById('nav').innerHTML = tabs.map(t => `
-            <button onclick="switchTab('${t.id}')" class="w-full text-left px-3 py-2 rounded-lg mb-1 flex items-center gap-2 ${currentTab===t.id?'bg-blue-600/30 text-blue-400':'text-gray-400 hover:bg-gray-700/50'}">
-                ${t.icon} ${t.label}
-            </button>
-        `).join('');
+        const navHtml = tabs.map(t => {
+            if (t.section) {
+                // Render section with collapsible items
+                return `
+                    <div class="mb-3">
+                        <div class="text-xs text-gray-500 uppercase font-semibold px-3 py-2">${t.section}</div>
+                        ${t.items.map(item => `
+                            <button onclick="switchTab('${item.id}')" class="w-full text-left px-3 py-2 rounded-lg mb-1 flex items-center gap-2 ${currentTab===item.id?'bg-blue-600/30 text-blue-400':'text-gray-400 hover:bg-gray-700/50'}">
+                                ${item.icon} ${item.label}
+                            </button>
+                        `).join('')}
+                    </div>
+                `;
+            } else {
+                // Render single tab
+                return `
+                    <button onclick="switchTab('${t.id}')" class="w-full text-left px-3 py-2 rounded-lg mb-1 flex items-center gap-2 ${currentTab===t.id?'bg-blue-600/30 text-blue-400':'text-gray-400 hover:bg-gray-700/50'}">
+                        ${t.icon} ${t.label}
+                    </button>
+                `;
+            }
+        }).join('');
+        document.getElementById('nav').innerHTML = navHtml;
     }
 
     function renderHeader() {

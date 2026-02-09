@@ -37,6 +37,9 @@ def create_app():
 
     # Configuration for local development
     app.config['SECRET_KEY'] = 'elder-trading-local-dev-key'
+    # Disable caching for development
+    app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+    app.config['TEMPLATES_AUTO_RELOAD'] = True  # Auto-reload templates
 
     # Database path - local data folder
     data_dir = os.path.join(os.path.dirname(__file__), 'data')
@@ -68,7 +71,12 @@ def create_app():
     # Serve frontend
     @app.route('/')
     def index():
-        return render_template('index.html')
+        from flask import make_response
+        response = make_response(render_template('index.html'))
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        return response
 
     return app
 
@@ -77,18 +85,30 @@ def create_app():
 app = create_app()
 
 if __name__ == '__main__':
+    import webbrowser
+    import threading
+
     print("\n" + "="*50)
     print("  Elder Trading System - Local Server")
     print("="*50)
-    print(f"\n  Open in browser: http://localhost:5001")
-    print(f"  Data stored in: ./data/elder_trading.db")
-    print(f"  Market: NSE (NIFTY 100)")
-    print(f"  Broker: Kite Connect (Zerodha)")
-    print(f"\n  Press Ctrl+C to stop the server")
+    print("\n  Open in browser: http://localhost:5001")
+    print("  Data stored in: ./data/elder_trading.db")
+    print("  Market: NSE (NIFTY 100)")
+    print("  Broker: Kite Connect (Zerodha)")
+    print("\n  Press Ctrl+C to stop the server")
     print("="*50 + "\n")
+
+    # Auto-open browser after 2 seconds
+    def open_browser():
+        import time
+        time.sleep(2)
+        webbrowser.open('http://localhost:5001')
+
+    threading.Thread(target=open_browser, daemon=True).start()
 
     app.run(
         host='0.0.0.0',
         port=5001,
-        debug=True
+        debug=False,  # Disable debug for standalone use
+        use_reloader=False
     )
