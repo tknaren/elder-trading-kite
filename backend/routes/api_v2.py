@@ -1980,3 +1980,500 @@ def scan_single_stock_history(symbol):
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NSE INSTRUMENTS ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_v2.route('/instruments/search', methods=['GET'])
+def search_instruments():
+    """
+    Typeahead search for NSE instruments (NIFTY 500).
+    Returns matches without exchange prefix for clean display.
+
+    Query params:
+        q: search query (min 1 char)
+        limit: max results (default 20)
+    """
+    query = request.args.get('q', '').strip()
+    limit = request.args.get('limit', 20, type=int)
+
+    if not query:
+        return jsonify([])
+
+    db = get_db()
+    search_pattern = f'%{query}%'
+
+    results = db.execute('''
+        SELECT TOP (?) tradingsymbol, name, instrument_token, lot_size, tick_size
+        FROM nse_instruments
+        WHERE tradingsymbol LIKE ? OR name LIKE ?
+        ORDER BY
+            CASE WHEN tradingsymbol LIKE ? THEN 0 ELSE 1 END,
+            tradingsymbol
+    ''', (limit, search_pattern, search_pattern, f'{query}%')).fetchall()
+
+    return jsonify([{
+        'symbol': r['tradingsymbol'],
+        'name': r['name'],
+        'instrument_token': r['instrument_token'],
+        'lot_size': r['lot_size'],
+        'tick_size': r['tick_size']
+    } for r in results])
+
+
+@api_v2.route('/instruments/load', methods=['POST'])
+def load_instruments():
+    """
+    Load NIFTY 500 instruments from Kite API and cache in database.
+    Should be called once, then periodically to refresh.
+    """
+    try:
+        client = get_client()
+        if not client:
+            return jsonify({'error': 'Kite not connected'}), 400
+
+        # Fetch all NSE instruments
+        instruments = client.instruments('NSE')
+
+        db = get_db()
+        loaded_count = 0
+
+        # NIFTY 500 constituents - we load all NSE EQ instruments
+        # and filter by segment
+        for inst in instruments:
+            if inst.get('segment') != 'NSE' or inst.get('instrument_type') != 'EQ':
+                continue
+
+            symbol = inst['tradingsymbol']
+            name = inst.get('name', symbol)
+            token = inst['instrument_token']
+            lot_size = inst.get('lot_size', 1)
+            tick_size = inst.get('tick_size', 0.05)
+
+            db.execute('''
+                MERGE nse_instruments AS target
+                USING (SELECT ? AS tradingsymbol) AS source
+                ON target.tradingsymbol = source.tradingsymbol
+                WHEN MATCHED THEN
+                    UPDATE SET name = ?, instrument_token = ?, lot_size = ?,
+                               tick_size = ?, updated_at = GETDATE()
+                WHEN NOT MATCHED THEN
+                    INSERT (tradingsymbol, name, instrument_token, lot_size, tick_size)
+                    VALUES (?, ?, ?, ?, ?);
+            ''', (symbol, name, token, lot_size, tick_size,
+                  symbol, name, token, lot_size, tick_size))
+            loaded_count += 1
+
+        db.commit()
+
+        return jsonify({
+            'success': True,
+            'loaded': loaded_count,
+            'message': f'Loaded {loaded_count} NSE equity instruments'
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SYNC ALL ENDPOINT (Orders + Positions + Holdings from Kite)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_v2.route('/sync/all', methods=['POST'])
+def sync_all_from_kite():
+    """
+    Sync orders, positions, and holdings from Kite to SQL Server.
+    Called manually via button or auto every 5 minutes when connected.
+    """
+    try:
+        client = get_client()
+        if not client:
+            return jsonify({'error': 'Kite not connected'}), 400
+
+        db = get_db()
+        user_id = get_user_id()
+        sync_time = datetime.now().isoformat()
+        results = {}
+
+        # 1. Sync Orders
+        try:
+            orders = client.orders()
+            # Clear old cache for today
+            db.execute("DELETE FROM kite_orders_cache WHERE user_id = ? AND CAST(cached_at AS DATE) = CAST(GETDATE() AS DATE)", (user_id,))
+
+            for order in orders:
+                db.execute('''
+                    INSERT INTO kite_orders_cache
+                    (user_id, order_id, tradingsymbol, exchange, transaction_type,
+                     order_type, quantity, price, trigger_price, status,
+                     filled_quantity, average_price, placed_at, order_data)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    user_id, order.get('order_id'), order.get('tradingsymbol'),
+                    order.get('exchange', 'NSE'), order.get('transaction_type'),
+                    order.get('order_type'), order.get('quantity'),
+                    order.get('price', 0), order.get('trigger_price', 0),
+                    order.get('status'), order.get('filled_quantity', 0),
+                    order.get('average_price', 0),
+                    order.get('order_timestamp', sync_time),
+                    json.dumps(order)
+                ))
+
+            results['orders'] = len(orders)
+        except Exception as e:
+            results['orders_error'] = str(e)
+
+        # 2. Sync Positions
+        try:
+            positions = client.positions()
+            day_positions = positions.get('day', [])
+            net_positions = positions.get('net', [])
+            all_positions = net_positions or day_positions
+
+            db.execute("DELETE FROM kite_positions_cache WHERE user_id = ?", (user_id,))
+
+            for pos in all_positions:
+                db.execute('''
+                    INSERT INTO kite_positions_cache
+                    (user_id, tradingsymbol, exchange, product, quantity,
+                     average_price, last_price, pnl, buy_value, sell_value,
+                     position_data)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    user_id, pos.get('tradingsymbol'), pos.get('exchange', 'NSE'),
+                    pos.get('product'), pos.get('quantity', 0),
+                    pos.get('average_price', 0), pos.get('last_price', 0),
+                    pos.get('pnl', 0), pos.get('buy_value', 0),
+                    pos.get('sell_value', 0), json.dumps(pos)
+                ))
+
+            results['positions'] = len(all_positions)
+        except Exception as e:
+            results['positions_error'] = str(e)
+
+        # 3. Sync Holdings
+        try:
+            holdings = client.holdings()
+
+            db.execute("DELETE FROM kite_holdings_cache WHERE user_id = ?", (user_id,))
+
+            for h in holdings:
+                db.execute('''
+                    INSERT INTO kite_holdings_cache
+                    (user_id, tradingsymbol, exchange, isin, quantity,
+                     average_price, last_price, pnl, day_change,
+                     day_change_percentage, holding_data)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    user_id, h.get('tradingsymbol'), h.get('exchange', 'NSE'),
+                    h.get('isin', ''), h.get('quantity', 0),
+                    h.get('average_price', 0), h.get('last_price', 0),
+                    h.get('pnl', 0), h.get('day_change', 0),
+                    h.get('day_change_percentage', 0), json.dumps(h)
+                ))
+
+            results['holdings'] = len(holdings)
+
+            # Also save to holdings_snapshot for historical tracking
+            snapshot_date = datetime.now().strftime('%Y-%m-%d')
+            for h in holdings:
+                db.execute('''
+                    MERGE holdings_snapshot AS target
+                    USING (SELECT ? AS user_id, ? AS tradingsymbol, ? AS snapshot_date) AS source
+                    ON target.user_id = source.user_id
+                       AND target.tradingsymbol = source.tradingsymbol
+                       AND target.snapshot_date = source.snapshot_date
+                    WHEN MATCHED THEN
+                        UPDATE SET quantity = ?, average_price = ?, last_price = ?,
+                                   pnl = ?, day_change = ?, day_change_percentage = ?,
+                                   updated_at = GETDATE()
+                    WHEN NOT MATCHED THEN
+                        INSERT (user_id, tradingsymbol, snapshot_date, quantity,
+                                average_price, last_price, pnl, day_change, day_change_percentage)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                ''', (
+                    user_id, h.get('tradingsymbol'), snapshot_date,
+                    h.get('quantity', 0), h.get('average_price', 0),
+                    h.get('last_price', 0), h.get('pnl', 0),
+                    h.get('day_change', 0), h.get('day_change_percentage', 0),
+                    user_id, h.get('tradingsymbol'), snapshot_date,
+                    h.get('quantity', 0), h.get('average_price', 0),
+                    h.get('last_price', 0), h.get('pnl', 0),
+                    h.get('day_change', 0), h.get('day_change_percentage', 0)
+                ))
+        except Exception as e:
+            results['holdings_error'] = str(e)
+
+        db.commit()
+        results['sync_time'] = sync_time
+        results['success'] = True
+
+        return jsonify(results)
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EXECUTED ORDERS FOR TRADE JOURNAL
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_v2.route('/kite/executed-orders', methods=['GET'])
+def get_executed_orders_for_journal():
+    """
+    Get executed (filled) orders from Kite cache for Trade Journal picker.
+    Returns orders that can be selected and added to the journal.
+    """
+    user_id = get_user_id()
+    db = get_db()
+
+    # First try from cache
+    orders = db.execute('''
+        SELECT order_id, tradingsymbol, exchange, transaction_type,
+               order_type, quantity, filled_quantity, average_price,
+               placed_at, status, order_data
+        FROM kite_orders_cache
+        WHERE user_id = ? AND status = 'COMPLETE' AND filled_quantity > 0
+        ORDER BY placed_at DESC
+    ''', (user_id,)).fetchall()
+
+    result = []
+    for o in orders:
+        order_data = json.loads(o['order_data']) if o['order_data'] else {}
+        result.append({
+            'order_id': o['order_id'],
+            'symbol': o['tradingsymbol'],
+            'exchange': o['exchange'],
+            'transaction_type': o['transaction_type'],
+            'order_type': o['order_type'],
+            'quantity': o['quantity'],
+            'filled_quantity': o['filled_quantity'],
+            'average_price': o['average_price'],
+            'placed_at': o['placed_at'],
+            'product': order_data.get('product', ''),
+            'tag': order_data.get('tag', '')
+        })
+
+    return jsonify({
+        'success': True,
+        'orders': result,
+        'count': len(result)
+    })
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DAILY OHLC UPDATE
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_v2.route('/data/update-daily', methods=['POST'])
+def update_daily_ohlc():
+    """
+    Incremental daily OHLC update for stocks that already have cached data.
+    Fetches last 2 days of data to fill gaps.
+    Can also be triggered for specific symbols.
+    """
+    try:
+        client = get_client()
+        if not client:
+            return jsonify({'error': 'Kite not connected'}), 400
+
+        data = request.get_json() or {}
+        symbols = data.get('symbols', None)
+
+        db = get_db()
+
+        # If no specific symbols, get all symbols that have cached data
+        if not symbols:
+            rows = db.execute('''
+                SELECT DISTINCT symbol FROM stock_historical_data
+            ''').fetchall()
+            symbols = [r['symbol'] for r in rows]
+
+        if not symbols:
+            return jsonify({'message': 'No symbols to update', 'updated': 0})
+
+        updated_count = 0
+        errors = []
+
+        from_date = (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
+        to_date = datetime.now().strftime('%Y-%m-%d')
+
+        for symbol in symbols:
+            try:
+                # Get instrument token from nse_instruments
+                tradingsymbol = symbol.replace('NSE:', '')
+                inst = db.execute('''
+                    SELECT TOP 1 instrument_token FROM nse_instruments
+                    WHERE tradingsymbol = ?
+                ''', (tradingsymbol,)).fetchone()
+
+                if not inst:
+                    continue
+
+                token = inst['instrument_token']
+
+                # Fetch last 2-3 days of daily candles
+                candles = client.historical_data(
+                    token, from_date, to_date, 'day'
+                )
+
+                for candle in candles:
+                    candle_date = candle['date'].strftime('%Y-%m-%d') if hasattr(candle['date'], 'strftime') else str(candle['date'])[:10]
+
+                    db.execute('''
+                        MERGE stock_historical_data AS target
+                        USING (SELECT ? AS symbol, ? AS date) AS source
+                        ON target.symbol = source.symbol AND target.date = source.date
+                        WHEN MATCHED THEN
+                            UPDATE SET [open] = ?, high = ?, low = ?, [close] = ?, volume = ?
+                        WHEN NOT MATCHED THEN
+                            INSERT (symbol, date, [open], high, low, [close], volume)
+                            VALUES (?, ?, ?, ?, ?, ?, ?);
+                    ''', (
+                        symbol, candle_date,
+                        candle['open'], candle['high'], candle['low'],
+                        candle['close'], candle['volume'],
+                        symbol, candle_date, candle['open'], candle['high'],
+                        candle['low'], candle['close'], candle['volume']
+                    ))
+
+                updated_count += 1
+
+            except Exception as e:
+                errors.append({'symbol': symbol, 'error': str(e)})
+
+        db.commit()
+
+        # Update sync record
+        db.execute('''
+            MERGE stock_data_sync AS target
+            USING (SELECT 'daily_ohlc_update' AS symbol) AS source
+            ON target.symbol = source.symbol
+            WHEN MATCHED THEN
+                UPDATE SET last_sync = GETDATE(), sync_status = 'success'
+            WHEN NOT MATCHED THEN
+                INSERT (symbol, last_sync, sync_status, data_from, data_to)
+                VALUES ('daily_ohlc_update', GETDATE(), 'success', ?, ?);
+        ''', (from_date, to_date))
+        db.commit()
+
+        return jsonify({
+            'success': True,
+            'updated': updated_count,
+            'total_symbols': len(symbols),
+            'errors': errors if errors else None,
+            'period': {'from': from_date, 'to': to_date}
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HOLDINGS HISTORY
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_v2.route('/holdings/history', methods=['GET'])
+def get_holdings_history():
+    """
+    Get historical holdings snapshots.
+
+    Query params:
+        days: number of days to look back (default 30)
+        symbol: filter by specific symbol (optional)
+    """
+    user_id = get_user_id()
+    days = request.args.get('days', 30, type=int)
+    symbol = request.args.get('symbol', None)
+
+    db = get_db()
+
+    if symbol:
+        snapshots = db.execute('''
+            SELECT * FROM holdings_snapshot
+            WHERE user_id = ? AND tradingsymbol = ?
+              AND snapshot_date >= DATEADD(day, ?, GETDATE())
+            ORDER BY snapshot_date DESC
+        ''', (user_id, symbol, -days)).fetchall()
+    else:
+        snapshots = db.execute('''
+            SELECT * FROM holdings_snapshot
+            WHERE user_id = ?
+              AND snapshot_date >= DATEADD(day, ?, GETDATE())
+            ORDER BY snapshot_date DESC, tradingsymbol
+        ''', (user_id, -days)).fetchall()
+
+    return jsonify({
+        'success': True,
+        'snapshots': [dict(s) for s in snapshots],
+        'count': len(snapshots)
+    })
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ACCOUNT SECTION - Orders/Positions/Holdings from Cache
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_v2.route('/account/overview', methods=['GET'])
+def get_account_overview():
+    """
+    Get complete account overview including cached orders, positions, holdings.
+    Reads from SQL Server cache tables populated by /sync/all.
+    """
+    user_id = get_user_id()
+    db = get_db()
+
+    # Get cached orders
+    orders = db.execute('''
+        SELECT order_id, tradingsymbol, transaction_type, order_type,
+               quantity, filled_quantity, average_price, status, placed_at
+        FROM kite_orders_cache
+        WHERE user_id = ?
+        ORDER BY placed_at DESC
+    ''', (user_id,)).fetchall()
+
+    # Get cached positions
+    positions = db.execute('''
+        SELECT tradingsymbol, product, quantity, average_price,
+               last_price, pnl, buy_value, sell_value
+        FROM kite_positions_cache
+        WHERE user_id = ? AND quantity != 0
+    ''', (user_id,)).fetchall()
+
+    # Get cached holdings
+    holdings = db.execute('''
+        SELECT tradingsymbol, isin, quantity, average_price,
+               last_price, pnl, day_change, day_change_percentage
+        FROM kite_holdings_cache
+        WHERE user_id = ?
+    ''', (user_id,)).fetchall()
+
+    # Calculate totals
+    total_positions_value = sum(
+        abs(p['quantity'] * p['average_price']) for p in positions
+    )
+    total_positions_pnl = sum(p['pnl'] for p in positions)
+    total_holdings_value = sum(
+        h['quantity'] * h['last_price'] for h in holdings
+    )
+    total_holdings_pnl = sum(h['pnl'] for h in holdings)
+
+    return jsonify({
+        'success': True,
+        'orders': [dict(o) for o in orders],
+        'positions': [dict(p) for p in positions],
+        'holdings': [dict(h) for h in holdings],
+        'summary': {
+            'total_orders': len(orders),
+            'open_positions': len(positions),
+            'total_holdings': len(holdings),
+            'positions_value': total_positions_value,
+            'positions_pnl': total_positions_pnl,
+            'holdings_value': total_holdings_value,
+            'holdings_pnl': total_holdings_pnl,
+            'money_locked': total_positions_value
+        }
+    })

@@ -857,14 +857,13 @@ class Database:
         if row['cnt'] == 0:
             from werkzeug.security import generate_password_hash
 
-            # Create default user
-            conn.execute("""
+            # Create default user and get ID using OUTPUT clause
+            user_id_row = conn.execute("""
                 INSERT INTO users (username, password_hash)
+                OUTPUT INSERTED.id
                 VALUES (?, ?)
-            """, ('default', generate_password_hash('elder2024')))
-
-            user_id_row = conn.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()
-            user_id = int(user_id_row['id'])
+            """, ('default', generate_password_hash('elder2024'))).fetchone()
+            user_id = int(user_id_row[0])
 
             # Create default strategy
             elder_config = {
@@ -876,15 +875,14 @@ class Database:
                 }
             }
 
-            conn.execute("""
+            strategy_id_row = conn.execute("""
                 INSERT INTO strategies (user_id, name, description, config)
+                OUTPUT INSERTED.id
                 VALUES (?, ?, ?, ?)
             """, (user_id, 'Elder Triple Screen',
                   "Dr. Alexander Elder's Triple Screen Trading System",
-                  json.dumps(elder_config)))
-
-            strategy_id_row = conn.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()
-            strategy_id = int(strategy_id_row['id'])
+                  json.dumps(elder_config))).fetchone()
+            strategy_id = int(strategy_id_row[0])
 
             # APGAR parameters
             apgar_params = [
@@ -991,14 +989,14 @@ class Database:
         placeholders = ', '.join(['?' for _ in data])
         values = tuple(data.values())
 
-        cursor.execute(f"""
+        trade_bill_id_row = cursor.execute(f"""
             INSERT INTO trade_bills (user_id, {columns})
+            OUTPUT INSERTED.id
             VALUES (?, {placeholders})
-        """, (user_id, *values))
+        """, (user_id, *values)).fetchone()
 
         conn.commit()
-        trade_bill_id_row = conn.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()
-        trade_bill_id = int(trade_bill_id_row['id'])
+        trade_bill_id = int(trade_bill_id_row[0])
         conn.close()
         return trade_bill_id
 

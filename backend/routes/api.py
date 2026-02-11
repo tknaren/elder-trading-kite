@@ -127,8 +127,8 @@ def weekly_screener():
     ))
     db.commit()
 
-    scan_id = db.execute('SELECT last_insert_rowid()').fetchone()[0]
-    results['scan_id'] = scan_id
+    scan_id = db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id']
+    results['scan_id'] = int(scan_id)
     results['week_start'] = week_start.isoformat()
     results['week_end'] = week_end.isoformat()
 
@@ -186,8 +186,8 @@ def daily_screener():
     ))
     db.commit()
 
-    scan_id = db.execute('SELECT last_insert_rowid()').fetchone()[0]
-    results['scan_id'] = scan_id
+    scan_id = db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id']
+    results['scan_id'] = int(scan_id)
     results['weekly_scan_id'] = weekly_scan_id
 
     # Sanitize results for JSON serialization
@@ -298,9 +298,9 @@ def get_latest_weekly():
     user_id = get_user_id()
 
     scan = db.execute('''
-        SELECT * FROM weekly_scans 
+        SELECT TOP 1 * FROM weekly_scans
         WHERE user_id = ? AND market = ? AND week_start = ?
-        ORDER BY created_at DESC LIMIT 1
+        ORDER BY created_at DESC
     ''', (user_id, market, week_start)).fetchone()
 
     if scan:
@@ -362,7 +362,7 @@ def create_setting():
     ))
     db.commit()
 
-    return jsonify({'message': 'Setting created', 'id': db.execute('SELECT last_insert_rowid()').fetchone()[0]})
+    return jsonify({'message': 'Setting created', 'id': int(db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])})
 
 
 @api.route('/settings/<int:id>', methods=['PUT'])
@@ -376,7 +376,7 @@ def update_setting(id):
         UPDATE account_settings 
         SET account_name = ?, trading_capital = ?, risk_per_trade = ?,
             max_monthly_drawdown = ?, target_rr = ?, max_open_positions = ?,
-            currency = ?, broker = ?, updated_at = CURRENT_TIMESTAMP
+            currency = ?, broker = ?, updated_at = GETDATE()
         WHERE id = ? AND user_id = ?
     ''', (
         data['account_name'], data['trading_capital'], data['risk_per_trade'],
@@ -457,8 +457,8 @@ def create_watchlist():
     if 'ticker' in data and 'market' in data:
         # Get or create default watchlist for market
         watchlist = db.execute('''
-            SELECT * FROM watchlists WHERE user_id = ? AND market = ?
-            ORDER BY is_default DESC LIMIT 1
+            SELECT TOP 1 * FROM watchlists WHERE user_id = ? AND market = ?
+            ORDER BY is_default DESC
         ''', (user_id, data['market'])).fetchone()
 
         if watchlist:
@@ -538,7 +538,7 @@ def create_setup():
     ))
     db.commit()
 
-    return jsonify({'message': 'Setup created', 'id': db.execute('SELECT last_insert_rowid()').fetchone()[0]})
+    return jsonify({'message': 'Setup created', 'id': int(db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])})
 
 
 # ============ TRADE JOURNAL ============
@@ -553,16 +553,16 @@ def get_journal():
 
     if status:
         entries = db.execute('''
-            SELECT * FROM trade_journal
+            SELECT TOP (?) * FROM trade_journal
             WHERE user_id = ? AND status = ?
-            ORDER BY created_at DESC LIMIT ?
-        ''', (user_id, status, limit)).fetchall()
+            ORDER BY created_at DESC
+        ''', (limit, user_id, status)).fetchall()
     else:
         entries = db.execute('''
-            SELECT * FROM trade_journal
+            SELECT TOP (?) * FROM trade_journal
             WHERE user_id = ?
-            ORDER BY created_at DESC LIMIT ?
-        ''', (user_id, limit)).fetchall()
+            ORDER BY created_at DESC
+        ''', (limit, user_id)).fetchall()
 
     return jsonify([dict(e) for e in entries])
 
@@ -588,7 +588,7 @@ def create_journal_entry():
     ))
     db.commit()
 
-    return jsonify({'message': 'Entry created', 'id': db.execute('SELECT last_insert_rowid()').fetchone()[0]})
+    return jsonify({'message': 'Entry created', 'id': int(db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])})
 
 
 @api.route('/journal/<int:id>', methods=['PUT'])
@@ -623,7 +623,7 @@ def update_journal_entry(id):
         UPDATE trade_journal 
         SET exit_date = ?, exit_price = ?, pnl = ?, pnl_percent = ?,
             fees = ?, notes = ?, lessons_learned = ?, grade = ?,
-            status = ?, updated_at = CURRENT_TIMESTAMP
+            status = ?, updated_at = GETDATE()
         WHERE id = ? AND user_id = ?
     ''', (
         data.get('exit_date'), data.get('exit_price'), pnl, pnl_percent,
@@ -647,9 +647,9 @@ def get_journal_stats():
     params = [user_id, 'closed']
 
     if period == 'month':
-        where += ' AND exit_date >= date("now", "-30 days")'
+        where += ' AND exit_date >= DATEADD(day, -30, GETDATE())'
     elif period == 'year':
-        where += ' AND exit_date >= date("now", "-365 days")'
+        where += ' AND exit_date >= DATEADD(day, -365, GETDATE())'
 
     stats = db.execute(f'''
         SELECT 
@@ -712,10 +712,16 @@ def update_checklist():
     completed_at = datetime.now() if all_done else None
 
     db.execute('''
-        INSERT OR REPLACE INTO daily_checklist 
-        (user_id, checklist_date, items, completed_at)
-        VALUES (?, ?, ?, ?)
-    ''', (user_id, today, json.dumps(data['items']), completed_at))
+        MERGE daily_checklist AS target
+        USING (SELECT ? AS user_id, ? AS checklist_date) AS source
+        ON target.user_id = source.user_id AND target.checklist_date = source.checklist_date
+        WHEN MATCHED THEN
+            UPDATE SET items = ?, completed_at = ?
+        WHEN NOT MATCHED THEN
+            INSERT (user_id, checklist_date, items, completed_at)
+            VALUES (?, ?, ?, ?);
+    ''', (user_id, today, json.dumps(data['items']), completed_at,
+          user_id, today, json.dumps(data['items']), completed_at))
     db.commit()
 
     return jsonify({'message': 'Checklist updated', 'completed': all_done})
@@ -768,7 +774,8 @@ def create_trade_bill():
             data.get('comments', ''), 'active', datetime.now().isoformat()
         ))
         conn.commit()
-        trade_bill_id = cursor.lastrowid
+        trade_bill_id = int(conn.execute(
+            'SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
         conn.close()
 
         return jsonify({
@@ -923,12 +930,26 @@ def update_account_info():
     data = request.get_json()
     db = get_db()
 
-    set_clause = ', '.join([f'{k} = ?' for k in data.keys()])
-    values = tuple(data.values())
+    # Whitelist of allowed fields to update
+    allowed_fields = [
+        'account_name', 'market', 'trading_capital', 'risk_per_trade',
+        'max_monthly_drawdown', 'target_rr', 'max_open_positions',
+        'currency', 'broker', 'kite_api_key', 'kite_api_secret',
+        'kite_access_token', 'kite_token_expiry', 'last_data_refresh'
+    ]
+
+    # Filter data to only include allowed fields
+    update_data = {k: v for k, v in data.items() if k in allowed_fields}
+
+    if not update_data:
+        return jsonify({'success': False, 'message': 'No valid fields to update'}), 400
+
+    set_clause = ', '.join([f'{k} = ?' for k in update_data.keys()])
+    values = tuple(update_data.values())
 
     db.execute(f'''
         UPDATE account_settings
-        SET {set_clause}, updated_at = CURRENT_TIMESTAMP
+        SET {set_clause}, updated_at = GETDATE()
         WHERE user_id = ?
     ''', (*values, user_id))
     db.commit()
@@ -980,7 +1001,8 @@ def create_trade_log_entry():
         ))
         db.commit()
 
-        trade_id = db.execute('SELECT last_insert_rowid()').fetchone()[0]
+        trade_id = int(db.execute(
+            'SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
         return jsonify({'success': True, 'id': trade_id, 'message': 'Trade saved'}), 201
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 400
@@ -1092,9 +1114,15 @@ def save_indicator_filters():
     db = get_db()
 
     db.execute('''
-        INSERT OR REPLACE INTO indicator_filters (user_id, config, updated_at)
-        VALUES (?, ?, CURRENT_TIMESTAMP)
-    ''', (user_id, json.dumps(data)))
+        MERGE indicator_filters AS target
+        USING (SELECT ? AS user_id) AS source
+        ON target.user_id = source.user_id
+        WHEN MATCHED THEN
+            UPDATE SET config = ?, updated_at = GETDATE()
+        WHEN NOT MATCHED THEN
+            INSERT (user_id, config, updated_at)
+            VALUES (?, ?, GETDATE());
+    ''', (user_id, json.dumps(data), user_id, json.dumps(data)))
     db.commit()
 
     return jsonify({'success': True, 'message': 'Indicator filters saved'})
@@ -1205,7 +1233,7 @@ def update_favorite_notes(symbol):
 
     db.execute('''
         UPDATE favorite_stocks 
-        SET notes = ?, updated_at = CURRENT_TIMESTAMP
+        SET notes = ?, updated_at = GETDATE()
         WHERE user_id = ? AND symbol = ? AND market = ?
     ''', (notes, user_id, symbol, market))
     db.commit()
@@ -1260,12 +1288,11 @@ def get_backtest_stocks():
     # Get stocks that have at least 90 days of historical data
     db = get_db()
     stocks = db.execute('''
-        SELECT DISTINCT symbol
+        SELECT TOP 100 symbol
         FROM stock_historical_data
         GROUP BY symbol
         HAVING COUNT(*) >= 90
         ORDER BY symbol
-        LIMIT 100
     ''').fetchall()
 
     return jsonify({
