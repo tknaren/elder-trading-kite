@@ -1169,57 +1169,68 @@ def save_indicators_to_cache(symbol: str, hist: pd.DataFrame, indicators: Dict, 
                     close = float(row['Close']) if isinstance(
                         row['Close'], (int, float)) else None
 
+                    ema_22 = float(row.get('EMA_22', 0)) if pd.notna(row.get('EMA_22')) else None
+                    ema_50 = float(row.get('EMA_50', 0)) if pd.notna(row.get('EMA_50')) else None
+                    ema_100 = float(row.get('EMA_100', 0)) if pd.notna(row.get('EMA_100')) else None
+                    ema_200 = float(row.get('EMA_200', 0)) if pd.notna(row.get('EMA_200')) else None
+                    macd_line = float(row.get('MACD_Line', 0)) if pd.notna(row.get('MACD_Line')) else None
+                    macd_signal = float(row.get('MACD_Signal', 0)) if pd.notna(row.get('MACD_Signal')) else None
+                    macd_hist = float(row.get('MACD_Histogram', 0)) if pd.notna(row.get('MACD_Histogram')) else None
+                    rsi = float(row.get('RSI_14', 0)) if pd.notna(row.get('RSI_14')) else None
+                    stochastic = float(row.get('Stochastic', 0)) if pd.notna(row.get('Stochastic')) else None
+                    stoch_d = float(row.get('Stochastic_D', 0)) if pd.notna(row.get('Stochastic_D')) else None
+                    atr = float(row.get('ATR', 0)) if pd.notna(row.get('ATR')) else None
+                    force_idx = float(row.get('Force_Index', 0)) if pd.notna(row.get('Force_Index')) else None
+                    kc_upper = float(row.get('KC_Upper', 0)) if pd.notna(row.get('KC_Upper')) else None
+                    kc_middle = float(row.get('KC_Middle', 0)) if pd.notna(row.get('KC_Middle')) else None
+                    kc_lower = float(row.get('KC_Lower', 0)) if pd.notna(row.get('KC_Lower')) else None
+
                     db.execute('''
-                        INSERT OR REPLACE INTO stock_indicators_daily
-                        (symbol, date, close, ema_22, ema_50, ema_100, ema_200,
-                         macd_line, macd_signal, macd_histogram, rsi, stochastic,
-                         stoch_d, atr, force_index, kc_upper, kc_middle, kc_lower)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        MERGE stock_indicators_daily AS target
+                        USING (SELECT ? AS symbol, ? AS date) AS source
+                        ON target.symbol = source.symbol AND target.date = source.date
+                        WHEN MATCHED THEN
+                            UPDATE SET [close] = ?, ema_22 = ?, ema_50 = ?, ema_100 = ?, ema_200 = ?,
+                                       macd_line = ?, macd_signal = ?, macd_histogram = ?, rsi = ?,
+                                       stochastic = ?, stoch_d = ?, atr = ?, force_index = ?,
+                                       kc_upper = ?, kc_middle = ?, kc_lower = ?
+                        WHEN NOT MATCHED THEN
+                            INSERT (symbol, date, [close], ema_22, ema_50, ema_100, ema_200,
+                                    macd_line, macd_signal, macd_histogram, rsi, stochastic,
+                                    stoch_d, atr, force_index, kc_upper, kc_middle, kc_lower)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     ''', (
-                        symbol,
-                        date_str,
-                        close,
-                        float(row.get('EMA_22', 0)) if pd.notna(
-                            row.get('EMA_22')) else None,
-                        float(row.get('EMA_50', 0)) if pd.notna(
-                            row.get('EMA_50')) else None,
-                        float(row.get('EMA_100', 0)) if pd.notna(
-                            row.get('EMA_100')) else None,
-                        float(row.get('EMA_200', 0)) if pd.notna(
-                            row.get('EMA_200')) else None,
-                        float(row.get('MACD_Line', 0)) if pd.notna(
-                            row.get('MACD_Line')) else None,
-                        float(row.get('MACD_Signal', 0)) if pd.notna(
-                            row.get('MACD_Signal')) else None,
-                        float(row.get('MACD_Histogram', 0)) if pd.notna(
-                            row.get('MACD_Histogram')) else None,
-                        float(row.get('RSI_14', 0)) if pd.notna(
-                            row.get('RSI_14')) else None,
-                        float(row.get('Stochastic', 0)) if pd.notna(
-                            row.get('Stochastic')) else None,
-                        float(row.get('Stochastic_D', 0)) if pd.notna(
-                            row.get('Stochastic_D')) else None,
-                        float(row.get('ATR', 0)) if pd.notna(
-                            row.get('ATR')) else None,
-                        float(row.get('Force_Index', 0)) if pd.notna(
-                            row.get('Force_Index')) else None,
-                        float(row.get('KC_Upper', 0)) if pd.notna(
-                            row.get('KC_Upper')) else None,
-                        float(row.get('KC_Middle', 0)) if pd.notna(
-                            row.get('KC_Middle')) else None,
-                        float(row.get('KC_Lower', 0)) if pd.notna(
-                            row.get('KC_Lower')) else None
+                        symbol, date_str,
+                        close, ema_22, ema_50, ema_100, ema_200,
+                        macd_line, macd_signal, macd_hist, rsi,
+                        stochastic, stoch_d, atr, force_idx,
+                        kc_upper, kc_middle, kc_lower,
+                        symbol, date_str, close, ema_22, ema_50, ema_100, ema_200,
+                        macd_line, macd_signal, macd_hist, rsi,
+                        stochastic, stoch_d, atr, force_idx,
+                        kc_upper, kc_middle, kc_lower
                     ))
                     new_rows += 1
 
                 # Update indicator sync record
                 if new_rows > 0:
+                    daily_count_row = db.execute(
+                        'SELECT COUNT(*) AS cnt FROM stock_indicators_daily WHERE symbol = ?',
+                        (symbol,)
+                    ).fetchone()
+                    daily_count = daily_count_row['cnt'] if daily_count_row else 0
+
                     db.execute('''
-                        INSERT OR REPLACE INTO stock_indicator_sync
-                        (symbol, last_updated, last_daily_date, daily_record_count)
-                        VALUES (?, ?, ?,
-                            (SELECT COUNT(*) FROM stock_indicators_daily WHERE symbol = ?))
-                    ''', (symbol, datetime.now().isoformat(), latest_date, symbol))
+                        MERGE stock_indicator_sync AS target
+                        USING (SELECT ? AS symbol) AS source
+                        ON target.symbol = source.symbol
+                        WHEN MATCHED THEN
+                            UPDATE SET last_updated = ?, last_daily_date = ?, daily_record_count = ?
+                        WHEN NOT MATCHED THEN
+                            INSERT (symbol, last_updated, last_daily_date, daily_record_count)
+                            VALUES (?, ?, ?, ?);
+                    ''', (symbol, datetime.now().isoformat(), latest_date, daily_count,
+                          symbol, datetime.now().isoformat(), latest_date, daily_count))
 
             # Save weekly indicators - also incremental
             if weekly_hist is not None and len(weekly_hist) > 0:
@@ -1238,29 +1249,31 @@ def save_indicators_to_cache(symbol: str, hist: pd.DataFrame, indicators: Dict, 
                         close = float(row['Close']) if isinstance(
                             row['Close'], (int, float)) else None
 
+                        w_ema_22 = float(row.get('EMA_22', 0)) if pd.notna(row.get('EMA_22')) else None
+                        w_ema_50 = float(row.get('EMA_50', 0)) if pd.notna(row.get('EMA_50')) else None
+                        w_ema_100 = float(row.get('EMA_100', 0)) if pd.notna(row.get('EMA_100')) else None
+                        w_ema_200 = float(row.get('EMA_200', 0)) if pd.notna(row.get('EMA_200')) else None
+                        w_macd_line = float(row.get('MACD_Line', 0)) if pd.notna(row.get('MACD_Line')) else None
+                        w_macd_signal = float(row.get('MACD_Signal', 0)) if pd.notna(row.get('MACD_Signal')) else None
+                        w_macd_hist = float(row.get('MACD_Histogram', 0)) if pd.notna(row.get('MACD_Histogram')) else None
+
                         db.execute('''
-                            INSERT OR REPLACE INTO stock_indicators_weekly
-                            (symbol, week_end_date, close, ema_22, ema_50, ema_100, ema_200,
-                             macd_line, macd_signal, macd_histogram)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            MERGE stock_indicators_weekly AS target
+                            USING (SELECT ? AS symbol, ? AS week_end_date) AS source
+                            ON target.symbol = source.symbol AND target.week_end_date = source.week_end_date
+                            WHEN MATCHED THEN
+                                UPDATE SET [close] = ?, ema_22 = ?, ema_50 = ?, ema_100 = ?, ema_200 = ?,
+                                           macd_line = ?, macd_signal = ?, macd_histogram = ?
+                            WHEN NOT MATCHED THEN
+                                INSERT (symbol, week_end_date, [close], ema_22, ema_50, ema_100, ema_200,
+                                        macd_line, macd_signal, macd_histogram)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                         ''', (
-                            symbol,
-                            date_str,
-                            close,
-                            float(row.get('EMA_22', 0)) if pd.notna(
-                                row.get('EMA_22')) else None,
-                            float(row.get('EMA_50', 0)) if pd.notna(
-                                row.get('EMA_50')) else None,
-                            float(row.get('EMA_100', 0)) if pd.notna(
-                                row.get('EMA_100')) else None,
-                            float(row.get('EMA_200', 0)) if pd.notna(
-                                row.get('EMA_200')) else None,
-                            float(row.get('MACD_Line', 0)) if pd.notna(
-                                row.get('MACD_Line')) else None,
-                            float(row.get('MACD_Signal', 0)) if pd.notna(
-                                row.get('MACD_Signal')) else None,
-                            float(row.get('MACD_Histogram', 0)) if pd.notna(
-                                row.get('MACD_Histogram')) else None
+                            symbol, date_str,
+                            close, w_ema_22, w_ema_50, w_ema_100, w_ema_200,
+                            w_macd_line, w_macd_signal, w_macd_hist,
+                            symbol, date_str, close, w_ema_22, w_ema_50, w_ema_100, w_ema_200,
+                            w_macd_line, w_macd_signal, w_macd_hist
                         ))
                         new_weekly += 1
 

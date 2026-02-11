@@ -154,7 +154,7 @@ class PracticalBacktestEngine:
             start_date = end_date - timedelta(days=self.lookback_days + 200)
 
             rows = db.execute('''
-                SELECT date, open, high, low, close, volume
+                SELECT date, [open], high, low, [close], volume
                 FROM stock_historical_data
                 WHERE symbol = ? AND date >= ? AND date <= ?
                 ORDER BY date ASC

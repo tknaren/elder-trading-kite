@@ -513,7 +513,7 @@ def fetch_stock_data(symbol: str, period: str = '2y') -> Optional[Dict]:
     db = get_database().get_connection()
 
     cached_rows = db.execute('''
-        SELECT date, open, high, low, close, volume
+        SELECT date, [open], high, low, [close], volume
         FROM stock_historical_data
         WHERE symbol = ?
         ORDER BY date ASC
