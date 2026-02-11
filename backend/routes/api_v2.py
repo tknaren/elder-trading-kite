@@ -772,6 +772,151 @@ def delete_gtt(trigger_id):
     return jsonify(result), 400
 
 
+@api_v2.route('/kite/gtt/oco-split', methods=['POST'])
+def create_gtt_oco_split():
+    """
+    Place OCO-style exits as two separate single-leg GTT orders:
+    1. Full quantity at Stop Loss
+    2. Half quantity at Target
+
+    This workaround is needed because Kite OCO requires same qty on both legs.
+
+    Body:
+    {
+        "symbol": "RELIANCE",
+        "quantity": 10,
+        "stop_loss_trigger": 2400.00,
+        "stop_loss_price": 2390.00,
+        "target_trigger": 2700.00,
+        "target_price": 2690.00
+    }
+    """
+    data = request.get_json()
+    quantity = int(data.get('quantity', 0))
+    if quantity <= 0:
+        return jsonify({'success': False, 'error': 'Quantity must be positive'}), 400
+
+    half_qty = quantity // 2
+    if half_qty <= 0:
+        return jsonify({'success': False, 'error': 'Quantity must be at least 2 for OCO split'}), 400
+
+    symbol = data['symbol']
+    results = {'sl_gtt': None, 'target_gtt': None}
+
+    # 1. GTT for Stop Loss - FULL quantity
+    sl_result = place_gtt_order(
+        symbol=symbol,
+        transaction_type=TRANSACTION_SELL,
+        quantity=quantity,
+        trigger_price=data['stop_loss_trigger'],
+        limit_price=data['stop_loss_price']
+    )
+    results['sl_gtt'] = sl_result
+
+    # 2. GTT for Target - HALF quantity
+    target_result = place_gtt_order(
+        symbol=symbol,
+        transaction_type=TRANSACTION_SELL,
+        quantity=half_qty,
+        trigger_price=data['target_trigger'],
+        limit_price=data['target_price']
+    )
+    results['target_gtt'] = target_result
+
+    success = sl_result.get('success', False) or target_result.get('success', False)
+    return jsonify({
+        'success': success,
+        'sl_gtt': sl_result,
+        'target_gtt': target_result,
+        'sl_quantity': quantity,
+        'target_quantity': half_qty,
+        'message': f'SL GTT: {quantity} shares, Target GTT: {half_qty} shares'
+    }), 201 if success else 400
+
+
+@api_v2.route('/kite/gtt/<int:trigger_id>/modify', methods=['PUT'])
+def modify_gtt(trigger_id):
+    """
+    Modify a GTT order by cancelling and re-creating.
+    Kite API doesn't support direct GTT modification.
+
+    Body:
+    {
+        "symbol": "RELIANCE",
+        "transaction_type": "SELL",
+        "quantity": 10,
+        "trigger_price": 2400.00,
+        "limit_price": 2390.00
+    }
+    """
+    data = request.get_json()
+
+    # 1. Cancel existing GTT
+    cancel_result = cancel_gtt(trigger_id)
+    if not cancel_result.get('success', False):
+        return jsonify({
+            'success': False,
+            'error': f'Failed to cancel GTT {trigger_id}: {cancel_result.get("error", "Unknown error")}'
+        }), 400
+
+    # 2. Create new GTT with updated values
+    new_result = place_gtt_order(
+        symbol=data['symbol'],
+        transaction_type=data.get('transaction_type', TRANSACTION_SELL),
+        quantity=int(data['quantity']),
+        trigger_price=data['trigger_price'],
+        limit_price=data['limit_price']
+    )
+
+    if new_result.get('success'):
+        return jsonify({
+            'success': True,
+            'old_trigger_id': trigger_id,
+            'new_trigger_id': new_result.get('trigger_id'),
+            'message': f'GTT modified: cancelled #{trigger_id}, created new'
+        })
+
+    return jsonify({
+        'success': False,
+        'error': f'Cancelled old GTT but failed to create new: {new_result.get("error", "Unknown")}',
+        'cancelled_id': trigger_id
+    }), 400
+
+
+@api_v2.route('/kite/orders/nrml', methods=['POST'])
+def place_nrml_order():
+    """
+    Place a NRML (Normal) delivery order.
+
+    Body:
+    {
+        "symbol": "RELIANCE",
+        "transaction_type": "BUY",
+        "quantity": 10,
+        "price": 2500.00,
+        "order_type": "LIMIT"
+    }
+    """
+    data = request.get_json()
+    quantity = int(data.get('quantity', 0))
+    if quantity <= 0:
+        return jsonify({'success': False, 'error': 'Quantity must be positive'}), 400
+
+    result = place_order(
+        symbol=data['symbol'],
+        transaction_type=data.get('transaction_type', TRANSACTION_BUY),
+        quantity=quantity,
+        price=data.get('price'),
+        order_type=data.get('order_type', ORDER_TYPE_LIMIT),
+        product='NRML',
+        trigger_price=data.get('trigger_price')
+    )
+
+    if result['success']:
+        return jsonify(result), 201
+    return jsonify(result), 400
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # NSE TRADE CHARGES CALCULATOR
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1158,15 +1303,18 @@ def create_trade_journal():
     user_id = get_user_id()
     data = request.get_json()
 
+    # initial_stop_loss = first entry's stop loss (static, never changes)
+    initial_sl = data.get('initial_stop_loss') or data.get('stop_loss')
+
     cursor = db.execute('''
         INSERT INTO trade_journal_v2 (
             user_id, trade_bill_id, ticker, cmp, direction, status, journal_date,
             remaining_qty, order_type, mental_state, entry_price, quantity,
-            target_price, stop_loss, rr_ratio, potential_loss, trailing_stop,
-            new_target, potential_gain, target_a, target_b, target_c,
+            target_price, stop_loss, initial_stop_loss, rr_ratio, potential_loss,
+            trailing_stop, new_target, potential_gain, target_a, target_b, target_c,
             entry_tactic, entry_reason, exit_tactic, exit_reason,
             open_trade_comments, followup_analysis
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         user_id,
         data.get('trade_bill_id'),
@@ -1182,6 +1330,7 @@ def create_trade_journal():
         data.get('quantity'),
         data.get('target_price'),
         data.get('stop_loss'),
+        initial_sl,
         data.get('rr_ratio'),
         data.get('potential_loss'),
         data.get('trailing_stop'),
@@ -1443,6 +1592,47 @@ def delete_trade_exit(exit_id):
     _recalculate_journal_totals(db, journal_id)
 
     return jsonify({'success': True})
+
+
+@api_v2.route('/trade-journal/<int:journal_id>/trailing-stop', methods=['PUT'])
+def update_trailing_stop(journal_id):
+    """
+    Update trailing stop for a journal entry (pyramiding model).
+    The initial_stop_loss never changes; only trailing_stop moves up.
+    """
+    db = get_db()
+    user_id = get_user_id()
+    data = request.get_json()
+
+    journal = db.execute('''
+        SELECT id, initial_stop_loss, trailing_stop FROM trade_journal_v2
+        WHERE id = ? AND user_id = ?
+    ''', (journal_id, user_id)).fetchone()
+
+    if not journal:
+        return jsonify({'error': 'Journal not found'}), 404
+
+    new_trailing = data.get('trailing_stop')
+    if new_trailing is None:
+        return jsonify({'error': 'trailing_stop is required'}), 400
+
+    # Trailing stop can only move up (for longs), never below initial_stop_loss
+    initial_sl = journal['initial_stop_loss'] or 0
+    if new_trailing < initial_sl:
+        return jsonify({'error': f'Trailing stop cannot be below initial stop loss ({initial_sl})'}), 400
+
+    db.execute('''
+        UPDATE trade_journal_v2
+        SET trailing_stop = ?, stop_loss = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+    ''', (new_trailing, new_trailing, journal_id))
+    db.commit()
+
+    return jsonify({
+        'success': True,
+        'initial_stop_loss': initial_sl,
+        'trailing_stop': new_trailing
+    })
 
 
 @api_v2.route('/trade-journal/from-bill/<int:bill_id>', methods=['POST'])
@@ -2293,6 +2483,70 @@ def get_executed_orders_for_journal():
     })
 
 
+@api_v2.route('/orders/history', methods=['GET'])
+def get_orders_history():
+    """
+    Get all cached orders (pending + executed) for the Orders screen.
+    Groups by status: OPEN, COMPLETE, CANCELLED, REJECTED, etc.
+    """
+    user_id = get_user_id()
+    db = get_db()
+
+    orders = db.execute('''
+        SELECT order_id, tradingsymbol, exchange, transaction_type,
+               order_type, quantity, filled_quantity, average_price, price,
+               trigger_price, placed_at, status, order_data
+        FROM kite_orders_cache
+        WHERE user_id = ?
+        ORDER BY placed_at DESC
+    ''', (user_id,)).fetchall()
+
+    pending = []
+    executed = []
+    other = []
+
+    for o in orders:
+        order_dict = dict(o)
+        if o['order_data']:
+            try:
+                extra = json.loads(o['order_data'])
+                order_dict['product'] = extra.get('product', '')
+                order_dict['tag'] = extra.get('tag', '')
+            except:
+                pass
+
+        status = (o['status'] or '').upper()
+        if status in ('OPEN', 'TRIGGER PENDING', 'PENDING'):
+            pending.append(order_dict)
+        elif status in ('COMPLETE', 'TRADED'):
+            executed.append(order_dict)
+        else:
+            other.append(order_dict)
+
+    # Also get active GTT orders
+    gtt_list = []
+    try:
+        gtt_result = get_gtt_orders()
+        if gtt_result.get('success'):
+            gtt_list = gtt_result.get('orders', [])
+    except:
+        pass
+
+    return jsonify({
+        'success': True,
+        'pending': pending,
+        'executed': executed,
+        'other': other,
+        'gtt_orders': gtt_list,
+        'summary': {
+            'pending_count': len(pending),
+            'executed_count': len(executed),
+            'gtt_count': len(gtt_list),
+            'total': len(orders)
+        }
+    })
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # DAILY OHLC UPDATE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2446,6 +2700,302 @@ def get_holdings_history():
 # ══════════════════════════════════════════════════════════════════════════════
 # ACCOUNT SECTION - Orders/Positions/Holdings from Cache
 # ══════════════════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MISTAKES CRUD (Global - not per-user)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_v2.route('/mistakes', methods=['GET'])
+def get_mistakes():
+    """List all active mistakes"""
+    db = get_db()
+    rows = db.execute('''
+        SELECT * FROM mistakes WHERE is_active = 1 ORDER BY display_order, id
+    ''').fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@api_v2.route('/mistakes', methods=['POST'])
+def create_mistake():
+    """Create a new mistake"""
+    data = request.get_json()
+    name = data.get('name', '').strip()
+    if not name:
+        return jsonify({'error': 'Name is required'}), 400
+
+    db = get_db()
+    # Get next display_order
+    max_order = db.execute('SELECT MAX(display_order) AS mx FROM mistakes').fetchone()
+    next_order = (max_order['mx'] or 0) + 1
+
+    db.execute('''
+        INSERT INTO mistakes (name, description, display_order)
+        VALUES (?, ?, ?)
+    ''', (name, data.get('description', ''), next_order))
+    db.commit()
+    mid = int(db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
+    return jsonify({'success': True, 'id': mid}), 201
+
+
+@api_v2.route('/mistakes/<int:mistake_id>', methods=['PUT'])
+def update_mistake(mistake_id):
+    """Update a mistake"""
+    data = request.get_json()
+    db = get_db()
+    db.execute('''
+        UPDATE mistakes SET name = ?, description = ? WHERE id = ?
+    ''', (data.get('name'), data.get('description', ''), mistake_id))
+    db.commit()
+    return jsonify({'success': True})
+
+
+@api_v2.route('/mistakes/<int:mistake_id>', methods=['DELETE'])
+def delete_mistake(mistake_id):
+    """Soft-delete a mistake"""
+    db = get_db()
+    db.execute('UPDATE mistakes SET is_active = 0 WHERE id = ?', (mistake_id,))
+    db.commit()
+    return jsonify({'success': True})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STRATEGIES CRUD (Global - user_id IS NULL)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_v2.route('/strategies/global', methods=['GET'])
+def get_global_strategies():
+    """List global strategies (user_id IS NULL)"""
+    db = get_db()
+    rows = db.execute('''
+        SELECT * FROM strategies WHERE user_id IS NULL AND is_active = 1 ORDER BY id
+    ''').fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@api_v2.route('/strategies/global', methods=['POST'])
+def create_global_strategy():
+    """Create a global strategy"""
+    data = request.get_json()
+    name = data.get('name', '').strip()
+    if not name:
+        return jsonify({'error': 'Name is required'}), 400
+
+    db = get_db()
+    db.execute('''
+        INSERT INTO strategies (user_id, name, description, config)
+        VALUES (NULL, ?, ?, ?)
+    ''', (name, data.get('description', ''), json.dumps(data.get('config', {}))))
+    db.commit()
+    sid = int(db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
+    return jsonify({'success': True, 'id': sid}), 201
+
+
+@api_v2.route('/strategies/global/<int:strategy_id>', methods=['PUT'])
+def update_global_strategy(strategy_id):
+    """Update a global strategy"""
+    data = request.get_json()
+    db = get_db()
+    db.execute('''
+        UPDATE strategies SET name = ?, description = ?
+        WHERE id = ? AND user_id IS NULL
+    ''', (data.get('name'), data.get('description', ''), strategy_id))
+    db.commit()
+    return jsonify({'success': True})
+
+
+@api_v2.route('/strategies/global/<int:strategy_id>', methods=['DELETE'])
+def delete_global_strategy(strategy_id):
+    """Soft-delete a global strategy"""
+    db = get_db()
+    db.execute('UPDATE strategies SET is_active = 0 WHERE id = ? AND user_id IS NULL', (strategy_id,))
+    db.commit()
+    return jsonify({'success': True})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TRADE BILL ENHANCEMENTS - Live CMP, ATR, Candle Pattern Detection
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_v2.route('/live-cmp/<symbol>', methods=['GET'])
+def get_live_cmp(symbol):
+    """Get live CMP from Kite API. Falls back to cached close."""
+    try:
+        client = get_client()
+        if client and client.check_auth():
+            full_sym = symbol if ':' in symbol else f'NSE:{symbol}'
+            ltp_data = client.ltp([full_sym])
+            if ltp_data and full_sym in ltp_data:
+                return jsonify({
+                    'symbol': full_sym,
+                    'cmp': ltp_data[full_sym]['last_price'],
+                    'source': 'live',
+                    'timestamp': datetime.now().isoformat()
+                })
+    except Exception as e:
+        print(f"Live CMP error: {e}")
+
+    # Fallback to cached close price
+    db = get_db()
+    full_sym = symbol if ':' in symbol else f'NSE:{symbol}'
+    row = db.execute('''
+        SELECT TOP 1 [close], date FROM stock_historical_data
+        WHERE symbol = ? ORDER BY date DESC
+    ''', (full_sym,)).fetchone()
+
+    if row:
+        return jsonify({
+            'symbol': full_sym,
+            'cmp': row['close'],
+            'source': 'cache',
+            'date': row['date']
+        })
+
+    return jsonify({'error': f'No data for {symbol}'}), 404
+
+
+@api_v2.route('/stock-atr/<symbol>', methods=['GET'])
+def get_stock_atr(symbol):
+    """Get ATR from cached indicators"""
+    db = get_db()
+    full_sym = symbol if ':' in symbol else f'NSE:{symbol}'
+
+    row = db.execute('''
+        SELECT TOP 1 atr, date FROM stock_indicators_daily
+        WHERE symbol = ? ORDER BY date DESC
+    ''', (full_sym,)).fetchone()
+
+    if row and row['atr']:
+        return jsonify({
+            'symbol': full_sym,
+            'atr': round(row['atr'], 2),
+            'date': row['date']
+        })
+
+    return jsonify({'error': f'No ATR data for {symbol}'}), 404
+
+
+@api_v2.route('/candle-pattern/<symbol>', methods=['GET'])
+def detect_candle_pattern(symbol):
+    """
+    Auto-detect candlestick patterns from last 3 candles of cached OHLC data.
+    Also calculates conviction/confusing analysis per candle.
+    Conviction: body > 50% of range. Confusing: body <= 50% of range.
+    """
+    db = get_db()
+    full_sym = symbol if ':' in symbol else f'NSE:{symbol}'
+
+    candles = db.execute('''
+        SELECT TOP 3 date, [open], high, low, [close], volume
+        FROM stock_historical_data
+        WHERE symbol = ?
+        ORDER BY date DESC
+    ''', (full_sym,)).fetchall()
+
+    if len(candles) < 2:
+        return jsonify({'error': f'Need at least 2 candles for {symbol}'}), 404
+
+    # Conviction/Confusing analysis per candle
+    candle_analysis = []
+    for c in candles:
+        body = abs(c['close'] - c['open'])
+        candle_range = c['high'] - c['low']
+        ratio = body / candle_range if candle_range > 0 else 0
+        candle_analysis.append({
+            'date': c['date'],
+            'open': c['open'], 'high': c['high'],
+            'low': c['low'], 'close': c['close'],
+            'body': round(body, 2),
+            'range': round(candle_range, 2),
+            'ratio': round(ratio, 4),
+            'type': 'Conviction' if ratio > 0.5 else 'Confusing',
+            'color': 'green' if c['close'] >= c['open'] else 'red'
+        })
+
+    # Pattern detection using candlestick_patterns service
+    patterns_found = []
+    try:
+        import pandas as pd
+        from services.candlestick_patterns import scan_patterns
+        candles_rev = list(reversed(candles))
+        df = pd.DataFrame([{
+            'Open': c['open'], 'High': c['high'],
+            'Low': c['low'], 'Close': c['close'],
+            'Volume': c['volume']
+        } for c in candles_rev])
+        df.index = pd.to_datetime([c['date'] for c in candles_rev])
+
+        detected = scan_patterns(df)
+        if detected:
+            patterns_found = detected
+    except Exception as e:
+        print(f"Pattern detection error: {e}")
+
+    return jsonify({
+        'symbol': full_sym,
+        'candles': candle_analysis,
+        'patterns': patterns_found,
+        'candle_1_conviction': candle_analysis[0]['type'] if len(candle_analysis) > 0 else None,
+        'candle_2_conviction': candle_analysis[1]['type'] if len(candle_analysis) > 1 else None
+    })
+
+
+@api_v2.route('/portfolio/context', methods=['GET'])
+def get_portfolio_context():
+    """
+    Get combined positions + holdings context for Trade Bill and dashboard.
+    Shows: open positions, capital locked, total P/L, holdings value.
+    """
+    user_id = get_user_id()
+    db = get_db()
+
+    # Get positions from cache
+    positions = db.execute('''
+        SELECT tradingsymbol, product, quantity, average_price, last_price, pnl
+        FROM kite_positions_cache
+        WHERE user_id = ? AND quantity != 0
+    ''', (user_id,)).fetchall()
+
+    # Get holdings from cache
+    holdings = db.execute('''
+        SELECT tradingsymbol, quantity, average_price, last_price, pnl,
+               day_change, day_change_percentage
+        FROM kite_holdings_cache
+        WHERE user_id = ?
+    ''', (user_id,)).fetchall()
+
+    # Get account settings
+    account = db.execute('''
+        SELECT trading_capital FROM account_settings WHERE user_id = ?
+    ''', (user_id,)).fetchone()
+    capital = account['trading_capital'] if account else 500000
+
+    # Calculate totals
+    positions_value = sum(abs(p['quantity'] * p['average_price']) for p in positions)
+    positions_pnl = sum(p['pnl'] or 0 for p in positions)
+    holdings_value = sum(h['quantity'] * h['last_price'] for h in holdings)
+    holdings_pnl = sum(h['pnl'] or 0 for h in holdings)
+
+    total_locked = positions_value + holdings_value
+    capital_used_pct = (total_locked / capital * 100) if capital > 0 else 0
+
+    return jsonify({
+        'success': True,
+        'positions': [dict(p) for p in positions],
+        'holdings': [dict(h) for h in holdings],
+        'summary': {
+            'open_positions': len(positions),
+            'total_holdings': len(holdings),
+            'positions_value': round(positions_value, 2),
+            'positions_pnl': round(positions_pnl, 2),
+            'holdings_value': round(holdings_value, 2),
+            'holdings_pnl': round(holdings_pnl, 2),
+            'total_locked': round(total_locked, 2),
+            'trading_capital': capital,
+            'capital_used_pct': round(capital_used_pct, 2),
+            'available_capital': round(capital - total_locked, 2)
+        }
+    })
+
 
 @api_v2.route('/account/overview', methods=['GET'])
 def get_account_overview():

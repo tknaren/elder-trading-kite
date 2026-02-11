@@ -179,7 +179,7 @@ class Database:
             IF OBJECT_ID('strategies', 'U') IS NULL
             CREATE TABLE strategies (
                 id INT IDENTITY(1,1) PRIMARY KEY,
-                user_id INT NOT NULL,
+                user_id INT NULL,
                 name NVARCHAR(200) NOT NULL,
                 description NVARCHAR(MAX),
                 is_active BIT DEFAULT 1,
@@ -841,6 +841,137 @@ class Database:
             )
         """)
 
+        # Mistakes table (global, no user_id)
+        conn.execute("""
+            IF OBJECT_ID('mistakes', 'U') IS NULL
+            CREATE TABLE mistakes (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                name NVARCHAR(200) NOT NULL,
+                description NVARCHAR(MAX),
+                is_active BIT DEFAULT 1,
+                display_order INT DEFAULT 0,
+                created_at DATETIME2 DEFAULT GETDATE()
+            )
+        """)
+
+        # Add new columns to trade_bills (idempotent)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('trade_bills') AND name = 'atr')
+                ALTER TABLE trade_bills ADD atr FLOAT
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('trade_bills') AND name = 'candle_pattern')
+                ALTER TABLE trade_bills ADD candle_pattern NVARCHAR(500)
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('trade_bills') AND name = 'candle_1_conviction')
+                ALTER TABLE trade_bills ADD candle_1_conviction NVARCHAR(20)
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('trade_bills') AND name = 'candle_2_conviction')
+                ALTER TABLE trade_bills ADD candle_2_conviction NVARCHAR(20)
+        """)
+
+        # Add initial_stop_loss to trade_journal_v2
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('trade_journal_v2') AND name = 'initial_stop_loss')
+                ALTER TABLE trade_journal_v2 ADD initial_stop_loss FLOAT
+        """)
+
+        # Fix cache table schemas - add missing columns
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('kite_orders_cache') AND name = 'user_id')
+                ALTER TABLE kite_orders_cache ADD user_id INT
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('kite_orders_cache') AND name = 'tradingsymbol')
+                ALTER TABLE kite_orders_cache ADD tradingsymbol NVARCHAR(100)
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('kite_orders_cache') AND name = 'cached_at')
+                ALTER TABLE kite_orders_cache ADD cached_at DATETIME2 DEFAULT GETDATE()
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('kite_orders_cache') AND name = 'order_data')
+                ALTER TABLE kite_orders_cache ADD order_data NVARCHAR(MAX)
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('kite_orders_cache') AND name = 'placed_at')
+                ALTER TABLE kite_orders_cache ADD placed_at DATETIME2
+        """)
+
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('kite_positions_cache') AND name = 'user_id')
+                ALTER TABLE kite_positions_cache ADD user_id INT
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('kite_positions_cache') AND name = 'tradingsymbol')
+                ALTER TABLE kite_positions_cache ADD tradingsymbol NVARCHAR(100)
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('kite_positions_cache') AND name = 'buy_value')
+                ALTER TABLE kite_positions_cache ADD buy_value FLOAT
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('kite_positions_cache') AND name = 'sell_value')
+                ALTER TABLE kite_positions_cache ADD sell_value FLOAT
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('kite_positions_cache') AND name = 'position_data')
+                ALTER TABLE kite_positions_cache ADD position_data NVARCHAR(MAX)
+        """)
+
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('kite_holdings_cache') AND name = 'user_id')
+                ALTER TABLE kite_holdings_cache ADD user_id INT
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('kite_holdings_cache') AND name = 'tradingsymbol')
+                ALTER TABLE kite_holdings_cache ADD tradingsymbol NVARCHAR(100)
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('kite_holdings_cache') AND name = 'holding_data')
+                ALTER TABLE kite_holdings_cache ADD holding_data NVARCHAR(MAX)
+        """)
+
+        # Add user_id to holdings_snapshot if missing
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('holdings_snapshot') AND name = 'user_id')
+                ALTER TABLE holdings_snapshot ADD user_id INT
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('holdings_snapshot') AND name = 'tradingsymbol')
+                ALTER TABLE holdings_snapshot ADD tradingsymbol NVARCHAR(100)
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('holdings_snapshot') AND name = 'updated_at')
+                ALTER TABLE holdings_snapshot ADD updated_at DATETIME2
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('holdings_snapshot') AND name = 'day_change')
+                ALTER TABLE holdings_snapshot ADD day_change FLOAT
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('holdings_snapshot') AND name = 'day_change_percentage')
+                ALTER TABLE holdings_snapshot ADD day_change_percentage FLOAT
+        """)
+
+        # Add updated_at to nse_instruments if missing
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('nse_instruments') AND name = 'updated_at')
+                ALTER TABLE nse_instruments ADD updated_at DATETIME2 DEFAULT GETDATE()
+        """)
+
+        # Make strategies.user_id nullable for global strategies
+        conn.execute("""
+            IF EXISTS (
+                SELECT 1 FROM sys.columns c
+                JOIN sys.objects o ON c.object_id = o.object_id
+                WHERE o.name = 'strategies' AND c.name = 'user_id' AND c.is_nullable = 0
+            )
+            ALTER TABLE strategies ALTER COLUMN user_id INT NULL
+        """)
+
         conn.commit()
         conn.close()
 
@@ -956,6 +1087,44 @@ class Database:
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (user_id, 'Trading Account', 'IN', 500000, 'INR', 'Zerodha'))
 
+            conn.commit()
+
+        # Seed default global strategies (user_id = NULL)
+        cursor = conn.execute("SELECT COUNT(*) AS cnt FROM strategies WHERE user_id IS NULL")
+        if cursor.fetchone()['cnt'] == 0:
+            default_strategies = [
+                ('EL - Daily Swing', 'Elder Triple Screen daily swing entry'),
+                ('EL - False Breakout', 'Elder false breakout reversal'),
+                ('EL - LC Bounce', 'Elder lower channel bounce'),
+                ('SE - Canon', 'Steve Nison candle pattern entry'),
+                ('SE - White Marubozu', 'Steve Nison white marubozu continuation'),
+                ('CI - Trending Stocks', 'Chandelier exit on trending stocks'),
+            ]
+            for name, desc in default_strategies:
+                conn.execute("""
+                    INSERT INTO strategies (user_id, name, description, config)
+                    VALUES (NULL, ?, ?, '{}')
+                """, (name, desc))
+            conn.commit()
+
+        # Seed default mistakes (global)
+        cursor = conn.execute('SELECT COUNT(*) AS cnt FROM mistakes')
+        if cursor.fetchone()['cnt'] == 0:
+            default_mistakes = [
+                ('Tight Stop Loss', 'Stop loss placed too close to entry, hit by normal volatility', 1),
+                ('Entered Early', 'Entered before confirmation signal completed', 2),
+                ('Entered Late', 'Entered after the move was already extended', 3),
+                ('FOMO', 'Fear of missing out drove impulsive entry', 4),
+                ('Revenge Trading', 'Entered to recover losses from previous trade', 5),
+                ('Stock In News', 'Traded based on news/hype rather than system', 6),
+                ('Rule Deviation', 'Deviated from trading system rules', 7),
+                ('Staying Long', 'Held position too long past exit signals', 8),
+            ]
+            for name, desc, order in default_mistakes:
+                conn.execute("""
+                    INSERT INTO mistakes (name, description, display_order)
+                    VALUES (?, ?, ?)
+                """, (name, desc, order))
             conn.commit()
 
         conn.close()

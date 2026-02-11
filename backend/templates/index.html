@@ -71,6 +71,8 @@
             {id:'trade-log', icon:'📝', label:'Trade Log'},
             {id:'trade-summary', icon:'📊', label:'Trade Summary'}
         ]},
+        {id:'orders', icon:'📦', label:'Orders'},
+        {id:'positions-holdings', icon:'🏦', label:'Portfolio'},
         {id:'pnl-tracker', icon:'💵', label:'P&L Tracker'},
         {id:'mistakes', icon:'⚠️', label:'Mistakes'},
         {id:'favorites', icon:'⭐', label:'Favorites'},
@@ -176,12 +178,14 @@
         else if(currentTab==='journal-dashboard') c.innerHTML = await journalDashboardView();
         else if(currentTab==='trade-log') c.innerHTML = await tradeLogView();
         else if(currentTab==='trade-summary') c.innerHTML = await tradeSummaryView();
+        else if(currentTab==='orders') c.innerHTML = await ordersView();
+        else if(currentTab==='positions-holdings') c.innerHTML = await positionsHoldingsView();
         else if(currentTab==='pnl-tracker') c.innerHTML = await pnlTrackerView();
         else if(currentTab==='mistakes') c.innerHTML = await mistakesView();
         else if(currentTab==='favorites') c.innerHTML = await favoritesView();
         else if(currentTab==='account') c.innerHTML = await accountView();
         else if(currentTab==='checklist') c.innerHTML = checklistView();
-        else if(currentTab==='settings') { c.innerHTML = settingsView(); loadDataStatus(); }
+        else if(currentTab==='settings') { c.innerHTML = settingsView(); loadDataStatus(); loadMistakesList(); loadStrategiesList(); }
     }
 
     // ========== SCREENER ==========
@@ -691,34 +695,112 @@
         document.getElementById('ticker-suggestions').innerHTML = '';
 
         try {
-            // Fetch from DATABASE CACHE only (no API calls) - fast!
-            const resp = await fetch(`/api/v2/data/stock/${encodeURIComponent(symbol)}`);
-            const quote = await resp.json();
+            // Fetch stock data, live CMP, ATR, and candle patterns in parallel
+            const [stockResp, cmpResp, atrResp, candleResp] = await Promise.all([
+                fetch(`/api/v2/data/stock/${encodeURIComponent(symbol)}`).then(r => r.json()).catch(() => null),
+                fetch(`/api/v2/live-cmp/${encodeURIComponent(symbol)}`).then(r => r.json()).catch(() => null),
+                fetch(`/api/v2/stock-atr/${encodeURIComponent(symbol)}`).then(r => r.json()).catch(() => null),
+                fetch(`/api/v2/candle-pattern/${encodeURIComponent(symbol)}`).then(r => r.json()).catch(() => null)
+            ]);
 
-            if (quote.error) {
-                toast(quote.error, 'warning');
+            if (!stockResp || stockResp.error) {
+                toast(stockResp?.error || `No cached data for ${symbol}`, 'warning');
                 return;
             }
 
-            if (quote && quote.price) {
-                // Auto-populate Trade Bill fields from cached data
-                document.getElementById('tb-cmp').value = quote.price.toFixed(2);
-                document.getElementById('tb-entry').value = quote.suggested_entry.toFixed(2);
-                document.getElementById('tb-sl').value = quote.suggested_stop.toFixed(2);
-                document.getElementById('tb-target').value = quote.suggested_target.toFixed(2);
-                document.getElementById('tb-uc').value = quote.kc_upper_3.toFixed(2);
-                document.getElementById('tb-lc').value = quote.kc_lower_3.toFixed(2);
+            // CMP: prefer live, fallback to cached close
+            const cmpValue = cmpResp?.cmp || stockResp.price;
+            const cmpSource = cmpResp?.source || 'cache';
+            document.getElementById('tb-cmp').value = cmpValue.toFixed(2);
+            const srcEl = document.getElementById('cmp-source');
+            if (srcEl) srcEl.textContent = cmpSource === 'live' ? '● Live from Kite' : `● Cached (${stockResp.date})`;
+            if (srcEl) srcEl.className = `text-xs mt-0.5 ${cmpSource === 'live' ? 'text-green-400' : 'text-gray-500'}`;
 
-                // Trigger calculations
-                autoCalculateTradeBill();
-                toast(`${symbol} loaded (${quote.date})`, 'success');
-            } else {
-                toast(`No cached data for ${symbol}. Load data first.`, 'warning');
+            // Entry, SL, Target from cached data
+            document.getElementById('tb-entry').value = stockResp.suggested_entry.toFixed(2);
+            document.getElementById('tb-sl').value = stockResp.suggested_stop.toFixed(2);
+            document.getElementById('tb-target').value = stockResp.suggested_target.toFixed(2);
+
+            // ATR
+            if (atrResp?.atr) {
+                document.getElementById('tb-atr').value = atrResp.atr.toFixed(2);
+            } else if (stockResp.atr) {
+                document.getElementById('tb-atr').value = stockResp.atr.toFixed(2);
             }
+
+            // Candle Pattern + Conviction
+            if (candleResp && !candleResp.error) {
+                const patterns = candleResp.patterns || [];
+                const patternNames = patterns.map(p => p.pattern || p.name || p).join(', ');
+                document.getElementById('tb-candle-pattern').value = patternNames || 'No pattern';
+                document.getElementById('tb-candle1-conv').value = candleResp.candle_1_conviction || '-';
+                document.getElementById('tb-candle2-conv').value = candleResp.candle_2_conviction || '-';
+
+                // Color conviction fields
+                const c1El = document.getElementById('tb-candle1-conv');
+                const c2El = document.getElementById('tb-candle2-conv');
+                c1El.style.color = candleResp.candle_1_conviction === 'Conviction' ? '#4ade80' : '#f87171';
+                c2El.style.color = candleResp.candle_2_conviction === 'Conviction' ? '#4ade80' : '#f87171';
+            }
+
+            // Trigger calculations
+            autoCalculateTradeBill();
+            toast(`${symbol} loaded (${cmpSource})`, 'success');
+
+            // Start live CMP refresh if market is open
+            startCMPRefresh(symbol);
         } catch(e) {
             console.error('Error fetching stock data:', e);
             toast(`Error: ${e.message}. Load data from Settings first.`, 'error');
         }
+    }
+
+    // Live CMP refresh during market hours
+    let cmpRefreshInterval = null;
+
+    function startCMPRefresh(symbol) {
+        // Clear any existing interval
+        if (cmpRefreshInterval) clearInterval(cmpRefreshInterval);
+
+        // Refresh every 15 seconds during market hours
+        cmpRefreshInterval = setInterval(async () => {
+            try {
+                const resp = await fetch(`/api/v2/live-cmp/${encodeURIComponent(symbol)}`);
+                const data = await resp.json();
+                if (data.cmp && data.source === 'live') {
+                    document.getElementById('tb-cmp').value = data.cmp.toFixed(2);
+                    const srcEl = document.getElementById('cmp-source');
+                    if (srcEl) {
+                        srcEl.textContent = `● Live ${new Date().toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit', second:'2-digit'})}`;
+                        srcEl.className = 'text-xs mt-0.5 text-green-400';
+                    }
+                } else {
+                    // Market closed, stop refreshing
+                    clearInterval(cmpRefreshInterval);
+                    cmpRefreshInterval = null;
+                }
+            } catch(e) { /* silent */ }
+        }, 15000);
+    }
+
+    async function refreshLiveCMP() {
+        const ticker = document.getElementById('tb-ticker').value;
+        if (!ticker) { toast('Enter a ticker first', 'error'); return; }
+        try {
+            const resp = await fetch(`/api/v2/live-cmp/${encodeURIComponent(ticker)}`);
+            const data = await resp.json();
+            if (data.cmp) {
+                document.getElementById('tb-cmp').value = data.cmp.toFixed(2);
+                const srcEl = document.getElementById('cmp-source');
+                if (srcEl) {
+                    srcEl.textContent = data.source === 'live' ? '● Live from Kite' : `● Cached`;
+                    srcEl.className = `text-xs mt-0.5 ${data.source === 'live' ? 'text-green-400' : 'text-gray-500'}`;
+                }
+                toast(`CMP refreshed: ₹${data.cmp.toFixed(2)} (${data.source})`, 'success');
+            } else {
+                toast(data.error || 'Could not get CMP', 'error');
+            }
+        } catch(e) { toast('Error: ' + e.message, 'error'); }
     }
 
     // ========== HISTORICAL SCREENER (formerly Backtest) ==========
@@ -1323,15 +1405,18 @@
                     <button onclick="switchTab('trade-bills')" class="px-4 py-2 bg-gray-700 rounded-lg hover:bg-gray-600">📋 View Saved Bills</button>
                 </div>
 
-                <!-- Account Info Banner -->
+                <!-- Account Info Banner with Portfolio Context -->
                 <div class="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4 flex justify-between items-center">
                     <div>
-                        <span class="text-gray-400">Trading Capital:</span>
-                        <span class="font-mono font-bold text-blue-400 ml-2">${sym}${s.trading_capital?.toLocaleString()}</span>
+                        <span class="text-gray-400">Capital:</span>
+                        <span class="font-mono font-bold text-blue-400 ml-1">${sym}${s.trading_capital?.toLocaleString()}</span>
                     </div>
                     <div>
                         <span class="text-gray-400">Max Risk (${s.risk_per_trade}%):</span>
-                        <span class="font-mono font-bold text-red-400 ml-2">${sym}${(s.trading_capital * s.risk_per_trade / 100).toFixed(0)}</span>
+                        <span class="font-mono font-bold text-red-400 ml-1">${sym}${(s.trading_capital * s.risk_per_trade / 100).toFixed(0)}</span>
+                    </div>
+                    <div id="tb-portfolio-ctx" class="flex gap-4">
+                        <span class="text-gray-500 text-xs">Loading portfolio...</span>
                     </div>
                 </div>
 
@@ -1344,19 +1429,25 @@
                             <input id="tb-ticker" value="${tb.ticker||''}" placeholder="NSE:RELIANCE" onkeyup="handleTickerTypeahead(event)" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono">
                             <div id="ticker-suggestions" class="mt-1 bg-[#1f2937] rounded-lg border border-gray-600 max-h-40 overflow-y-auto"></div>
                         </div>
-                        <div><label class="text-sm text-gray-400">Current Market Price (${sym})</label><input id="tb-cmp" type="number" value="${tb.current_market_price||''}" step="0.05" placeholder="2500.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div>
+                            <label class="text-sm text-gray-400">CMP (${sym}) <button onclick="refreshLiveCMP()" class="text-blue-400 hover:text-blue-300 text-xs ml-1" title="Refresh from Kite">🔄 Live</button></label>
+                            <input id="tb-cmp" type="number" value="${tb.current_market_price||''}" step="0.05" placeholder="2500.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono">
+                            <div id="cmp-source" class="text-xs text-gray-600 mt-0.5"></div>
+                        </div>
                         <div><label class="text-sm text-gray-400">Entry Price (${sym})</label><input id="tb-entry" type="number" value="${tb.entry_price||''}" step="0.05" placeholder="2450.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                     </div>
-                    <div class="grid grid-cols-3 gap-4">
+                    <div class="grid grid-cols-4 gap-4">
                         <div><label class="text-sm text-gray-400">Stop Loss (${sym})</label><input id="tb-sl" type="number" value="${tb.stop_loss||''}" step="0.05" placeholder="2400.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                         <div><label class="text-sm text-gray-400">Target (${sym})</label><input id="tb-target" type="number" value="${tb.target_price||''}" step="0.05" placeholder="2600.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
-                        <div><label class="text-sm text-gray-400">Quantity (whole shares)</label><input id="tb-qty" type="number" value="${tb.quantity||''}" step="1" min="1" placeholder="auto" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Quantity (even, whole)</label><input id="tb-qty" type="number" value="${tb.quantity||''}" step="2" min="2" placeholder="auto" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">ATR (14)</label><input id="tb-atr" type="number" value="${tb.atr||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
                     </div>
-                    <div class="grid grid-cols-4 gap-4">
-                        <div><label class="text-sm text-gray-400">Upper Channel (${sym})</label><input id="tb-uc" type="number" value="${tb.upper_channel||''}" step="0.01" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
-                        <div><label class="text-sm text-gray-400">Lower Channel (${sym})</label><input id="tb-lc" type="number" value="${tb.lower_channel||''}" step="0.01" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
-                        <div><label class="text-sm text-gray-400">Target Pips</label><input id="tb-tp" type="number" value="${tb.target_pips||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
-                        <div><label class="text-sm text-gray-400">SL Pips</label><input id="tb-slp" type="number" value="${tb.stop_loss_pips||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+
+                    <!-- Candle Pattern & Conviction -->
+                    <div class="grid grid-cols-3 gap-4">
+                        <div><label class="text-sm text-gray-400">Candle Pattern</label><input id="tb-candle-pattern" type="text" value="${tb.candle_pattern||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg text-sm bg-gray-800" readonly></div>
+                        <div><label class="text-sm text-gray-400">Candle 1 (Latest)</label><input id="tb-candle1-conv" type="text" value="${tb.candle_1_conviction||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg text-sm bg-gray-800" readonly></div>
+                        <div><label class="text-sm text-gray-400">Candle 2</label><input id="tb-candle2-conv" type="text" value="${tb.candle_2_conviction||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg text-sm bg-gray-800" readonly></div>
                     </div>
                 </div>
 
@@ -1375,22 +1466,12 @@
                     </div>
                 </div>
 
-                <!-- Reward Information -->
+                <!-- Reward Information (Simplified) -->
                 <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
                     <h3 class="font-bold text-lg text-green-400">📈 Reward Information</h3>
                     <div class="grid grid-cols-3 gap-4">
-                        <div><label class="text-sm text-gray-400">Channel Height (${sym})</label><input id="tb-ch" type="number" value="${tb.channel_height||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
-                        <div><label class="text-sm text-gray-400">Potential Gain (${sym})</label><input id="tb-pg" type="number" value="${tb.potential_gain||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
-                        <div><label class="text-sm text-gray-400">C Target (10% of CH from Entry) (${sym})</label><input id="tb-c" type="number" value="${tb.target_1_1_c||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-yellow-900/30"></div>
-                    </div>
-                    <div class="grid grid-cols-3 gap-4">
-                        <div><label class="text-sm text-gray-400">B Target (20% of CH from Entry) (${sym}) <span class="text-xs text-green-400">★ Recommended</span></label><input id="tb-b" type="number" value="${tb.target_1_2_b||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-green-600 rounded-lg font-mono bg-green-900/30"></div>
-                        <div><label class="text-sm text-gray-400">A Target (30% of CH from Entry) (${sym})</label><input id="tb-a" type="number" value="${tb.target_1_3_a||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-blue-900/30"></div>
-                        <div></div>
-                    </div>
-                    <div class="grid grid-cols-3 gap-4">
                         <div><label class="text-sm text-gray-400">Risk (${sym})</label><input id="tb-risk" type="text" value="${tb.risk_amount_currency||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-red-900/30" readonly></div>
-                        <div><label class="text-sm text-gray-400">Reward (${sym}) <span class="text-xs text-gray-500">(B target)</span></label><input id="tb-reward" type="text" value="${tb.reward_amount_currency||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-green-900/30" readonly></div>
+                        <div><label class="text-sm text-gray-400">Reward (${sym})</label><input id="tb-reward" type="text" value="${tb.reward_amount_currency||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-green-900/30" readonly></div>
                         <div><label class="text-sm text-gray-400">R:R Ratio</label><input id="tb-rrr" type="number" value="${tb.risk_reward_ratio||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
                     </div>
                 </div>
@@ -1431,27 +1512,21 @@
 
                 <!-- Elder Calculation Reference -->
                 <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
-                    <h3 class="font-bold text-lg text-gray-400 mb-3">📖 Calculation Reference (KCB 20,10,1)</h3>
+                    <h3 class="font-bold text-lg text-gray-400 mb-3">📖 Calculation Reference</h3>
                     <div class="grid grid-cols-2 gap-4 text-xs text-gray-500">
                         <div class="space-y-1">
                             <p><span class="text-red-400">Max Risk</span> = Capital × (Risk % ÷ 100)</p>
                             <p><span class="text-blue-400">Risk per Share</span> = Entry − Stop Loss</p>
-                            <p><span class="text-blue-400">Max Qty for Risk</span> = Max Risk ÷ Risk per Share</p>
+                            <p><span class="text-blue-400">Max Qty</span> = floor(Max Risk ÷ Risk per Share ÷ 2) × 2 (even)</p>
                             <p><span class="text-blue-400">Position Size</span> = Quantity × Entry</p>
-                            <p><span class="text-blue-400">Target Pips</span> = Target − Entry (in ₹)</p>
-                            <p><span class="text-blue-400">SL Pips</span> = Entry − Stop Loss (in ₹)</p>
                         </div>
                         <div class="space-y-1">
-                            <p><span class="text-blue-400">Channel Height</span> = Upper − Lower Channel</p>
-                            <p><span class="text-yellow-400">C Target (10%)</span> = Entry + (Channel × 0.10)</p>
-                            <p><span class="text-green-400">B Target (20%)</span> = Entry + (Channel × 0.20)</p>
-                            <p><span class="text-blue-400">A Target (30%)</span> = Entry + (Channel × 0.30)</p>
-                            <p><span class="text-red-400">Risk</span> = SL Pips × Quantity</p>
-                            <p><span class="text-green-400">Reward</span> = Target Pips × Quantity</p>
+                            <p><span class="text-red-400">Risk</span> = (Entry − SL) × Quantity</p>
+                            <p><span class="text-green-400">Reward</span> = (Target − Entry) × Quantity</p>
                             <p><span class="text-purple-400">R:R Ratio</span> = Reward ÷ Risk</p>
+                            <p><span class="text-yellow-400">Conviction</span> = body > 50% of candle range</p>
                         </div>
                     </div>
-                    <p class="text-xs text-gray-600 mt-2">Upper/Lower Channels = KC Middle ± (3 × ATR). Potential Gain % = ((Upper − Entry) ÷ Entry) × 100</p>
                 </div>
 
                 <!-- Action Buttons -->
@@ -1461,11 +1536,12 @@
                         <button onclick="saveTradeBill()" class="flex-1 py-3 bg-green-600 rounded-lg font-medium hover:bg-green-700 disabled:opacity-50" id="save-btn">💾 Save Trade Bill</button>
                     </div>
                     <div class="flex gap-2">
-                        <button onclick="fillJournalFromBill()" class="flex-1 py-3 bg-blue-600 rounded-lg font-medium hover:bg-blue-700" id="fill-journal-btn" disabled>📓 Fill Journal</button>
-                        <button onclick="placeGttOrder()" class="flex-1 py-3 bg-orange-600 rounded-lg font-medium hover:bg-orange-700" id="gtt-btn" disabled>📊 Place GTT Order</button>
-                        <button onclick="placeOcoSellOrder()" class="flex-1 py-3 bg-red-600 rounded-lg font-medium hover:bg-red-700" id="oco-btn" disabled>🎯 Place OCO Sell</button>
+                        <button onclick="fillJournalFromBill()" class="flex-1 py-3 bg-blue-600 rounded-lg font-medium hover:bg-blue-700" id="fill-journal-btn" disabled>📓 Journal</button>
+                        <button onclick="placeGttOrder()" class="flex-1 py-3 bg-orange-600 rounded-lg font-medium hover:bg-orange-700" id="gtt-btn" disabled>📊 GTT Buy</button>
+                        <button onclick="placeNrmlOrder()" class="flex-1 py-3 bg-cyan-600 rounded-lg font-medium hover:bg-cyan-700" id="nrml-btn" disabled>🔷 NRML Buy</button>
+                        <button onclick="placeOcoSellOrder()" class="flex-1 py-3 bg-red-600 rounded-lg font-medium hover:bg-red-700" id="oco-btn" disabled>🎯 OCO Split Sell</button>
                     </div>
-                    <p class="text-xs text-gray-500 text-center">Save the Trade Bill first to enable Journal and Order buttons</p>
+                    <p class="text-xs text-gray-500 text-center">Save the Trade Bill first to enable these buttons. OCO Split = full qty SL + half qty target.</p>
                 </div>
             </div>
         `;
@@ -1477,7 +1553,27 @@
             if (document.getElementById('tb-entry')) {
                 autoCalculateTradeBill();
             }
+            // Load portfolio context into banner
+            loadPortfolioContext();
         }, 100);
+    }
+
+    async function loadPortfolioContext() {
+        const el = document.getElementById('tb-portfolio-ctx');
+        if (!el) return;
+        try {
+            const resp = await fetch('/api/v2/portfolio/context');
+            const data = await resp.json();
+            const s = data.summary || {};
+            const sym = '₹';
+            el.innerHTML = `
+                <div><span class="text-gray-500 text-xs">Positions:</span> <span class="font-mono text-xs text-blue-400">${s.open_positions || 0}</span></div>
+                <div><span class="text-gray-500 text-xs">Locked:</span> <span class="font-mono text-xs text-red-400">${sym}${(s.total_locked || 0).toLocaleString()}</span></div>
+                <div><span class="text-gray-500 text-xs">Used:</span> <span class="font-mono text-xs text-yellow-400">${(s.capital_used_pct || 0).toFixed(1)}%</span></div>
+            `;
+        } catch(e) {
+            el.innerHTML = '<span class="text-gray-600 text-xs">Portfolio: N/A</span>';
+        }
     }
 
     function calculateTradeBillMetrics() {
@@ -1491,9 +1587,7 @@
         const sl = parseFloat(document.getElementById('tb-sl').value) || 0;
         const target = parseFloat(document.getElementById('tb-target').value) || 0;
         const cmp = parseFloat(document.getElementById('tb-cmp').value) || 0;
-        const upperChannel = parseFloat(document.getElementById('tb-uc').value) || 0;
-        const lowerChannel = parseFloat(document.getElementById('tb-lc').value) || 0;
-        const manualQty = parseInt(document.getElementById('tb-qty').value) || 0;  // Whole shares only
+        const manualQty = parseInt(document.getElementById('tb-qty').value) || 0;
         const otherCharges = parseFloat(document.getElementById('tb-oc').value) || 0;
 
         const s = settings[0] || {trading_capital: 500000, risk_per_trade: 2, currency: 'INR'};
@@ -1503,53 +1597,31 @@
         // Need at least entry and stop loss
         if (!entry || !sl) return;
 
-        // === CALCULATIONS FOR NSE (LONG direction) ===
-        // NSE requires whole shares - no fractional trading
-
-        // 8. Risk per Share = Entry - SL
+        // Risk per Share = Entry - SL
         const riskPerShare = Math.round((entry - sl) * 100) / 100;
-        if (riskPerShare <= 0) return;  // Invalid stop loss
+        if (riskPerShare <= 0) return;
 
-        // 5. Max Risk = Account Size × (Risk% / 100) - from settings
+        // Max Risk = Capital × (Risk% / 100)
         const maxRisk = Math.round(acSize * (riskPerTradePercent / 100));
 
-        // 6. Max Qty for Risk = Max Risk / SL Pips (Risk per Share)
-        const maxQtyRisk = riskPerShare > 0 ? Math.floor(maxRisk / riskPerShare) : 0;
+        // Max Qty = even number: floor(maxRisk / riskPerShare / 2) * 2
+        const maxQtyRisk = riskPerShare > 0 ? Math.floor(maxRisk / riskPerShare / 2) * 2 : 0;
 
-        // Quantity (use manual if entered, otherwise maxQtyRisk) - WHOLE SHARES ONLY
+        // Quantity (use manual if entered, otherwise maxQtyRisk) - EVEN WHOLE SHARES
         const quantity = manualQty > 0 ? manualQty : maxQtyRisk;
 
-        // 9. Position Size = Quantity × Entry Price
+        // Position Size = Quantity × Entry Price
         const positionSize = Math.round(quantity * entry);
 
-        // 4. Target Pips = Target - Entry (distance in ₹)
-        const targetPips = target ? Math.round((target - entry) * 100) / 100 : 0;
-
-        // 4. SL Pips = Entry - Stop Loss (distance in ₹)
+        // Risk (₹) = (Entry - SL) × Quantity
         const stopLossPips = Math.round((entry - sl) * 100) / 100;
-
-        // 11. Channel Height = Upper Channel - Lower Channel (in ₹)
-        const channelHeight = upperChannel && lowerChannel ? Math.round((upperChannel - lowerChannel) * 100) / 100 : 0;
-
-        // 12. A, B, C Targets based on Channel Height
-        // C Target = Entry + (Channel Height × 0.10)
-        // B Target = Entry + (Channel Height × 0.20)
-        // A Target = Entry + (Channel Height × 0.30)
-        const cTrade = channelHeight > 0 ? Math.round((entry + (channelHeight * 0.10)) * 100) / 100 : 0;
-        const bTrade = channelHeight > 0 ? Math.round((entry + (channelHeight * 0.20)) * 100) / 100 : 0;
-        const aTrade = channelHeight > 0 ? Math.round((entry + (channelHeight * 0.30)) * 100) / 100 : 0;
-
-        // Potential Gain % = ((Upper Channel - Entry) / Entry) × 100 (capped at 9.9%)
-        let potentialGain = upperChannel > 0 ? Math.round(((upperChannel - entry) / entry) * 100 * 100) / 100 : 0;
-        if (potentialGain >= 10) potentialGain = 9.9;
-
-        // 14. Risk (₹) = SL Pips × Quantity
         const risk = Math.round(stopLossPips * quantity);
 
-        // 15. Reward (₹) = Target Pips × Quantity
+        // Reward (₹) = (Target - Entry) × Quantity
+        const targetPips = target ? Math.round((target - entry) * 100) / 100 : 0;
         const reward = targetPips > 0 ? Math.round(targetPips * quantity) : 0;
 
-        // 16. R:R Ratio = Reward / Risk
+        // R:R Ratio = Reward / Risk
         const riskRewardRatio = risk > 0 && reward > 0 ? Math.round((reward / risk) * 100) / 100 : 0;
 
         // Break Even = Entry + (Other Charges / Quantity)
@@ -1558,32 +1630,18 @@
         // Trailing Stop = Stop Loss initially
         const trailingStop = sl;
 
-        // Update all form fields - WHOLE SHARES for quantity
-        if (!manualQty) document.getElementById('tb-qty').value = quantity;  // No decimals
-        document.getElementById('tb-tp').value = targetPips.toFixed(2);
-        document.getElementById('tb-slp').value = stopLossPips.toFixed(2);
-        document.getElementById('tb-maxrisk').value = maxRisk.toLocaleString();  // Max Risk amount
-        document.getElementById('tb-maxqty').value = maxQtyRisk;  // Whole number
+        // Update form fields - EVEN WHOLE SHARES
+        if (!manualQty) document.getElementById('tb-qty').value = quantity;
+        document.getElementById('tb-maxrisk').value = maxRisk.toLocaleString();
+        document.getElementById('tb-maxqty').value = maxQtyRisk;
         document.getElementById('tb-rps').value = riskPerShare.toFixed(2);
-        document.getElementById('tb-ps').value = positionSize.toLocaleString();  // Format with commas for INR
-        document.getElementById('tb-rp').value = riskPerTradePercent.toFixed(2);  // Risk % from settings
-        document.getElementById('tb-ch').value = channelHeight.toFixed(2);
-        document.getElementById('tb-pg').value = potentialGain.toFixed(2);
-        document.getElementById('tb-c').value = cTrade.toFixed(2);
-        document.getElementById('tb-b').value = bTrade.toFixed(2);
-        document.getElementById('tb-a').value = aTrade.toFixed(2);
-        document.getElementById('tb-risk').value = risk.toLocaleString();  // Format with commas
-        document.getElementById('tb-reward').value = reward.toLocaleString();  // Format with commas
+        document.getElementById('tb-ps').value = positionSize.toLocaleString();
+        document.getElementById('tb-rp').value = riskPerTradePercent.toFixed(2);
+        document.getElementById('tb-risk').value = risk.toLocaleString();
+        document.getElementById('tb-reward').value = reward.toLocaleString();
         document.getElementById('tb-rrr').value = riskRewardRatio;
         document.getElementById('tb-be').value = breakEven.toFixed(2);
         document.getElementById('tb-ts').value = trailingStop.toFixed(2);
-        
-        // Debug log to verify calculations
-        console.log('Trade Bill Calculated:', {
-            maxRisk, positionSize, risk, reward,
-            quantity, entry, sl, target,
-            riskPerShare, targetPips, stopLossPips
-        });
     }
 
     // 9. Recalculate from Position Size - when user manually changes position size
@@ -1620,8 +1678,8 @@
         // New Max Risk based on user-entered risk %
         const newMaxRisk = Math.round(acSize * (newRiskPercent / 100));
 
-        // New Max Qty = New Max Risk / Risk per Share
-        const newQty = Math.floor(newMaxRisk / riskPerShare);
+        // New Max Qty = even number
+        const newQty = Math.floor(newMaxRisk / riskPerShare / 2) * 2;
 
         // Update quantity and position size
         document.getElementById('tb-qty').value = newQty;
@@ -1652,22 +1710,17 @@
             entry_price: parseFloat(document.getElementById('tb-entry').value),
             stop_loss: parseFloat(document.getElementById('tb-sl').value),
             target_price: parseFloat(document.getElementById('tb-target').value),
-            quantity: parseInt(document.getElementById('tb-qty').value) || 0,  // Whole shares
-            upper_channel: parseFloat(document.getElementById('tb-uc').value) || null,
-            lower_channel: parseFloat(document.getElementById('tb-lc').value) || null,
-            target_pips: parseFloat(document.getElementById('tb-tp').value) || null,
-            stop_loss_pips: parseFloat(document.getElementById('tb-slp').value) || null,
+            quantity: parseInt(document.getElementById('tb-qty').value) || 0,
+            atr: parseFloat(document.getElementById('tb-atr').value) || null,
+            candle_pattern: document.getElementById('tb-candle-pattern').value || null,
+            candle_1_conviction: document.getElementById('tb-candle1-conv').value || null,
+            candle_2_conviction: document.getElementById('tb-candle2-conv').value || null,
             max_risk: parseFloat(maxRiskStr) || null,
             max_qty_for_risk: parseInt(document.getElementById('tb-maxqty').value) || null,
             other_charges: parseFloat(document.getElementById('tb-oc').value) || 0,
             risk_per_share: parseFloat(document.getElementById('tb-rps').value) || null,
             position_size: parseFloat(positionSizeStr) || null,
             risk_percent: parseFloat(document.getElementById('tb-rp').value) || null,
-            channel_height: parseFloat(document.getElementById('tb-ch').value) || null,
-            potential_gain: parseFloat(document.getElementById('tb-pg').value) || null,
-            target_1_1_c: parseFloat(document.getElementById('tb-c').value) || null,
-            target_1_2_b: parseFloat(document.getElementById('tb-b').value) || null,
-            target_1_3_a: parseFloat(document.getElementById('tb-a').value) || null,
             risk_amount_currency: parseFloat(riskStr) || null,
             reward_amount_currency: parseFloat(rewardStr) || null,
             risk_reward_ratio: parseFloat(document.getElementById('tb-rrr').value) || null,
@@ -1704,6 +1757,7 @@
             if (window.currentBillId) {
                 document.getElementById('fill-journal-btn').disabled = false;
                 document.getElementById('gtt-btn').disabled = false;
+                document.getElementById('nrml-btn').disabled = false;
                 document.getElementById('oco-btn').disabled = false;
             }
         } catch(e) {
@@ -1783,7 +1837,7 @@
         }
     }
 
-    // Place OCO Sell Order (Stop Loss + Target)
+    // Place OCO Split Sell (full qty SL + half qty target as separate GTTs)
     async function placeOcoSellOrder() {
         if (!window.currentBillId) {
             toast('Please save the Trade Bill first', 'error');
@@ -1794,25 +1848,31 @@
         const target = parseFloat(document.getElementById('tb-target').value);
         const qty = parseInt(document.getElementById('tb-qty').value);
         const ticker = document.getElementById('tb-ticker').value;
+        const halfQty = Math.floor(qty / 2);
 
         if (!sl || !target || !qty || !ticker) {
             toast('Missing stop loss, target, quantity or ticker', 'error');
             return;
         }
 
-        if (!confirm(`Place OCO SELL order for ${qty} shares of ${ticker}?\n\nStop Loss: ₹${sl}\nTarget: ₹${target}`)) {
+        if (qty < 2) {
+            toast('Quantity must be at least 2 for OCO split', 'error');
+            return;
+        }
+
+        if (!confirm(`Place OCO Split SELL for ${ticker}?\n\n🔴 SL GTT: ${qty} shares at ₹${sl}\n🟢 Target GTT: ${halfQty} shares at ₹${target}`)) {
             return;
         }
 
         try {
-            const result = await fetch('/api/v2/kite/gtt-oco', {
+            const result = await fetch('/api/v2/kite/gtt/oco-split', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
                     symbol: ticker,
                     quantity: qty,
                     stop_loss_trigger: sl,
-                    stop_loss_price: sl * 0.99,  // 1% below trigger for limit order
+                    stop_loss_price: Math.round(sl * 0.99 * 100) / 100,
                     target_trigger: target,
                     target_price: target
                 })
@@ -1820,9 +1880,53 @@
             const data = await result.json();
 
             if (data.success) {
-                toast(`OCO Sell Order placed! ID: ${data.trigger_id}`, 'success');
+                toast(`OCO Split placed! SL: ${qty} shares, Target: ${halfQty} shares`, 'success');
             } else {
-                toast(data.error || 'Failed to place OCO order', 'error');
+                toast(data.sl_gtt?.error || data.target_gtt?.error || 'Failed', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    // Place NRML Order
+    async function placeNrmlOrder() {
+        if (!window.currentBillId) {
+            toast('Please save the Trade Bill first', 'error');
+            return;
+        }
+
+        const entry = parseFloat(document.getElementById('tb-entry').value);
+        const qty = parseInt(document.getElementById('tb-qty').value);
+        const ticker = document.getElementById('tb-ticker').value;
+
+        if (!entry || !qty || !ticker) {
+            toast('Missing entry price, quantity or ticker', 'error');
+            return;
+        }
+
+        if (!confirm(`Place NRML BUY order for ${qty} shares of ${ticker} at ₹${entry}?`)) {
+            return;
+        }
+
+        try {
+            const result = await fetch('/api/v2/kite/orders/nrml', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    symbol: ticker,
+                    transaction_type: 'BUY',
+                    quantity: qty,
+                    price: entry,
+                    order_type: 'LIMIT'
+                })
+            });
+            const data = await result.json();
+
+            if (data.success) {
+                toast(`NRML Order placed! ID: ${data.order_id}`, 'success');
+            } else {
+                toast(data.error || 'Failed to place order', 'error');
             }
         } catch(e) {
             toast('Error: ' + e.message, 'error');
@@ -2007,12 +2111,18 @@
                             </div>
                         </div>
 
-                        <!-- Risk -->
+                        <!-- Risk (Pyramiding Model) -->
                         <div class="border border-red-600/30 rounded p-3 space-y-2">
-                            <h4 class="text-sm font-bold text-red-400 border-b border-gray-600 pb-1">Risk</h4>
+                            <h4 class="text-sm font-bold text-red-400 border-b border-gray-600 pb-1">Risk (Pyramiding)</h4>
                             <div class="grid grid-cols-1 gap-2 text-xs">
+                                <div><label class="text-gray-500">Initial Stop Loss <span class="text-gray-600">(static)</span></label><input type="number" id="tj-initialsl" value="${j.initial_stop_loss||j.stop_loss||''}" step="0.01" class="w-full px-2 py-1 bg-red-900/30 border border-red-600 rounded font-mono" readonly></div>
+                                <div><label class="text-gray-500">Trailing Stop</label>
+                                    <div class="flex gap-1">
+                                        <input type="number" id="tj-trailing" value="${j.trailing_stop||''}" step="0.01" class="flex-1 px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono">
+                                        <button onclick="updateTrailingStop(${j.id})" class="px-2 py-1 bg-yellow-600 rounded hover:bg-yellow-700 text-xs" title="Update trailing stop">↑</button>
+                                    </div>
+                                </div>
                                 <div><label class="text-gray-500">Potential Loss</label><input type="number" id="tj-potloss" value="${j.potential_loss||''}" class="w-full px-2 py-1 bg-red-900/20 border border-gray-600 rounded font-mono" readonly></div>
-                                <div><label class="text-gray-500">Trailing Stop</label><input type="number" id="tj-trailing" value="${j.trailing_stop||''}" step="0.01" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
                                 <div><label class="text-gray-500">New Target</label><input type="number" id="tj-newtarget" value="${j.new_target||''}" step="0.01" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
                             </div>
                         </div>
@@ -2256,6 +2366,25 @@
         window.currentJournalId = null;
         currentJournal = null;
         render();
+    }
+
+    async function updateTrailingStop(journalId) {
+        const newTrailing = parseFloat(document.getElementById('tj-trailing').value);
+        if (!newTrailing) { toast('Enter trailing stop value', 'error'); return; }
+        try {
+            const resp = await fetch(`/api/v2/trade-journal/${journalId}/trailing-stop`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ trailing_stop: newTrailing })
+            });
+            const data = await resp.json();
+            if (data.success) {
+                toast(`Trailing stop updated to ₹${newTrailing.toFixed(2)}`, 'success');
+                await render();
+            } else {
+                toast(data.error || 'Failed to update', 'error');
+            }
+        } catch(e) { toast('Error: ' + e.message, 'error'); }
     }
 
     async function saveJournal() {
@@ -2645,8 +2774,20 @@
 
     // ========== TRADE LOG ==========
     async function tradeLogView() {
-        const strategies = ['SE - Canon', 'SE - White Marubozu', 'EL - Daily Swing', 'EL - False Breakout', 'EL - LC Bounce', 'CI - Trending Stocks'];
-        const mistakes = ['Tight Stop Loss', 'Entered Early', 'Entered Late', 'FOMO', 'Revenge Trading', 'Stock In News', 'Rule Deviation', 'Staying Long'];
+        // Load strategies and mistakes dynamically from API
+        let strategies = [];
+        let mistakes = [];
+        try {
+            const [stratResp, mistResp] = await Promise.all([
+                fetch('/api/v2/strategies/global').then(r => r.json()),
+                fetch('/api/v2/mistakes').then(r => r.json())
+            ]);
+            strategies = stratResp.map(s => s.name);
+            mistakes = mistResp.map(m => m.name);
+        } catch(e) {
+            strategies = ['EL - Elder System'];
+            mistakes = ['Rule Deviation'];
+        }
         const s = settings[0] || {trading_capital: 500000};
         const sym = '₹';  // Always INR for NSE
         
@@ -2864,6 +3005,263 @@
         } catch(e) {
             return `<div class="text-red-400">Error: ${e.message}</div>`;
         }
+    }
+
+    // ========== POSITIONS & HOLDINGS ==========
+    async function positionsHoldingsView() {
+        const sym = '₹';
+        let data = { positions: [], holdings: [], summary: {} };
+
+        try {
+            const resp = await fetch('/api/v2/portfolio/context');
+            data = await resp.json();
+        } catch(e) {
+            return `<div class="text-center py-20"><p class="text-red-400">Error: ${e.message}</p></div>`;
+        }
+
+        const s = data.summary || {};
+
+        return `
+            <div class="space-y-6">
+                <div class="flex justify-between items-center">
+                    <h2 class="text-2xl font-bold">🏦 Portfolio</h2>
+                    <button onclick="syncOrders()" class="px-4 py-2 bg-blue-600 rounded-lg hover:bg-blue-700">🔄 Sync from Kite</button>
+                </div>
+
+                <!-- Portfolio Summary -->
+                <div class="grid grid-cols-5 gap-3">
+                    <div class="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3 text-center">
+                        <div class="text-lg font-bold text-blue-400">${sym}${(s.trading_capital || 0).toLocaleString()}</div>
+                        <div class="text-xs text-gray-400">Trading Capital</div>
+                    </div>
+                    <div class="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-center">
+                        <div class="text-lg font-bold text-red-400">${sym}${(s.total_locked || 0).toLocaleString()}</div>
+                        <div class="text-xs text-gray-400">Capital Locked</div>
+                    </div>
+                    <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-3 text-center">
+                        <div class="text-lg font-bold text-green-400">${sym}${(s.available_capital || 0).toLocaleString()}</div>
+                        <div class="text-xs text-gray-400">Available</div>
+                    </div>
+                    <div class="bg-purple-500/10 border border-purple-500/30 rounded-lg p-3 text-center">
+                        <div class="text-lg font-bold ${(s.positions_pnl||0) >= 0 ? 'text-green-400' : 'text-red-400'}">${sym}${(s.positions_pnl||0).toLocaleString()}</div>
+                        <div class="text-xs text-gray-400">Positions P/L</div>
+                    </div>
+                    <div class="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 text-center">
+                        <div class="text-lg font-bold text-yellow-400">${(s.capital_used_pct || 0).toFixed(1)}%</div>
+                        <div class="text-xs text-gray-400">Capital Used</div>
+                    </div>
+                </div>
+
+                <!-- Positions -->
+                <div class="bg-[#111827] rounded-xl border border-blue-500/30 overflow-hidden">
+                    <div class="px-4 py-2 bg-blue-500/10 border-b border-blue-500/30 flex justify-between items-center">
+                        <h3 class="font-bold text-blue-400">📊 Open Positions (${data.positions.length})</h3>
+                        <span class="text-xs text-gray-400">Value: ${sym}${(s.positions_value || 0).toLocaleString()}</span>
+                    </div>
+                    ${data.positions.length > 0 ? `
+                    <table class="w-full text-xs">
+                        <thead class="bg-[#1f2937]"><tr>
+                            <th class="p-2 text-left text-gray-400">Symbol</th>
+                            <th class="p-2 text-left text-gray-400">Product</th>
+                            <th class="p-2 text-right text-gray-400">Qty</th>
+                            <th class="p-2 text-right text-gray-400">Avg Price</th>
+                            <th class="p-2 text-right text-gray-400">LTP</th>
+                            <th class="p-2 text-right text-gray-400">P/L</th>
+                            <th class="p-2 text-right text-gray-400">P/L %</th>
+                        </tr></thead>
+                        <tbody>
+                            ${data.positions.map(p => {
+                                const pnlPct = p.average_price ? ((p.last_price - p.average_price) / p.average_price * 100) : 0;
+                                return `<tr class="border-t border-gray-700/50">
+                                    <td class="p-2 font-mono font-bold text-blue-400">${p.tradingsymbol}</td>
+                                    <td class="p-2 text-xs">${p.product || '-'}</td>
+                                    <td class="p-2 text-right font-mono">${p.quantity}</td>
+                                    <td class="p-2 text-right font-mono">${sym}${(p.average_price||0).toFixed(2)}</td>
+                                    <td class="p-2 text-right font-mono">${sym}${(p.last_price||0).toFixed(2)}</td>
+                                    <td class="p-2 text-right font-mono ${(p.pnl||0) >= 0 ? 'text-green-400' : 'text-red-400'}">${sym}${(p.pnl||0).toFixed(2)}</td>
+                                    <td class="p-2 text-right font-mono ${pnlPct >= 0 ? 'text-green-400' : 'text-red-400'}">${pnlPct.toFixed(2)}%</td>
+                                </tr>`;
+                            }).join('')}
+                        </tbody>
+                    </table>` : '<p class="p-4 text-gray-500 text-center">No open positions</p>'}
+                </div>
+
+                <!-- Holdings -->
+                <div class="bg-[#111827] rounded-xl border border-green-500/30 overflow-hidden">
+                    <div class="px-4 py-2 bg-green-500/10 border-b border-green-500/30 flex justify-between items-center">
+                        <h3 class="font-bold text-green-400">🏦 Holdings (${data.holdings.length})</h3>
+                        <span class="text-xs text-gray-400">Value: ${sym}${(s.holdings_value || 0).toLocaleString()} | P/L: ${sym}${(s.holdings_pnl || 0).toLocaleString()}</span>
+                    </div>
+                    ${data.holdings.length > 0 ? `
+                    <table class="w-full text-xs">
+                        <thead class="bg-[#1f2937]"><tr>
+                            <th class="p-2 text-left text-gray-400">Symbol</th>
+                            <th class="p-2 text-right text-gray-400">Qty</th>
+                            <th class="p-2 text-right text-gray-400">Avg Price</th>
+                            <th class="p-2 text-right text-gray-400">LTP</th>
+                            <th class="p-2 text-right text-gray-400">P/L</th>
+                            <th class="p-2 text-right text-gray-400">Day Chg</th>
+                            <th class="p-2 text-right text-gray-400">Day %</th>
+                        </tr></thead>
+                        <tbody>
+                            ${data.holdings.map(h => `
+                                <tr class="border-t border-gray-700/50">
+                                    <td class="p-2 font-mono font-bold text-green-400">${h.tradingsymbol}</td>
+                                    <td class="p-2 text-right font-mono">${h.quantity}</td>
+                                    <td class="p-2 text-right font-mono">${sym}${(h.average_price||0).toFixed(2)}</td>
+                                    <td class="p-2 text-right font-mono">${sym}${(h.last_price||0).toFixed(2)}</td>
+                                    <td class="p-2 text-right font-mono ${(h.pnl||0) >= 0 ? 'text-green-400' : 'text-red-400'}">${sym}${(h.pnl||0).toFixed(2)}</td>
+                                    <td class="p-2 text-right font-mono ${(h.day_change||0) >= 0 ? 'text-green-400' : 'text-red-400'}">${sym}${(h.day_change||0).toFixed(2)}</td>
+                                    <td class="p-2 text-right font-mono ${(h.day_change_percentage||0) >= 0 ? 'text-green-400' : 'text-red-400'}">${(h.day_change_percentage||0).toFixed(2)}%</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>` : '<p class="p-4 text-gray-500 text-center">No holdings</p>'}
+                </div>
+            </div>
+        `;
+    }
+
+    // ========== ORDERS SCREEN ==========
+    async function ordersView() {
+        const sym = '₹';
+        let data = { pending: [], executed: [], other: [], gtt_orders: [], summary: {} };
+
+        try {
+            const resp = await fetch('/api/v2/orders/history');
+            data = await resp.json();
+        } catch(e) {
+            return `<div class="text-center py-20"><p class="text-red-400">Error: ${e.message}</p><p class="text-gray-500 mt-2">Sync orders from Settings first.</p></div>`;
+        }
+
+        function orderRow(o) {
+            const isBuy = o.transaction_type === 'BUY';
+            const statusColor = (o.status||'').includes('COMPLETE') ? 'text-green-400' :
+                (o.status||'').includes('OPEN') || (o.status||'').includes('PENDING') ? 'text-blue-400' :
+                (o.status||'').includes('CANCEL') ? 'text-gray-400' : 'text-red-400';
+            return `
+                <tr class="border-t border-gray-700/50 hover:bg-[#1f2937]/50">
+                    <td class="p-2 font-mono text-xs">${o.placed_at ? o.placed_at.split('T')[0] : '-'}</td>
+                    <td class="p-2 font-mono font-bold text-blue-400">${o.tradingsymbol || '-'}</td>
+                    <td class="p-2 text-center"><span class="${isBuy ? 'text-green-400' : 'text-red-400'}">${o.transaction_type || '-'}</span></td>
+                    <td class="p-2 font-mono text-xs">${o.order_type || '-'}</td>
+                    <td class="p-2 text-right font-mono">${o.quantity || '-'}</td>
+                    <td class="p-2 text-right font-mono">${o.filled_quantity || 0}</td>
+                    <td class="p-2 text-right font-mono">${o.price ? sym + parseFloat(o.price).toFixed(2) : '-'}</td>
+                    <td class="p-2 text-right font-mono">${o.average_price ? sym + parseFloat(o.average_price).toFixed(2) : '-'}</td>
+                    <td class="p-2 text-center"><span class="px-2 py-0.5 rounded text-xs ${statusColor}">${o.status || '-'}</span></td>
+                </tr>`;
+        }
+
+        return `
+            <div class="space-y-6">
+                <div class="flex justify-between items-center">
+                    <h2 class="text-2xl font-bold">📦 Orders</h2>
+                    <div class="flex gap-2">
+                        <button onclick="syncOrders()" class="px-4 py-2 bg-blue-600 rounded-lg hover:bg-blue-700">🔄 Sync from Kite</button>
+                    </div>
+                </div>
+
+                <!-- Summary -->
+                <div class="grid grid-cols-4 gap-3">
+                    <div class="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3 text-center">
+                        <div class="text-xl font-bold text-blue-400">${data.summary.pending_count || 0}</div>
+                        <div class="text-xs text-gray-400">Pending</div>
+                    </div>
+                    <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-3 text-center">
+                        <div class="text-xl font-bold text-green-400">${data.summary.executed_count || 0}</div>
+                        <div class="text-xs text-gray-400">Executed</div>
+                    </div>
+                    <div class="bg-orange-500/10 border border-orange-500/30 rounded-lg p-3 text-center">
+                        <div class="text-xl font-bold text-orange-400">${data.summary.gtt_count || 0}</div>
+                        <div class="text-xs text-gray-400">GTT Active</div>
+                    </div>
+                    <div class="bg-gray-500/10 border border-gray-500/30 rounded-lg p-3 text-center">
+                        <div class="text-xl font-bold text-gray-400">${data.summary.total || 0}</div>
+                        <div class="text-xs text-gray-400">Total Orders</div>
+                    </div>
+                </div>
+
+                <!-- Pending Orders -->
+                ${data.pending.length > 0 ? `
+                <div class="bg-[#111827] rounded-xl border border-blue-500/30 overflow-hidden">
+                    <div class="px-4 py-2 bg-blue-500/10 border-b border-blue-500/30"><h3 class="font-bold text-blue-400">🔵 Pending Orders (${data.pending.length})</h3></div>
+                    <table class="w-full text-xs"><thead class="bg-[#1f2937]"><tr>
+                        <th class="p-2 text-left text-gray-400">Date</th><th class="p-2 text-left text-gray-400">Symbol</th>
+                        <th class="p-2 text-center text-gray-400">Side</th><th class="p-2 text-left text-gray-400">Type</th>
+                        <th class="p-2 text-right text-gray-400">Qty</th><th class="p-2 text-right text-gray-400">Filled</th>
+                        <th class="p-2 text-right text-gray-400">Price</th><th class="p-2 text-right text-gray-400">Avg</th>
+                        <th class="p-2 text-center text-gray-400">Status</th>
+                    </tr></thead><tbody>${data.pending.map(orderRow).join('')}</tbody></table>
+                </div>` : ''}
+
+                <!-- Executed Orders -->
+                ${data.executed.length > 0 ? `
+                <div class="bg-[#111827] rounded-xl border border-green-500/30 overflow-hidden">
+                    <div class="px-4 py-2 bg-green-500/10 border-b border-green-500/30"><h3 class="font-bold text-green-400">🟢 Executed Orders (${data.executed.length})</h3></div>
+                    <table class="w-full text-xs"><thead class="bg-[#1f2937]"><tr>
+                        <th class="p-2 text-left text-gray-400">Date</th><th class="p-2 text-left text-gray-400">Symbol</th>
+                        <th class="p-2 text-center text-gray-400">Side</th><th class="p-2 text-left text-gray-400">Type</th>
+                        <th class="p-2 text-right text-gray-400">Qty</th><th class="p-2 text-right text-gray-400">Filled</th>
+                        <th class="p-2 text-right text-gray-400">Price</th><th class="p-2 text-right text-gray-400">Avg</th>
+                        <th class="p-2 text-center text-gray-400">Status</th>
+                    </tr></thead><tbody>${data.executed.map(orderRow).join('')}</tbody></table>
+                </div>` : ''}
+
+                <!-- GTT Orders -->
+                ${data.gtt_orders.length > 0 ? `
+                <div class="bg-[#111827] rounded-xl border border-orange-500/30 overflow-hidden">
+                    <div class="px-4 py-2 bg-orange-500/10 border-b border-orange-500/30"><h3 class="font-bold text-orange-400">🟠 GTT Orders (${data.gtt_orders.length})</h3></div>
+                    <div class="p-4 space-y-2">
+                        ${data.gtt_orders.map(g => `
+                            <div class="flex items-center justify-between bg-[#1f2937] p-3 rounded-lg">
+                                <div>
+                                    <span class="font-mono font-bold text-blue-400">${g.tradingsymbol || g.symbol || '-'}</span>
+                                    <span class="text-xs text-gray-500 ml-2">${g.trigger_type || 'single'}</span>
+                                </div>
+                                <div class="text-xs text-gray-400">
+                                    Qty: ${g.quantity || '-'} | Trigger: ${sym}${g.trigger_price || g.trigger_values?.[0] || '-'}
+                                </div>
+                                <span class="px-2 py-0.5 rounded text-xs bg-orange-500/20 text-orange-400">${g.status || 'ACTIVE'}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>` : ''}
+
+                <!-- Other/Cancelled Orders -->
+                ${data.other.length > 0 ? `
+                <div class="bg-[#111827] rounded-xl border border-gray-700 overflow-hidden">
+                    <div class="px-4 py-2 bg-gray-500/10 border-b border-gray-700"><h3 class="font-bold text-gray-400">Other Orders (${data.other.length})</h3></div>
+                    <table class="w-full text-xs"><thead class="bg-[#1f2937]"><tr>
+                        <th class="p-2 text-left text-gray-400">Date</th><th class="p-2 text-left text-gray-400">Symbol</th>
+                        <th class="p-2 text-center text-gray-400">Side</th><th class="p-2 text-left text-gray-400">Type</th>
+                        <th class="p-2 text-right text-gray-400">Qty</th><th class="p-2 text-right text-gray-400">Filled</th>
+                        <th class="p-2 text-right text-gray-400">Price</th><th class="p-2 text-right text-gray-400">Avg</th>
+                        <th class="p-2 text-center text-gray-400">Status</th>
+                    </tr></thead><tbody>${data.other.map(orderRow).join('')}</tbody></table>
+                </div>` : ''}
+
+                ${(!data.pending.length && !data.executed.length && !data.gtt_orders.length) ? `
+                <div class="text-center py-20">
+                    <p class="text-gray-500 text-lg">No orders found</p>
+                    <p class="text-gray-600 mt-2">Click "Sync from Kite" to fetch your orders</p>
+                </div>` : ''}
+            </div>
+        `;
+    }
+
+    async function syncOrders() {
+        try {
+            toast('Syncing orders from Kite...', 'info');
+            const resp = await fetch('/api/v2/sync/all', { method: 'POST', headers: {'Content-Type': 'application/json'} });
+            const data = await resp.json();
+            if (data.success) {
+                toast(`Synced: ${data.orders || 0} orders, ${data.positions || 0} positions, ${data.holdings || 0} holdings`, 'success');
+                await render();
+            } else {
+                toast(data.error || 'Sync failed', 'error');
+            }
+        } catch(e) { toast('Error: ' + e.message, 'error'); }
     }
 
     // ========== P&L TRACKER ==========
@@ -3665,7 +4063,7 @@
 
                     <div class="grid grid-cols-2 gap-4">
                         <div><label class="text-sm text-gray-400">Trading Capital (₹)</label><input type="number" id="s-capital" value="${s.trading_capital}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
-                        <div><label class="text-sm text-gray-400">Broker</label><input id="s-broker" value="${s.broker||'Zerodha'}" disabled class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg text-gray-500"></div>
+                        <div><label class="text-sm text-gray-400">Broker</label><input id="s-broker" value="${s.broker||'Zerodha'}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg"></div>
                     </div>
 
                     <div class="grid grid-cols-3 gap-4">
@@ -3706,6 +4104,9 @@
                         <button id="load-data-btn" onclick="loadMarketData()" class="flex-1 py-3 bg-green-600 rounded-lg font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed">
                             📥 Load Market Data
                         </button>
+                        <button id="load-instruments-btn" onclick="loadNifty500Instruments()" class="flex-1 py-3 bg-blue-600 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
+                            📋 Load NIFTY 500 Instruments
+                        </button>
                     </div>
 
                     <div id="load-progress" class="hidden">
@@ -3716,6 +4117,32 @@
                             </svg>
                             <span id="load-progress-text">Loading data...</span>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Mistakes Configuration -->
+                <div class="bg-[#111827] rounded-xl p-6 border border-yellow-500/30 space-y-4">
+                    <div class="flex justify-between items-center">
+                        <h3 class="font-bold text-yellow-400 flex items-center gap-2"><span>⚠️</span> Mistakes Configuration</h3>
+                    </div>
+                    <p class="text-sm text-gray-500">Configure common trading mistakes for the Trade Log.</p>
+                    <div id="mistakes-list" class="space-y-2"></div>
+                    <div class="flex gap-2">
+                        <input id="new-mistake-name" placeholder="New mistake name..." class="flex-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg text-sm">
+                        <button onclick="addMistake()" class="px-4 py-2 bg-yellow-600 rounded-lg hover:bg-yellow-700 text-sm">+ Add</button>
+                    </div>
+                </div>
+
+                <!-- Strategies Configuration -->
+                <div class="bg-[#111827] rounded-xl p-6 border border-purple-500/30 space-y-4">
+                    <div class="flex justify-between items-center">
+                        <h3 class="font-bold text-purple-400 flex items-center gap-2"><span>📐</span> Strategies Configuration</h3>
+                    </div>
+                    <p class="text-sm text-gray-500">Configure global trading strategies for the Trade Log.</p>
+                    <div id="strategies-list" class="space-y-2"></div>
+                    <div class="flex gap-2">
+                        <input id="new-strategy-name" placeholder="New strategy name..." class="flex-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg text-sm">
+                        <button onclick="addStrategy()" class="px-4 py-2 bg-purple-600 rounded-lg hover:bg-purple-700 text-sm">+ Add</button>
                     </div>
                 </div>
 
@@ -3825,6 +4252,110 @@
         }
     }
 
+    async function loadNifty500Instruments() {
+        const btn = document.getElementById('load-instruments-btn');
+        btn.disabled = true;
+        btn.textContent = '⏳ Loading...';
+        try {
+            const resp = await fetch('/api/v2/instruments/load', { method: 'POST', headers: {'Content-Type': 'application/json'} });
+            const result = await resp.json();
+            if (result.success) {
+                toast(`Loaded ${result.loaded} NSE instruments!`, 'success');
+            } else {
+                toast(result.error || 'Failed to load instruments', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '📋 Load NIFTY 500 Instruments';
+        }
+    }
+
+    // ========== MISTAKES CRUD ==========
+    async function loadMistakesList() {
+        try {
+            const resp = await fetch('/api/v2/mistakes');
+            const mistakes = await resp.json();
+            const el = document.getElementById('mistakes-list');
+            if (!el) return;
+            el.innerHTML = mistakes.map(m => `
+                <div class="flex items-center justify-between bg-[#1f2937] px-3 py-2 rounded-lg">
+                    <div>
+                        <span class="text-sm font-medium">${m.name}</span>
+                        ${m.description ? `<span class="text-xs text-gray-500 ml-2">${m.description}</span>` : ''}
+                    </div>
+                    <button onclick="removeMistake(${m.id})" class="text-red-400 hover:text-red-300 text-sm px-2" title="Remove">✕</button>
+                </div>
+            `).join('');
+        } catch(e) { console.error('Error loading mistakes:', e); }
+    }
+
+    async function addMistake() {
+        const nameEl = document.getElementById('new-mistake-name');
+        const name = nameEl.value.trim();
+        if (!name) return toast('Enter a mistake name', 'error');
+        try {
+            const resp = await fetch('/api/v2/mistakes', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ name })
+            });
+            const result = await resp.json();
+            if (result.success) { nameEl.value = ''; await loadMistakesList(); toast('Mistake added', 'success'); }
+            else toast(result.error || 'Failed', 'error');
+        } catch(e) { toast('Error: ' + e.message, 'error'); }
+    }
+
+    async function removeMistake(id) {
+        try {
+            await fetch(`/api/v2/mistakes/${id}`, { method: 'DELETE' });
+            await loadMistakesList();
+            toast('Mistake removed', 'success');
+        } catch(e) { toast('Error: ' + e.message, 'error'); }
+    }
+
+    // ========== STRATEGIES CRUD ==========
+    async function loadStrategiesList() {
+        try {
+            const resp = await fetch('/api/v2/strategies/global');
+            const strategies = await resp.json();
+            const el = document.getElementById('strategies-list');
+            if (!el) return;
+            el.innerHTML = strategies.map(s => `
+                <div class="flex items-center justify-between bg-[#1f2937] px-3 py-2 rounded-lg">
+                    <div>
+                        <span class="text-sm font-medium">${s.name}</span>
+                        ${s.description ? `<span class="text-xs text-gray-500 ml-2">${s.description}</span>` : ''}
+                    </div>
+                    <button onclick="removeStrategy(${s.id})" class="text-red-400 hover:text-red-300 text-sm px-2" title="Remove">✕</button>
+                </div>
+            `).join('');
+        } catch(e) { console.error('Error loading strategies:', e); }
+    }
+
+    async function addStrategy() {
+        const nameEl = document.getElementById('new-strategy-name');
+        const name = nameEl.value.trim();
+        if (!name) return toast('Enter a strategy name', 'error');
+        try {
+            const resp = await fetch('/api/v2/strategies/global', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ name })
+            });
+            const result = await resp.json();
+            if (result.success) { nameEl.value = ''; await loadStrategiesList(); toast('Strategy added', 'success'); }
+            else toast(result.error || 'Failed', 'error');
+        } catch(e) { toast('Error: ' + e.message, 'error'); }
+    }
+
+    async function removeStrategy(id) {
+        try {
+            await fetch(`/api/v2/strategies/global/${id}`, { method: 'DELETE' });
+            await loadStrategiesList();
+            toast('Strategy removed', 'success');
+        } catch(e) { toast('Error: ' + e.message, 'error'); }
+    }
+
     async function saveKiteCredentials() {
         const apiKey = document.getElementById('s-kite-api-key').value.trim();
         const apiSecret = document.getElementById('s-kite-api-secret').value.trim();
@@ -3853,6 +4384,7 @@
         const data = {
             account_name: document.getElementById('s-name').value,
             trading_capital: parseFloat(document.getElementById('s-capital').value),
+            broker: document.getElementById('s-broker').value,
             risk_per_trade: parseFloat(document.getElementById('s-risk').value),
             max_monthly_drawdown: parseFloat(document.getElementById('s-dd').value),
             target_rr: parseFloat(document.getElementById('s-rr').value),
