@@ -47,8 +47,17 @@ def get_db():
 
 
 def get_user_id():
-    """Get current user ID (default to 1 for now)"""
-    return getattr(g, 'user_id', 1)
+    """Get current user ID (defaults to first user in database)"""
+    if hasattr(g, 'user_id'):
+        return g.user_id
+
+    # Get first user from database
+    db = get_db()
+    user = db.execute('SELECT TOP 1 id FROM users ORDER BY id').fetchone()
+    if user:
+        g.user_id = user['id']
+        return user['id']
+    return 1  # Fallback
 
 
 @api.teardown_app_request
@@ -879,6 +888,7 @@ def calculate_trade_metrics():
 def get_account_info():
     """Get account information and metrics"""
     user_id = get_user_id()
+    print(f"[DEBUG] GET /account/info - user_id: {user_id}")
     db = get_db()
 
     # Get account settings
@@ -887,8 +897,25 @@ def get_account_info():
         WHERE user_id = ?
     ''', (user_id,)).fetchone()
 
+    print(f"[DEBUG] Account found: {account is not None}")
+
     if not account:
-        return jsonify({'error': 'Account not found'}), 404
+        print(f"[DEBUG] Creating default account for user_id: {user_id}")
+        # Create default account settings if none exist
+        db.execute('''
+            INSERT INTO account_settings
+            (user_id, account_name, market, trading_capital, risk_per_trade,
+             max_monthly_drawdown, target_rr, max_open_positions, currency, broker)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (user_id, 'Trading Account', 'IN', 500000, 2.0, 6.0, 2.0, 5, 'INR', 'Zerodha'))
+        db.commit()
+
+        # Fetch the newly created record
+        account = db.execute('''
+            SELECT * FROM account_settings 
+            WHERE user_id = ?
+        ''', (user_id,)).fetchone()
+        print(f"[DEBUG] After insert, account found: {account is not None}")
 
     account = dict(account)
 
@@ -944,16 +971,46 @@ def update_account_info():
     if not update_data:
         return jsonify({'success': False, 'message': 'No valid fields to update'}), 400
 
-    set_clause = ', '.join([f'{k} = ?' for k in update_data.keys()])
-    values = tuple(update_data.values())
+    # Check if account_settings exists for this user
+    existing = db.execute('''
+        SELECT id FROM account_settings WHERE user_id = ?
+    ''', (user_id,)).fetchone()
 
-    db.execute(f'''
-        UPDATE account_settings
-        SET {set_clause}, updated_at = GETDATE()
-        WHERE user_id = ?
-    ''', (*values, user_id))
+    if existing:
+        # Update existing record
+        set_clause = ', '.join([f'{k} = ?' for k in update_data.keys()])
+        values = tuple(update_data.values())
+        db.execute(f'''
+            UPDATE account_settings
+            SET {set_clause}, updated_at = GETDATE()
+            WHERE user_id = ?
+        ''', (*values, user_id))
+    else:
+        # Insert new record with defaults
+        defaults = {
+            'account_name': 'Trading Account',
+            'market': 'IN',
+            'trading_capital': 500000,
+            'risk_per_trade': 2.0,
+            'max_monthly_drawdown': 6.0,
+            'target_rr': 2.0,
+            'max_open_positions': 5,
+            'currency': 'INR',
+            'broker': 'Zerodha'
+        }
+        # Merge with provided data
+        insert_data = {**defaults, **update_data, 'user_id': user_id}
+
+        columns = ', '.join(insert_data.keys())
+        placeholders = ', '.join(['?' for _ in insert_data])
+        values = tuple(insert_data.values())
+
+        db.execute(f'''
+            INSERT INTO account_settings ({columns})
+            VALUES ({placeholders})
+        ''', values)
+
     db.commit()
-
     return jsonify({'success': True, 'message': 'Account information updated'})
 
 

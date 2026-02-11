@@ -61,7 +61,17 @@ def get_db():
 
 
 def get_user_id():
-    return getattr(g, 'user_id', 1)
+    """Get current user ID (defaults to first user in database)"""
+    if hasattr(g, 'user_id'):
+        return g.user_id
+
+    # Get first user from database
+    db = get_db()
+    user = db.execute('SELECT TOP 1 id FROM users ORDER BY id').fetchone()
+    if user:
+        g.user_id = user['id']
+        return user['id']
+    return 1  # Fallback
 
 
 @api_v2.teardown_app_request
@@ -132,7 +142,8 @@ def load_market_data():
             full_symbol = f"{exchange}:{tradingsymbol}"
 
             # Fetch 2 years of historical data
-            hist = client.get_historical_data(full_symbol, interval='day', days=730)
+            hist = client.get_historical_data(
+                full_symbol, interval='day', days=730)
 
             if hist is None or hist.empty or len(hist) < 30:
                 symbols_failed.append(symbol)
@@ -152,9 +163,11 @@ def load_market_data():
                         VALUES (?, ?, ?, ?, ?, ?, ?);
                 ''', (
                     full_symbol, date_str,
-                    float(row['Open']), float(row['High']), float(row['Low']), float(row['Close']), int(row['Volume']),
+                    float(row['Open']), float(row['High']), float(
+                        row['Low']), float(row['Close']), int(row['Volume']),
                     full_symbol, date_str,
-                    float(row['Open']), float(row['High']), float(row['Low']), float(row['Close']), int(row['Volume'])
+                    float(row['Open']), float(row['High']), float(
+                        row['Low']), float(row['Close']), int(row['Volume'])
                 ))
 
             # Update sync record
@@ -341,8 +354,10 @@ def get_stock_from_cache(symbol):
     # Calculate Keltner Channel extensions (±3 ATR)
     kc_middle = indicators['kc_middle'] or ohlcv['close']
     atr = indicators['atr'] or 0
-    kc_upper_3 = round(kc_middle + 3 * atr, 2) if atr else ohlcv['close'] * 1.03
-    kc_lower_3 = round(kc_middle - 3 * atr, 2) if atr else ohlcv['close'] * 0.97
+    kc_upper_3 = round(kc_middle + 3 * atr,
+                       2) if atr else ohlcv['close'] * 1.03
+    kc_lower_3 = round(kc_middle - 3 * atr,
+                       2) if atr else ohlcv['close'] * 0.97
 
     # Suggested trade levels
     entry_price = indicators['ema_22'] or ohlcv['close']
@@ -1184,7 +1199,8 @@ def create_trade_journal():
     ))
     db.commit()
 
-    journal_id = int(db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
+    journal_id = int(db.execute(
+        'SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
     return jsonify({'success': True, 'id': journal_id}), 201
 
 
@@ -1324,7 +1340,8 @@ def add_trade_entry(journal_id):
     ))
     db.commit()
 
-    entry_id = int(db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
+    entry_id = int(db.execute(
+        'SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
 
     # Update journal totals
     _recalculate_journal_totals(db, journal_id)
@@ -1481,7 +1498,8 @@ def create_journal_from_bill(bill_id):
     ))
     db.commit()
 
-    journal_id = int(db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
+    journal_id = int(db.execute(
+        'SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
 
     # Update trade bill to mark journal entered
     db.execute('''
@@ -1511,11 +1529,13 @@ def _recalculate_journal_totals(db, journal_id):
     remaining_qty = total_entry_shares - total_exit_shares
 
     # Weighted average entry
-    total_entry_value = sum((e['filled_price'] or e['order_price'] or 0) * (e['quantity'] or 0) for e in entries)
+    total_entry_value = sum(
+        (e['filled_price'] or e['order_price'] or 0) * (e['quantity'] or 0) for e in entries)
     avg_entry = total_entry_value / total_entry_shares if total_entry_shares > 0 else 0
 
     # Weighted average exit
-    total_exit_value = sum((e['filled_price'] or e['order_price'] or 0) * (e['quantity'] or 0) for e in exits)
+    total_exit_value = sum(
+        (e['filled_price'] or e['order_price'] or 0) * (e['quantity'] or 0) for e in exits)
     avg_exit = total_exit_value / total_exit_shares if total_exit_shares > 0 else 0
 
     # First entry and last exit dates
@@ -1523,8 +1543,10 @@ def _recalculate_journal_totals(db, journal_id):
     last_exit = exits[-1]['exit_datetime'] if exits else None
 
     # High/Low during trade
-    all_highs = [e['day_high'] for e in entries if e['day_high']] + [e['day_high'] for e in exits if e['day_high']]
-    all_lows = [e['day_low'] for e in entries if e['day_low']] + [e['day_low'] for e in exits if e['day_low']]
+    all_highs = [e['day_high'] for e in entries if e['day_high']
+                 ] + [e['day_high'] for e in exits if e['day_high']]
+    all_lows = [e['day_low'] for e in entries if e['day_low']] + \
+        [e['day_low'] for e in exits if e['day_low']]
     high_during = max(all_highs) if all_highs else None
     low_during = min(all_lows) if all_lows else None
 
@@ -1533,10 +1555,12 @@ def _recalculate_journal_totals(db, journal_id):
     if total_exit_shares > 0 and avg_exit > 0 and avg_entry > 0:
         gain_loss_amount = (avg_exit - avg_entry) * total_exit_shares
         # Subtract commissions
-        total_commission = sum((e['commission'] or 0) for e in entries) + sum((e['commission'] or 0) for e in exits)
+        total_commission = sum((e['commission'] or 0)
+                               for e in entries) + sum((e['commission'] or 0) for e in exits)
         gain_loss_amount -= total_commission
 
-    gain_loss_percent = (gain_loss_amount / (avg_entry * total_exit_shares) * 100) if (avg_entry and total_exit_shares) else 0
+    gain_loss_percent = (gain_loss_amount / (avg_entry * total_exit_shares)
+                         * 100) if (avg_entry and total_exit_shares) else 0
 
     # Status
     status = 'closed' if remaining_qty == 0 and total_entry_shares > 0 else 'open'
@@ -2102,7 +2126,8 @@ def sync_all_from_kite():
         try:
             orders = client.orders()
             # Clear old cache for today
-            db.execute("DELETE FROM kite_orders_cache WHERE user_id = ? AND CAST(cached_at AS DATE) = CAST(GETDATE() AS DATE)", (user_id,))
+            db.execute(
+                "DELETE FROM kite_orders_cache WHERE user_id = ? AND CAST(cached_at AS DATE) = CAST(GETDATE() AS DATE)", (user_id,))
 
             for order in orders:
                 db.execute('''
@@ -2113,7 +2138,8 @@ def sync_all_from_kite():
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     user_id, order.get('order_id'), order.get('tradingsymbol'),
-                    order.get('exchange', 'NSE'), order.get('transaction_type'),
+                    order.get('exchange', 'NSE'), order.get(
+                        'transaction_type'),
                     order.get('order_type'), order.get('quantity'),
                     order.get('price', 0), order.get('trigger_price', 0),
                     order.get('status'), order.get('filled_quantity', 0),
@@ -2133,7 +2159,8 @@ def sync_all_from_kite():
             net_positions = positions.get('net', [])
             all_positions = net_positions or day_positions
 
-            db.execute("DELETE FROM kite_positions_cache WHERE user_id = ?", (user_id,))
+            db.execute(
+                "DELETE FROM kite_positions_cache WHERE user_id = ?", (user_id,))
 
             for pos in all_positions:
                 db.execute('''
@@ -2143,7 +2170,8 @@ def sync_all_from_kite():
                      position_data)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
-                    user_id, pos.get('tradingsymbol'), pos.get('exchange', 'NSE'),
+                    user_id, pos.get('tradingsymbol'), pos.get(
+                        'exchange', 'NSE'),
                     pos.get('product'), pos.get('quantity', 0),
                     pos.get('average_price', 0), pos.get('last_price', 0),
                     pos.get('pnl', 0), pos.get('buy_value', 0),
@@ -2158,7 +2186,8 @@ def sync_all_from_kite():
         try:
             holdings = client.holdings()
 
-            db.execute("DELETE FROM kite_holdings_cache WHERE user_id = ?", (user_id,))
+            db.execute(
+                "DELETE FROM kite_holdings_cache WHERE user_id = ?", (user_id,))
 
             for h in holdings:
                 db.execute('''
@@ -2321,7 +2350,8 @@ def update_daily_ohlc():
                 )
 
                 for candle in candles:
-                    candle_date = candle['date'].strftime('%Y-%m-%d') if hasattr(candle['date'], 'strftime') else str(candle['date'])[:10]
+                    candle_date = candle['date'].strftime(
+                        '%Y-%m-%d') if hasattr(candle['date'], 'strftime') else str(candle['date'])[:10]
 
                     db.execute('''
                         MERGE stock_historical_data AS target
