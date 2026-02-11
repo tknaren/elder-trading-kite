@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir /s /b \"C:\\\\Naren\")",
+      "Bash(findstr:*)",
+      "Bash(venv/Scripts/python.exe:*)"
+    ]
+  }
+}
