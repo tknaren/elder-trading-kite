@@ -878,6 +878,16 @@ class Database:
                 ALTER TABLE trade_journal_v2 ADD initial_stop_loss FLOAT
         """)
 
+        # Add strategy and mistake columns to trade_journal_v2
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('trade_journal_v2') AND name = 'strategy')
+                ALTER TABLE trade_journal_v2 ADD strategy NVARCHAR(200)
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('trade_journal_v2') AND name = 'mistake')
+                ALTER TABLE trade_journal_v2 ADD mistake NVARCHAR(200)
+        """)
+
         # Fix cache table schemas - add missing columns
         conn.execute("""
             IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('kite_orders_cache') AND name = 'user_id')

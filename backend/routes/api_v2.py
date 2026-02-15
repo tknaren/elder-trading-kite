@@ -1313,8 +1313,8 @@ def create_trade_journal():
             target_price, stop_loss, initial_stop_loss, rr_ratio, potential_loss,
             trailing_stop, new_target, potential_gain, target_a, target_b, target_c,
             entry_tactic, entry_reason, exit_tactic, exit_reason,
-            open_trade_comments, followup_analysis
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            open_trade_comments, followup_analysis, strategy, mistake
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         user_id,
         data.get('trade_bill_id'),
@@ -1344,7 +1344,9 @@ def create_trade_journal():
         data.get('exit_tactic'),
         data.get('exit_reason'),
         data.get('open_trade_comments'),
-        data.get('followup_analysis')
+        data.get('followup_analysis'),
+        data.get('strategy'),
+        data.get('mistake')
     ))
     db.commit()
 
@@ -1382,6 +1384,7 @@ def update_trade_journal(journal_id):
             high_during_trade = ?, low_during_trade = ?,
             max_drawdown = ?, percent_captured = ?,
             open_trade_comments = ?, followup_analysis = ?,
+            strategy = ?, mistake = ?,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
     ''', (
@@ -1423,6 +1426,8 @@ def update_trade_journal(journal_id):
         data.get('percent_captured'),
         data.get('open_trade_comments'),
         data.get('followup_analysis'),
+        data.get('strategy'),
+        data.get('mistake'),
         journal_id
     ))
     db.commit()

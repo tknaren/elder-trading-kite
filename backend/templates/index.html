@@ -2658,21 +2658,22 @@
     // ========== JOURNAL DASHBOARD ==========
     async function journalDashboardView() {
         try {
-            const trades = await api('GET', '/trade-log');
-            const tradeList = trades.trades || [];
-            const closedTrades = tradeList.filter(t => t.exit_date);
-            const openTrades = tradeList.filter(t => !t.exit_date);
-            const winners = closedTrades.filter(t => t.net_pnl > 0);
-            const losers = closedTrades.filter(t => t.net_pnl < 0);
-            const breakeven = closedTrades.filter(t => t.net_pnl === 0);
-            
-            const totalPnL = closedTrades.reduce((sum, t) => sum + (t.net_pnl || 0), 0);
+            const resp = await fetch('/api/v2/trade-journal');
+            const jData = await resp.json();
+            const tradeList = jData.journals || [];
+            const closedTrades = tradeList.filter(t => t.status === 'closed');
+            const openTrades = tradeList.filter(t => t.status !== 'closed');
+            const winners = closedTrades.filter(t => (t.gain_loss_amount || 0) > 0);
+            const losers = closedTrades.filter(t => (t.gain_loss_amount || 0) < 0);
+            const breakeven = closedTrades.filter(t => (t.gain_loss_amount || 0) === 0);
+
+            const totalPnL = closedTrades.reduce((sum, t) => sum + (t.gain_loss_amount || 0), 0);
             const winRate = closedTrades.length > 0 ? (winners.length / closedTrades.length * 100) : 0;
-            const avgWin = winners.length > 0 ? winners.reduce((sum, t) => sum + t.net_pnl, 0) / winners.length : 0;
-            const avgLoss = losers.length > 0 ? losers.reduce((sum, t) => sum + Math.abs(t.net_pnl), 0) / losers.length : 0;
+            const avgWin = winners.length > 0 ? winners.reduce((sum, t) => sum + t.gain_loss_amount, 0) / winners.length : 0;
+            const avgLoss = losers.length > 0 ? losers.reduce((sum, t) => sum + Math.abs(t.gain_loss_amount), 0) / losers.length : 0;
             const expectancy = closedTrades.length > 0 ? totalPnL / closedTrades.length : 0;
             const s = settings[0] || {trading_capital: 500000};
-            const sym = '₹';  // Always INR for NSE
+            const sym = '₹';
             
             return `
                 <div class="space-y-6">
@@ -2741,24 +2742,24 @@
                                 <thead class="text-gray-400 border-b border-gray-700">
                                     <tr>
                                         <th class="text-left py-2">Date</th>
-                                        <th class="text-left py-2">Symbol</th>
+                                        <th class="text-left py-2">Ticker</th>
                                         <th class="text-left py-2">Strategy</th>
-                                        <th class="text-right py-2">Entry</th>
-                                        <th class="text-right py-2">Exit</th>
+                                        <th class="text-right py-2">Avg Entry</th>
+                                        <th class="text-right py-2">Avg Exit</th>
                                         <th class="text-right py-2">P&L</th>
                                         <th class="text-center py-2">Status</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     ${tradeList.slice(0, 10).map(t => `
-                                        <tr class="border-b border-gray-700/50">
-                                            <td class="py-2 font-mono text-xs">${t.entry_date || '-'}</td>
-                                            <td class="py-2 font-mono font-bold">${t.symbol}</td>
+                                        <tr class="border-b border-gray-700/50 cursor-pointer hover:bg-[#1f2937]/50" onclick="switchTab('trade-log'); setTimeout(() => openTradeLogDetail(${t.id}), 100)">
+                                            <td class="py-2 font-mono text-xs">${t.journal_date || '-'}</td>
+                                            <td class="py-2 font-mono font-bold">${t.ticker}</td>
                                             <td class="py-2">${t.strategy || '-'}</td>
-                                            <td class="py-2 text-right font-mono">${sym}${t.entry_price?.toFixed(2) || '-'}</td>
-                                            <td class="py-2 text-right font-mono">${t.exit_price ? sym + t.exit_price.toFixed(2) : '-'}</td>
-                                            <td class="py-2 text-right font-mono ${(t.net_pnl || 0) >= 0 ? 'text-green-400' : 'text-red-400'}">${t.exit_date ? sym + (t.net_pnl || 0).toFixed(2) : '-'}</td>
-                                            <td class="py-2 text-center"><span class="px-2 py-1 rounded text-xs ${t.exit_date ? (t.net_pnl > 0 ? 'bg-green-500/20 text-green-400' : t.net_pnl < 0 ? 'bg-red-500/20 text-red-400' : 'bg-gray-500/20') : 'bg-blue-500/20 text-blue-400'}">${t.exit_date ? (t.net_pnl > 0 ? 'WIN' : t.net_pnl < 0 ? 'LOSS' : 'BE') : 'OPEN'}</span></td>
+                                            <td class="py-2 text-right font-mono">${t.avg_entry ? sym + t.avg_entry.toFixed(2) : (t.entry_price ? sym + t.entry_price.toFixed(2) : '-')}</td>
+                                            <td class="py-2 text-right font-mono">${t.avg_exit ? sym + t.avg_exit.toFixed(2) : '-'}</td>
+                                            <td class="py-2 text-right font-mono ${(t.gain_loss_amount || 0) >= 0 ? 'text-green-400' : 'text-red-400'}">${t.status === 'closed' ? sym + (t.gain_loss_amount || 0).toFixed(2) : '-'}</td>
+                                            <td class="py-2 text-center"><span class="px-2 py-1 rounded text-xs ${t.status === 'closed' ? ((t.gain_loss_amount||0) > 0 ? 'bg-green-500/20 text-green-400' : (t.gain_loss_amount||0) < 0 ? 'bg-red-500/20 text-red-400' : 'bg-gray-500/20') : 'bg-blue-500/20 text-blue-400'}">${t.status === 'closed' ? ((t.gain_loss_amount||0) > 0 ? 'WIN' : (t.gain_loss_amount||0) < 0 ? 'LOSS' : 'BE') : 'OPEN'}</span></td>
                                         </tr>
                                     `).join('')}
                                 </tbody>
@@ -2772,7 +2773,10 @@
         }
     }
 
-    // ========== TRADE LOG ==========
+    // ========== TRADE LOG (Pyramiding Model) ==========
+    let currentTradeLog = null;
+    let tradeLogMode = 'list'; // 'list' or 'detail'
+
     async function tradeLogView() {
         // Load strategies and mistakes dynamically from API
         let strategies = [];
@@ -2788,107 +2792,125 @@
             strategies = ['EL - Elder System'];
             mistakes = ['Rule Deviation'];
         }
-        const s = settings[0] || {trading_capital: 500000};
-        const sym = '₹';  // Always INR for NSE
-        
-        let trades = [];
+        window._tlStrategies = strategies;
+        window._tlMistakes = mistakes;
+
+        const sym = '₹';
+        let journals = [];
+
         try {
-            const response = await api('GET', '/trade-log');
-            trades = response.trades || [];
-        } catch(e) { console.log('No trades yet'); }
-        
+            const resp = await fetch('/api/v2/trade-journal');
+            const data = await resp.json();
+            journals = data.journals || [];
+        } catch(e) { console.log('No trade journals yet'); }
+
+        // Load detail if editing
+        if (tradeLogMode === 'detail' && window.tradeLogEditId) {
+            try {
+                const resp = await fetch(`/api/v2/trade-journal/${window.tradeLogEditId}`);
+                currentTradeLog = await resp.json();
+            } catch(e) {
+                currentTradeLog = null;
+                tradeLogMode = 'list';
+            }
+        } else if (tradeLogMode === 'detail' && !window.tradeLogEditId) {
+            currentTradeLog = {id: null};
+        }
+
+        if (tradeLogMode === 'detail') {
+            return renderTradeLogDetail(currentTradeLog || {}, strategies, mistakes, sym);
+        }
+
+        // ===== LIST VIEW =====
+        const openTrades = journals.filter(j => j.status === 'open');
+        const closedTrades = journals.filter(j => j.status === 'closed');
+
         return `
             <div class="space-y-6">
                 <div class="flex justify-between items-center">
-                    <h2 class="text-2xl font-bold">📝 Trade Log</h2>
+                    <h2 class="text-2xl font-bold">Trade Log</h2>
                     <div class="flex gap-2">
-                        <button onclick="showAddTradeModal()" class="px-4 py-2 bg-green-600 rounded-lg hover:bg-green-700">+ Add Trade</button>
-                        <button onclick="exportTrades()" class="px-4 py-2 bg-gray-700 rounded-lg hover:bg-gray-600">📥 Export</button>
+                        <button onclick="newTradeLog()" class="px-4 py-2 bg-green-600 rounded-lg hover:bg-green-700">+ New Trade</button>
+                        <button onclick="exportTrades()" class="px-4 py-2 bg-gray-700 rounded-lg hover:bg-gray-600">Export</button>
                     </div>
                 </div>
-                
-                <!-- Trade Entry Form -->
-                <div class="bg-[#111827] rounded-xl p-6 border border-gray-700" id="trade-form">
-                    <h3 class="font-bold text-lg mb-4 text-blue-400">New Trade Entry</h3>
-                    
-                    <div class="grid grid-cols-6 gap-4 mb-4">
-                        <div><label class="text-xs text-gray-400">Entry Date</label><input type="datetime-local" id="tl-entry-date" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
-                        <div><label class="text-xs text-gray-400">Symbol</label><input id="tl-symbol" placeholder="NSE:RELIANCE" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
-                        <div><label class="text-xs text-gray-400">Strategy</label><select id="tl-strategy" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm">${strategies.map(s => `<option>${s}</option>`).join('')}</select></div>
-                        <div><label class="text-xs text-gray-400">Direction</label><select id="tl-direction" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm"><option>Long</option><option>Short</option></select></div>
-                        <div><label class="text-xs text-gray-400">Entry Price (${sym})</label><input type="number" id="tl-entry" step="0.01" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
-                        <div><label class="text-xs text-gray-400">Shares</label><input type="number" id="tl-shares" step="1" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
+
+                <!-- Summary Cards -->
+                <div class="grid grid-cols-5 gap-3">
+                    <div class="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3 text-center">
+                        <div class="text-lg font-bold text-blue-400">${journals.length}</div>
+                        <div class="text-xs text-gray-400">Total Trades</div>
                     </div>
-                    
-                    <div class="grid grid-cols-6 gap-4 mb-4">
-                        <div><label class="text-xs text-gray-400">Stop Loss (${sym})</label><input type="number" id="tl-sl" step="0.01" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
-                        <div><label class="text-xs text-gray-400">Take Profit (${sym})</label><input type="number" id="tl-tp" step="0.01" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
-                        <div><label class="text-xs text-gray-400">Exit Date</label><input type="datetime-local" id="tl-exit-date" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
-                        <div><label class="text-xs text-gray-400">Exit Price (${sym})</label><input type="number" id="tl-exit" step="0.01" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
-                        <div><label class="text-xs text-gray-400">Trade Costs (${sym})</label><input type="number" id="tl-costs" step="0.01" value="0" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
-                        <div><label class="text-xs text-gray-400">Mistake</label><select id="tl-mistake" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm"><option value="">None</option>${mistakes.map(m => `<option>${m}</option>`).join('')}</select></div>
+                    <div class="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 text-center">
+                        <div class="text-lg font-bold text-yellow-400">${openTrades.length}</div>
+                        <div class="text-xs text-gray-400">Open</div>
                     </div>
-                    
-                    <div class="grid grid-cols-2 gap-4 mb-4">
-                        <div><label class="text-xs text-gray-400">Discipline Rating (1-10)</label><input type="number" id="tl-discipline" min="1" max="10" value="8" class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm font-mono"></div>
-                        <div><label class="text-xs text-gray-400">Notes</label><input id="tl-notes" placeholder="Trade notes..." class="w-full mt-1 px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded text-sm"></div>
+                    <div class="bg-gray-500/10 border border-gray-500/30 rounded-lg p-3 text-center">
+                        <div class="text-lg font-bold text-gray-400">${closedTrades.length}</div>
+                        <div class="text-xs text-gray-400">Closed</div>
                     </div>
-                    
-                    <button onclick="saveTradeLog()" class="px-6 py-2 bg-green-600 rounded-lg hover:bg-green-700">💾 Save Trade</button>
+                    <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-3 text-center">
+                        <div class="text-lg font-bold text-green-400">${closedTrades.filter(t => (t.gain_loss_amount||0) > 0).length}</div>
+                        <div class="text-xs text-gray-400">Winners</div>
+                    </div>
+                    <div class="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-center">
+                        <div class="text-lg font-bold text-red-400">${closedTrades.filter(t => (t.gain_loss_amount||0) < 0).length}</div>
+                        <div class="text-xs text-gray-400">Losers</div>
+                    </div>
                 </div>
-                
-                <!-- Trade List -->
+
+                <!-- Trade Records Table -->
                 <div class="bg-[#111827] rounded-xl border border-gray-700 overflow-hidden">
                     <div class="overflow-x-auto">
                         <table class="w-full text-xs">
                             <thead class="bg-[#1f2937]">
                                 <tr>
-                                    <th class="text-left p-2 text-gray-400">Date</th>
-                                    <th class="text-left p-2 text-gray-400">Symbol</th>
-                                    <th class="text-left p-2 text-gray-400">Strategy</th>
-                                    <th class="text-center p-2 text-gray-400">Dir</th>
-                                    <th class="text-right p-2 text-gray-400">Entry</th>
-                                    <th class="text-right p-2 text-gray-400">Shares</th>
-                                    <th class="text-right p-2 text-gray-400">Size</th>
-                                    <th class="text-right p-2 text-gray-400">SL</th>
-                                    <th class="text-right p-2 text-gray-400">TP</th>
-                                    <th class="text-right p-2 text-gray-400">Exit</th>
-                                    <th class="text-right p-2 text-gray-400">Gross P/L</th>
-                                    <th class="text-right p-2 text-gray-400">Net P/L</th>
-                                    <th class="text-right p-2 text-gray-400">R</th>
-                                    <th class="text-center p-2 text-gray-400">Status</th>
-                                    <th class="text-center p-2 text-gray-400">Actions</th>
+                                    <th class="p-2 text-left text-gray-400">Date</th>
+                                    <th class="p-2 text-left text-gray-400">Ticker</th>
+                                    <th class="p-2 text-center text-gray-400">Dir</th>
+                                    <th class="p-2 text-right text-gray-400">Entries</th>
+                                    <th class="p-2 text-right text-gray-400">Exits</th>
+                                    <th class="p-2 text-right text-gray-400">Total Qty</th>
+                                    <th class="p-2 text-right text-gray-400">Remaining</th>
+                                    <th class="p-2 text-right text-gray-400">Avg Entry</th>
+                                    <th class="p-2 text-right text-gray-400">Avg Exit</th>
+                                    <th class="p-2 text-right text-gray-400">SL</th>
+                                    <th class="p-2 text-right text-gray-400">Target</th>
+                                    <th class="p-2 text-right text-gray-400">Gain/Loss</th>
+                                    <th class="p-2 text-right text-gray-400">G/L %</th>
+                                    <th class="p-2 text-center text-gray-400">Status</th>
+                                    <th class="p-2 text-center text-gray-400">Grade</th>
+                                    <th class="p-2 text-center text-gray-400">Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                ${trades.length > 0 ? trades.map(t => {
-                                    const tradeSize = (t.entry_price * t.shares).toFixed(2);
-                                    const grossPnL = t.exit_price ? ((t.direction === 'Long' ? t.exit_price - t.entry_price : t.entry_price - t.exit_price) * t.shares).toFixed(2) : '-';
-                                    const netPnL = t.net_pnl?.toFixed(2) || grossPnL;
-                                    const rValue = t.stop_loss && t.entry_price ? ((t.net_pnl || 0) / Math.abs(t.entry_price - t.stop_loss) / t.shares).toFixed(2) : '-';
+                                ${journals.length > 0 ? journals.map(j => {
+                                    const entryCnt = (j.entries || []).length || '-';
+                                    const exitCnt = (j.exits || []).length || '-';
                                     return `
-                                        <tr class="border-t border-gray-700/50 hover:bg-[#1f2937]/50">
-                                            <td class="p-2 font-mono">${t.entry_date?.split('T')[0] || '-'}</td>
-                                            <td class="p-2 font-mono font-bold">${t.symbol}</td>
-                                            <td class="p-2">${t.strategy || '-'}</td>
-                                            <td class="p-2 text-center"><span class="${t.direction === 'Long' ? 'text-green-400' : 'text-red-400'}">${t.direction === 'Long' ? '▲' : '▼'}</span></td>
-                                            <td class="p-2 text-right font-mono">${sym}${t.entry_price?.toFixed(2)}</td>
-                                            <td class="p-2 text-right font-mono">${t.shares}</td>
-                                            <td class="p-2 text-right font-mono">${sym}${tradeSize}</td>
-                                            <td class="p-2 text-right font-mono text-red-400">${t.stop_loss ? sym + t.stop_loss.toFixed(2) : '-'}</td>
-                                            <td class="p-2 text-right font-mono text-green-400">${t.take_profit ? sym + t.take_profit.toFixed(2) : '-'}</td>
-                                            <td class="p-2 text-right font-mono">${t.exit_price ? sym + t.exit_price.toFixed(2) : '-'}</td>
-                                            <td class="p-2 text-right font-mono ${parseFloat(grossPnL) >= 0 ? 'text-green-400' : 'text-red-400'}">${grossPnL !== '-' ? sym + grossPnL : '-'}</td>
-                                            <td class="p-2 text-right font-mono ${parseFloat(netPnL) >= 0 ? 'text-green-400' : 'text-red-400'}">${netPnL !== '-' ? sym + netPnL : '-'}</td>
-                                            <td class="p-2 text-right font-mono">${rValue}R</td>
-                                            <td class="p-2 text-center"><span class="px-1.5 py-0.5 rounded text-xs ${t.exit_date ? (parseFloat(netPnL) > 0 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400') : 'bg-blue-500/20 text-blue-400'}">${t.exit_date ? 'CLOSED' : 'OPEN'}</span></td>
+                                        <tr class="border-t border-gray-700/50 hover:bg-[#1f2937]/50 cursor-pointer" onclick="openTradeLogDetail(${j.id})">
+                                            <td class="p-2 font-mono">${j.journal_date || j.first_entry_date?.split('T')[0] || '-'}</td>
+                                            <td class="p-2 font-mono font-bold text-blue-400">${j.ticker}</td>
+                                            <td class="p-2 text-center"><span class="${j.direction === 'Long' ? 'text-green-400' : 'text-red-400'}">${j.direction === 'Long' ? '▲ Long' : '▼ Short'}</span></td>
+                                            <td class="p-2 text-right font-mono">${entryCnt}</td>
+                                            <td class="p-2 text-right font-mono">${exitCnt}</td>
+                                            <td class="p-2 text-right font-mono">${j.total_shares || j.quantity || '-'}</td>
+                                            <td class="p-2 text-right font-mono ${(j.remaining_qty||0) > 0 ? 'text-yellow-400' : ''}">${j.remaining_qty ?? '-'}</td>
+                                            <td class="p-2 text-right font-mono">${j.avg_entry ? sym + j.avg_entry.toFixed(2) : (j.entry_price ? sym + j.entry_price.toFixed(2) : '-')}</td>
+                                            <td class="p-2 text-right font-mono">${j.avg_exit ? sym + j.avg_exit.toFixed(2) : '-'}</td>
+                                            <td class="p-2 text-right font-mono text-red-400">${j.stop_loss ? sym + j.stop_loss.toFixed(2) : '-'}</td>
+                                            <td class="p-2 text-right font-mono text-green-400">${j.target_price ? sym + j.target_price.toFixed(2) : '-'}</td>
+                                            <td class="p-2 text-right font-mono ${(j.gain_loss_amount||0) >= 0 ? 'text-green-400' : 'text-red-400'}">${j.gain_loss_amount ? sym + j.gain_loss_amount.toFixed(2) : '-'}</td>
+                                            <td class="p-2 text-right font-mono ${(j.gain_loss_percent||0) >= 0 ? 'text-green-400' : 'text-red-400'}">${j.gain_loss_percent ? j.gain_loss_percent.toFixed(2) + '%' : '-'}</td>
+                                            <td class="p-2 text-center"><span class="px-2 py-0.5 rounded text-xs ${j.status==='closed' ? ((j.gain_loss_amount||0)>0 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400') : 'bg-blue-500/20 text-blue-400'}">${j.status === 'closed' ? 'CLOSED' : 'OPEN'}</span></td>
+                                            <td class="p-2 text-center"><span class="px-2 py-0.5 rounded ${j.trade_grade==='A'?'bg-green-500/20 text-green-400':j.trade_grade==='B'?'bg-blue-500/20 text-blue-400':'bg-gray-500/20 text-gray-400'}">${j.trade_grade||'-'}</span></td>
                                             <td class="p-2 text-center">
-                                                <button onclick="editTrade(${t.id})" class="text-blue-400 hover:text-blue-300 mr-2">✏️</button>
-                                                <button onclick="deleteTrade(${t.id})" class="text-red-400 hover:text-red-300">🗑️</button>
+                                                <button onclick="event.stopPropagation(); openTradeLogDetail(${j.id})" class="text-blue-400 hover:text-blue-300 mr-2" title="Edit">✏️</button>
+                                                <button onclick="event.stopPropagation(); deleteTradeLog(${j.id})" class="text-red-400 hover:text-red-300" title="Delete">🗑️</button>
                                             </td>
                                         </tr>
                                     `;
-                                }).join('') : '<tr><td colspan="15" class="p-8 text-center text-gray-500">No trades recorded. Add your first trade above!</td></tr>'}
+                                }).join('') : '<tr><td colspan="16" class="p-8 text-center text-gray-500">No trades recorded. Click "+ New Trade" to start your first pyramiding trade!</td></tr>'}
                             </tbody>
                         </table>
                     </div>
@@ -2897,106 +2919,453 @@
         `;
     }
 
-    async function saveTradeLog() {
+    function renderTradeLogDetail(j, strategies, mistakes, sym) {
+        const entries = j.entries || [];
+        const exits = j.exits || [];
+        const entryTactics = ['Limit Order', 'Market Order', 'Stop Order', 'Scale In', 'Breakout'];
+        const exitTactics = ['Target Hit', 'Stop Loss Hit', 'Trailing Stop', 'Time Exit', 'Scale Out', 'Manual'];
+        const directions = ['Long', 'Short'];
+        const grades = ['A', 'B', 'C', 'D', 'F'];
+
+        return `
+            <div class="space-y-4">
+                <!-- Header -->
+                <div class="flex justify-between items-center">
+                    <div class="flex items-center gap-4">
+                        <button onclick="backToTradeLogList()" class="px-3 py-1.5 bg-gray-700 rounded-lg hover:bg-gray-600 text-sm">&larr; Back to List</button>
+                        <h2 class="text-xl font-bold">${j.id ? 'Edit Trade: ' + (j.ticker || '') : 'New Trade'}</h2>
+                        ${j.id ? `<span class="px-2 py-1 rounded text-xs ${j.status==='closed'?'bg-gray-500/20 text-gray-400':'bg-blue-500/20 text-blue-400'}">${j.status||'open'}</span>` : ''}
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="saveTradeLogDetail()" class="px-4 py-2 bg-green-600 rounded-lg hover:bg-green-700">Save Trade</button>
+                    </div>
+                </div>
+
+                <!-- Trade Setup -->
+                <div class="bg-[#111827] rounded-xl p-4 border border-gray-700">
+                    <h4 class="text-sm font-bold text-gray-400 border-b border-gray-600 pb-2 mb-3">Trade Setup</h4>
+                    <div class="grid grid-cols-8 gap-3 text-xs">
+                        <div><label class="text-gray-500">Ticker</label><input id="tl-ticker" value="${j.ticker||''}" placeholder="NSE:RELIANCE" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                        <div><label class="text-gray-500">Date</label><input type="date" id="tl-date" value="${j.journal_date||new Date().toISOString().split('T')[0]}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded"></div>
+                        <div><label class="text-gray-500">Direction</label><select id="tl-direction" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded">${directions.map(d => `<option ${j.direction===d?'selected':''}>${d}</option>`).join('')}</select></div>
+                        <div><label class="text-gray-500">Strategy</label><select id="tl-strategy" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded">${strategies.map(s => `<option ${j.strategy===s?'selected':''}>${s}</option>`).join('')}</select></div>
+                        <div><label class="text-gray-500">Stop Loss</label><input type="number" id="tl-sl" value="${j.stop_loss||''}" step="0.01" class="w-full px-2 py-1.5 bg-red-900/30 border border-red-600 rounded font-mono"></div>
+                        <div><label class="text-gray-500">Target</label><input type="number" id="tl-target" value="${j.target_price||''}" step="0.01" class="w-full px-2 py-1.5 bg-green-900/30 border border-green-600 rounded font-mono"></div>
+                        <div><label class="text-gray-500">Initial SL <span class="text-gray-600">(static)</span></label><input type="number" id="tl-initialsl" value="${j.initial_stop_loss||j.stop_loss||''}" class="w-full px-2 py-1.5 bg-red-900/20 border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Mistake</label><select id="tl-mistake" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded"><option value="">None</option>${mistakes.map(m => `<option ${j.mistake===m?'selected':''}>${m}</option>`).join('')}</select></div>
+                    </div>
+                </div>
+
+                <!-- Entries Section -->
+                <div class="bg-[#111827] rounded-xl p-4 border border-blue-500/30">
+                    <div class="flex justify-between items-center mb-3">
+                        <h4 class="font-bold text-blue-400">Entries</h4>
+                        <div class="flex gap-2 items-center text-xs">
+                            <label class="text-gray-500">Entry Tactic</label>
+                            <select id="tl-entry-tactic" class="px-2 py-1 bg-[#1f2937] border border-gray-600 rounded">${entryTactics.map(t => `<option ${j.entry_tactic===t?'selected':''}>${t}</option>`).join('')}</select>
+                            <label class="text-gray-500 ml-2">Reason</label>
+                            <input id="tl-entry-reason" value="${j.entry_reason||''}" placeholder="Reason for entry" class="px-2 py-1 bg-[#1f2937] border border-gray-600 rounded w-48">
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs">
+                            <thead class="bg-[#1f2937]">
+                                <tr>
+                                    <th class="p-2 text-left text-gray-400">Entry Date</th>
+                                    <th class="p-2 text-right text-gray-400">Quantity</th>
+                                    <th class="p-2 text-right text-gray-400">Order Price</th>
+                                    <th class="p-2 text-right text-gray-400">Filled Price</th>
+                                    <th class="p-2 text-right text-gray-400">Slippage</th>
+                                    <th class="p-2 text-right text-gray-400">Commission</th>
+                                    <th class="p-2 text-right text-gray-400">Position Size</th>
+                                    <th class="p-2 text-right text-gray-400">Day High</th>
+                                    <th class="p-2 text-right text-gray-400">Day Low</th>
+                                    <th class="p-2 text-center text-gray-400">Grade</th>
+                                    <th class="p-2 text-center text-gray-400">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${entries.length > 0 ? entries.map(e => `
+                                    <tr class="border-t border-gray-700">
+                                        <td class="p-2 font-mono">${e.entry_datetime?.split('T')[0] || '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.quantity || '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.order_price ? sym + e.order_price.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.filled_price ? sym + e.filled_price.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono ${(e.slippage||0) > 0 ? 'text-red-400' : ''}">${e.slippage ? sym + e.slippage.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.commission ? sym + e.commission.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.position_size ? sym + e.position_size.toLocaleString() : '-'}</td>
+                                        <td class="p-2 text-right font-mono text-green-400">${e.day_high ? sym + e.day_high.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono text-red-400">${e.day_low ? sym + e.day_low.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-center"><span class="px-2 py-0.5 rounded ${e.grade==='A'?'bg-green-500/20 text-green-400':e.grade==='B'?'bg-blue-500/20 text-blue-400':'bg-gray-500/20 text-gray-400'}">${e.grade||'-'}</span></td>
+                                        <td class="p-2 text-center"><button onclick="deleteTradeLogEntry(${e.id})" class="text-red-400 hover:text-red-300">🗑️</button></td>
+                                    </tr>
+                                `).join('') : ''}
+                                <!-- Inline Add Entry Row -->
+                                <tr class="border-t border-blue-500/30 bg-blue-500/5">
+                                    <td class="p-1"><input type="datetime-local" id="tl-new-entry-date" value="${new Date().toISOString().slice(0,16)}" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-entry-qty" placeholder="Qty" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-entry-ordprice" step="0.01" placeholder="Order" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-entry-fillprice" step="0.01" placeholder="Filled" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-entry-slip" step="0.01" value="0" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-entry-comm" step="0.01" value="0" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
+                                    <td class="p-1 text-right text-xs font-mono text-gray-500">auto</td>
+                                    <td class="p-1"><input type="number" id="tl-new-entry-high" step="0.01" placeholder="High" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-entry-low" step="0.01" placeholder="Low" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
+                                    <td class="p-1"><select id="tl-new-entry-grade" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs">${grades.map(g => `<option>${g}</option>`).join('')}</select></td>
+                                    <td class="p-1 text-center"><button onclick="addTradeLogEntry()" class="px-2 py-1 bg-green-600 rounded hover:bg-green-700 text-xs font-bold">+ Add</button></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Exits Section -->
+                <div class="bg-[#111827] rounded-xl p-4 border border-orange-500/30">
+                    <div class="flex justify-between items-center mb-3">
+                        <h4 class="font-bold text-orange-400">Exits</h4>
+                        <div class="flex gap-2 items-center text-xs">
+                            <label class="text-gray-500">Exit Tactic</label>
+                            <select id="tl-exit-tactic" class="px-2 py-1 bg-[#1f2937] border border-gray-600 rounded">${exitTactics.map(t => `<option ${j.exit_tactic===t?'selected':''}>${t}</option>`).join('')}</select>
+                            <label class="text-gray-500 ml-2">Reason</label>
+                            <input id="tl-exit-reason" value="${j.exit_reason||''}" placeholder="Reason for exit" class="px-2 py-1 bg-[#1f2937] border border-gray-600 rounded w-48">
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs">
+                            <thead class="bg-[#1f2937]">
+                                <tr>
+                                    <th class="p-2 text-left text-gray-400">Exit Date</th>
+                                    <th class="p-2 text-right text-gray-400">Quantity</th>
+                                    <th class="p-2 text-right text-gray-400">Order Price</th>
+                                    <th class="p-2 text-right text-gray-400">Filled Price</th>
+                                    <th class="p-2 text-right text-gray-400">Slippage</th>
+                                    <th class="p-2 text-right text-gray-400">Commission</th>
+                                    <th class="p-2 text-right text-gray-400">Position Size</th>
+                                    <th class="p-2 text-right text-gray-400">Day High</th>
+                                    <th class="p-2 text-right text-gray-400">Day Low</th>
+                                    <th class="p-2 text-center text-gray-400">Grade</th>
+                                    <th class="p-2 text-center text-gray-400">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${exits.length > 0 ? exits.map(e => `
+                                    <tr class="border-t border-gray-700">
+                                        <td class="p-2 font-mono">${e.exit_datetime?.split('T')[0] || '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.quantity || '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.order_price ? sym + e.order_price.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.filled_price ? sym + e.filled_price.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono ${(e.slippage||0) > 0 ? 'text-red-400' : ''}">${e.slippage ? sym + e.slippage.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.commission ? sym + e.commission.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono">${e.position_size ? sym + e.position_size.toLocaleString() : '-'}</td>
+                                        <td class="p-2 text-right font-mono text-green-400">${e.day_high ? sym + e.day_high.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-right font-mono text-red-400">${e.day_low ? sym + e.day_low.toFixed(2) : '-'}</td>
+                                        <td class="p-2 text-center"><span class="px-2 py-0.5 rounded ${e.grade==='A'?'bg-green-500/20 text-green-400':e.grade==='B'?'bg-blue-500/20 text-blue-400':'bg-gray-500/20 text-gray-400'}">${e.grade||'-'}</span></td>
+                                        <td class="p-2 text-center"><button onclick="deleteTradeLogExit(${e.id})" class="text-red-400 hover:text-red-300">🗑️</button></td>
+                                    </tr>
+                                `).join('') : ''}
+                                <!-- Inline Add Exit Row -->
+                                <tr class="border-t border-orange-500/30 bg-orange-500/5">
+                                    <td class="p-1"><input type="datetime-local" id="tl-new-exit-date" value="${new Date().toISOString().slice(0,16)}" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-exit-qty" placeholder="Qty" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-exit-ordprice" step="0.01" placeholder="Order" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-exit-fillprice" step="0.01" placeholder="Filled" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-exit-slip" step="0.01" value="0" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-exit-comm" step="0.01" value="0" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
+                                    <td class="p-1 text-right text-xs font-mono text-gray-500">auto</td>
+                                    <td class="p-1"><input type="number" id="tl-new-exit-high" step="0.01" placeholder="High" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-exit-low" step="0.01" placeholder="Low" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
+                                    <td class="p-1"><select id="tl-new-exit-grade" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs">${grades.map(g => `<option>${g}</option>`).join('')}</select></td>
+                                    <td class="p-1 text-center"><button onclick="addTradeLogExit()" class="px-2 py-1 bg-orange-600 rounded hover:bg-orange-700 text-xs font-bold">+ Add</button></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Results Section -->
+                <div class="bg-[#111827] rounded-xl p-4 border border-purple-500/30">
+                    <h4 class="font-bold text-purple-400 mb-3">Results</h4>
+                    <div class="grid grid-cols-6 gap-3 text-xs">
+                        <div><label class="text-gray-500">First Entry Date</label><input value="${j.first_entry_date?.split('T')[0]||''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Total Shares</label><input value="${j.total_shares||''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Avg Entry</label><input value="${j.avg_entry ? sym + j.avg_entry.toFixed(2) : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Gain/Loss %</label><input value="${j.gain_loss_percent ? j.gain_loss_percent.toFixed(2)+'%' : ''}" class="w-full px-2 py-1.5 ${(j.gain_loss_percent||0)>=0?'bg-green-900/20':'bg-red-900/20'} border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">High During Trade</label><input value="${j.high_during_trade ? sym + j.high_during_trade.toFixed(2) : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Max Drawdown</label><input id="tl-maxdd" value="${j.max_drawdown ? sym + j.max_drawdown.toFixed(2) : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+
+                        <div><label class="text-gray-500">Last Exit Date</label><input value="${j.last_exit_date?.split('T')[0]||''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Trade Grade</label><select id="tl-grade" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded">${grades.map(g => `<option ${j.trade_grade===g?'selected':''}>${g}</option>`).join('')}</select></div>
+                        <div><label class="text-gray-500">Avg Exit</label><input value="${j.avg_exit ? sym + j.avg_exit.toFixed(2) : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Gain/Loss ${sym}</label><input value="${j.gain_loss_amount ? sym + j.gain_loss_amount.toFixed(2) : ''}" class="w-full px-2 py-1.5 ${(j.gain_loss_amount||0)>=0?'bg-green-900/20':'bg-red-900/20'} border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Low During Trade</label><input value="${j.low_during_trade ? sym + j.low_during_trade.toFixed(2) : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">% Captured</label><input id="tl-captured" value="${j.percent_captured ? j.percent_captured.toFixed(1)+'%' : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                    </div>
+                </div>
+
+                <!-- Comments Section -->
+                <div class="bg-[#111827] rounded-xl p-4 border border-gray-700">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="text-sm text-gray-400">Open Trade Comments</label>
+                            <textarea id="tl-comments" class="w-full h-20 mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded text-sm">${j.open_trade_comments||''}</textarea>
+                        </div>
+                        <div>
+                            <label class="text-sm text-gray-400">Followup Analysis</label>
+                            <textarea id="tl-followup" class="w-full h-20 mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded text-sm">${j.followup_analysis||''}</textarea>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="flex gap-2">
+                    <button onclick="saveTradeLogDetail()" class="flex-1 py-3 bg-green-600 rounded-lg font-medium hover:bg-green-700">Save Trade</button>
+                    <button onclick="backToTradeLogList()" class="flex-1 py-3 bg-gray-600 rounded-lg font-medium hover:bg-gray-700">Back to List</button>
+                </div>
+            </div>
+        `;
+    }
+
+    function newTradeLog() {
+        window.tradeLogEditId = null;
+        currentTradeLog = {id: null};
+        tradeLogMode = 'detail';
+        render();
+    }
+
+    function openTradeLogDetail(id) {
+        window.tradeLogEditId = id;
+        tradeLogMode = 'detail';
+        render();
+    }
+
+    function backToTradeLogList() {
+        window.tradeLogEditId = null;
+        currentTradeLog = null;
+        tradeLogMode = 'list';
+        render();
+    }
+
+    async function saveTradeLogDetail() {
         const data = {
-            entry_date: document.getElementById('tl-entry-date').value,
-            symbol: document.getElementById('tl-symbol').value.toUpperCase(),
-            strategy: document.getElementById('tl-strategy').value,
+            ticker: document.getElementById('tl-ticker').value,
+            journal_date: document.getElementById('tl-date').value,
             direction: document.getElementById('tl-direction').value,
-            entry_price: parseFloat(document.getElementById('tl-entry').value),
-            shares: parseInt(document.getElementById('tl-shares').value),
+            strategy: document.getElementById('tl-strategy').value,
             stop_loss: parseFloat(document.getElementById('tl-sl').value) || null,
-            take_profit: parseFloat(document.getElementById('tl-tp').value) || null,
-            exit_date: document.getElementById('tl-exit-date').value || null,
-            exit_price: parseFloat(document.getElementById('tl-exit').value) || null,
-            trade_costs: parseFloat(document.getElementById('tl-costs').value) || 0,
-            mistake: document.getElementById('tl-mistake').value || null,
-            discipline_rating: parseInt(document.getElementById('tl-discipline').value) || 8,
-            notes: document.getElementById('tl-notes').value
+            target_price: parseFloat(document.getElementById('tl-target').value) || null,
+            entry_tactic: document.getElementById('tl-entry-tactic').value,
+            entry_reason: document.getElementById('tl-entry-reason').value,
+            exit_tactic: document.getElementById('tl-exit-tactic').value,
+            exit_reason: document.getElementById('tl-exit-reason').value,
+            trade_grade: document.getElementById('tl-grade').value,
+            open_trade_comments: document.getElementById('tl-comments').value,
+            followup_analysis: document.getElementById('tl-followup').value,
+            mistake: document.getElementById('tl-mistake').value || null
         };
-        
-        // Calculate P&L if exit price exists
-        if (data.exit_price) {
-            const grossPnL = (data.direction === 'Long' ? data.exit_price - data.entry_price : data.entry_price - data.exit_price) * data.shares;
-            data.gross_pnl = grossPnL;
-            data.net_pnl = grossPnL - data.trade_costs;
-        }
-        
+
+        if (!data.ticker) { toast('Ticker is required', 'error'); return; }
+
         try {
-            await api('POST', '/trade-log', data);
-            toast('Trade saved!', 'success');
-            await render();
+            let result;
+            if (currentTradeLog && currentTradeLog.id) {
+                result = await fetch(`/api/v2/trade-journal/${currentTradeLog.id}`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+            } else {
+                result = await fetch('/api/v2/trade-journal', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+            }
+
+            const res = await result.json();
+            if (res.success || res.id) {
+                toast('Trade saved!', 'success');
+                if (res.id) window.tradeLogEditId = res.id;
+                await render();
+            } else {
+                toast(res.error || 'Failed to save', 'error');
+            }
         } catch(e) {
             toast('Error: ' + e.message, 'error');
         }
     }
 
-    async function deleteTrade(id) {
-        if (confirm('Delete this trade?')) {
-            await api('DELETE', `/trade-log/${id}`);
+    async function addTradeLogEntry() {
+        if (!currentTradeLog || !currentTradeLog.id) {
+            toast('Save the trade first before adding entries', 'error');
+            return;
+        }
+
+        const qty = parseInt(document.getElementById('tl-new-entry-qty').value);
+        const orderPrice = parseFloat(document.getElementById('tl-new-entry-ordprice').value);
+        const filledPrice = parseFloat(document.getElementById('tl-new-entry-fillprice').value) || orderPrice;
+
+        if (!qty || !orderPrice) { toast('Quantity and Order Price are required', 'error'); return; }
+
+        const entry = {
+            entry_datetime: document.getElementById('tl-new-entry-date').value,
+            quantity: qty,
+            order_price: orderPrice,
+            filled_price: filledPrice,
+            slippage: parseFloat(document.getElementById('tl-new-entry-slip').value) || 0,
+            commission: parseFloat(document.getElementById('tl-new-entry-comm').value) || 0,
+            position_size: filledPrice * qty,
+            day_high: parseFloat(document.getElementById('tl-new-entry-high').value) || null,
+            day_low: parseFloat(document.getElementById('tl-new-entry-low').value) || null,
+            grade: document.getElementById('tl-new-entry-grade').value
+        };
+
+        try {
+            const result = await fetch(`/api/v2/trade-journal/${currentTradeLog.id}/entry`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(entry)
+            });
+            const res = await result.json();
+            if (res.success) {
+                toast('Entry added!', 'success');
+                await render();
+            } else {
+                toast(res.error || 'Failed to add entry', 'error');
+            }
+        } catch(e) { toast('Error: ' + e.message, 'error'); }
+    }
+
+    async function addTradeLogExit() {
+        if (!currentTradeLog || !currentTradeLog.id) {
+            toast('Save the trade first before adding exits', 'error');
+            return;
+        }
+
+        const qty = parseInt(document.getElementById('tl-new-exit-qty').value);
+        const orderPrice = parseFloat(document.getElementById('tl-new-exit-ordprice').value);
+        const filledPrice = parseFloat(document.getElementById('tl-new-exit-fillprice').value) || orderPrice;
+
+        if (!qty || !orderPrice) { toast('Quantity and Order Price are required', 'error'); return; }
+
+        const exit = {
+            exit_datetime: document.getElementById('tl-new-exit-date').value,
+            quantity: qty,
+            order_price: orderPrice,
+            filled_price: filledPrice,
+            slippage: parseFloat(document.getElementById('tl-new-exit-slip').value) || 0,
+            commission: parseFloat(document.getElementById('tl-new-exit-comm').value) || 0,
+            position_size: filledPrice * qty,
+            day_high: parseFloat(document.getElementById('tl-new-exit-high').value) || null,
+            day_low: parseFloat(document.getElementById('tl-new-exit-low').value) || null,
+            grade: document.getElementById('tl-new-exit-grade').value
+        };
+
+        try {
+            const result = await fetch(`/api/v2/trade-journal/${currentTradeLog.id}/exit`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(exit)
+            });
+            const res = await result.json();
+            if (res.success) {
+                toast('Exit added!', 'success');
+                await render();
+            } else {
+                toast(res.error || 'Failed to add exit', 'error');
+            }
+        } catch(e) { toast('Error: ' + e.message, 'error'); }
+    }
+
+    async function deleteTradeLogEntry(entryId) {
+        if (!confirm('Delete this entry?')) return;
+        try {
+            await fetch(`/api/v2/trade-journal/entry/${entryId}`, {method: 'DELETE'});
+            toast('Entry deleted', 'success');
+            await render();
+        } catch(e) { toast('Error: ' + e.message, 'error'); }
+    }
+
+    async function deleteTradeLogExit(exitId) {
+        if (!confirm('Delete this exit?')) return;
+        try {
+            await fetch(`/api/v2/trade-journal/exit/${exitId}`, {method: 'DELETE'});
+            toast('Exit deleted', 'success');
+            await render();
+        } catch(e) { toast('Error: ' + e.message, 'error'); }
+    }
+
+    async function deleteTradeLog(id) {
+        if (!confirm('Delete this trade and all its entries/exits?')) return;
+        try {
+            await fetch(`/api/v2/trade-journal/${id}`, {method: 'DELETE'});
             toast('Trade deleted', 'success');
             await render();
-        }
+        } catch(e) { toast('Error: ' + e.message, 'error'); }
     }
 
     // ========== TRADE SUMMARY ==========
     async function tradeSummaryView() {
         try {
-            const response = await api('GET', '/trade-log');
-            const trades = response.trades || [];
-            const closed = trades.filter(t => t.exit_date);
-            const s = settings[0] || {trading_capital: 500000};
-            const sym = '₹';  // Always INR for NSE
-            
+            const resp = await fetch('/api/v2/trade-journal');
+            const data = await resp.json();
+            const trades = data.journals || [];
+            const closed = trades.filter(t => t.status === 'closed');
+            const sym = '₹';
+
             // Calculate by strategy
             const strategies = {};
             closed.forEach(t => {
-                if (!strategies[t.strategy]) strategies[t.strategy] = {wins: 0, losses: 0, totalPnL: 0, count: 0};
-                strategies[t.strategy].count++;
-                strategies[t.strategy].totalPnL += t.net_pnl || 0;
-                if (t.net_pnl > 0) strategies[t.strategy].wins++;
-                else if (t.net_pnl < 0) strategies[t.strategy].losses++;
+                const strat = t.strategy || 'Unspecified';
+                if (!strategies[strat]) strategies[strat] = {wins: 0, losses: 0, totalPnL: 0, count: 0};
+                strategies[strat].count++;
+                strategies[strat].totalPnL += t.gain_loss_amount || 0;
+                if ((t.gain_loss_amount || 0) > 0) strategies[strat].wins++;
+                else if ((t.gain_loss_amount || 0) < 0) strategies[strat].losses++;
             });
-            
-            const winners = closed.filter(t => t.net_pnl > 0);
-            const losers = closed.filter(t => t.net_pnl < 0);
-            
+
+            const winners = closed.filter(t => (t.gain_loss_amount || 0) > 0);
+            const losers = closed.filter(t => (t.gain_loss_amount || 0) < 0);
+            const totalPnL = closed.reduce((s, t) => s + (t.gain_loss_amount || 0), 0);
+
             return `
                 <div class="space-y-6">
-                    <h2 class="text-2xl font-bold">📈 Trade Summary</h2>
-                    
+                    <h2 class="text-2xl font-bold">Trade Summary</h2>
+
                     <div class="grid grid-cols-2 gap-6">
                         <!-- Overall Stats -->
                         <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
                             <h3 class="font-bold text-lg mb-4">Overall Statistics</h3>
                             <div class="space-y-3">
-                                <div class="flex justify-between"><span class="text-gray-400">Total Closed Trades</span><span class="font-mono">${closed.length}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Total Trades</span><span class="font-mono">${trades.length}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Open Trades</span><span class="font-mono text-blue-400">${trades.length - closed.length}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Closed Trades</span><span class="font-mono">${closed.length}</span></div>
                                 <div class="flex justify-between"><span class="text-gray-400">Winning Trades</span><span class="font-mono text-green-400">${winners.length}</span></div>
                                 <div class="flex justify-between"><span class="text-gray-400">Losing Trades</span><span class="font-mono text-red-400">${losers.length}</span></div>
                                 <div class="flex justify-between"><span class="text-gray-400">Win Rate</span><span class="font-mono">${closed.length > 0 ? (winners.length / closed.length * 100).toFixed(1) : 0}%</span></div>
                                 <div class="border-t border-gray-700 pt-3 mt-3"></div>
-                                <div class="flex justify-between"><span class="text-gray-400">Avg Winning Trade</span><span class="font-mono text-green-400">${sym}${winners.length > 0 ? (winners.reduce((s, t) => s + t.net_pnl, 0) / winners.length).toFixed(2) : '0.00'}</span></div>
-                                <div class="flex justify-between"><span class="text-gray-400">Avg Losing Trade</span><span class="font-mono text-red-400">${sym}${losers.length > 0 ? (losers.reduce((s, t) => s + Math.abs(t.net_pnl), 0) / losers.length).toFixed(2) : '0.00'}</span></div>
-                                <div class="flex justify-between"><span class="text-gray-400">Largest Win</span><span class="font-mono text-green-400">${sym}${Math.max(...closed.map(t => t.net_pnl || 0), 0).toFixed(2)}</span></div>
-                                <div class="flex justify-between"><span class="text-gray-400">Largest Loss</span><span class="font-mono text-red-400">${sym}${Math.min(...closed.map(t => t.net_pnl || 0), 0).toFixed(2)}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Total P&L</span><span class="font-mono ${totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}">${sym}${totalPnL.toFixed(2)}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Avg Win</span><span class="font-mono text-green-400">${sym}${winners.length > 0 ? (winners.reduce((s, t) => s + t.gain_loss_amount, 0) / winners.length).toFixed(2) : '0.00'}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Avg Loss</span><span class="font-mono text-red-400">${sym}${losers.length > 0 ? (losers.reduce((s, t) => s + Math.abs(t.gain_loss_amount), 0) / losers.length).toFixed(2) : '0.00'}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Largest Win</span><span class="font-mono text-green-400">${sym}${Math.max(...closed.map(t => t.gain_loss_amount || 0), 0).toFixed(2)}</span></div>
+                                <div class="flex justify-between"><span class="text-gray-400">Largest Loss</span><span class="font-mono text-red-400">${sym}${Math.min(...closed.map(t => t.gain_loss_amount || 0), 0).toFixed(2)}</span></div>
                             </div>
                         </div>
-                        
+
                         <!-- Strategy Breakdown -->
                         <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
                             <h3 class="font-bold text-lg mb-4">Strategy Performance</h3>
                             <div class="space-y-3">
-                                ${Object.entries(strategies).map(([name, data]) => `
+                                ${Object.entries(strategies).map(([name, d]) => `
                                     <div class="p-3 bg-[#1f2937] rounded-lg">
                                         <div class="flex justify-between items-center">
                                             <span class="font-medium">${name}</span>
-                                            <span class="font-mono ${data.totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}">${sym}${data.totalPnL.toFixed(2)}</span>
+                                            <span class="font-mono ${d.totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}">${sym}${d.totalPnL.toFixed(2)}</span>
                                         </div>
                                         <div class="text-xs text-gray-400 mt-1">
-                                            ${data.count} trades | ${(data.wins / data.count * 100).toFixed(0)}% win rate | ${data.wins}W / ${data.losses}L
+                                            ${d.count} trades | ${(d.wins / d.count * 100).toFixed(0)}% win rate | ${d.wins}W / ${d.losses}L
                                         </div>
                                     </div>
-                                `).join('') || '<p class="text-gray-500">No trades yet</p>'}
+                                `).join('') || '<p class="text-gray-500">No closed trades yet</p>'}
                             </div>
                         </div>
                     </div>
