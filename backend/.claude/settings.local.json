@@ -3,7 +3,12 @@
     "allow": [
       "Bash(dir /s /b \"C:\\\\Naren\")",
       "Bash(findstr:*)",
-      "Bash(venv/Scripts/python.exe:*)"
+      "Bash(venv/Scripts/python.exe:*)",
+      "Bash(python -c:*)",
+      "Bash(where:*)",
+      "Bash(pip install:*)",
+      "Bash(python test_fixes.py:*)",
+      "Bash(python:*)"
     ]
   }
 }

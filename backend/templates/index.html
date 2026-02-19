@@ -31,6 +31,9 @@
                 <div class="flex items-center gap-4">
                     <div id="market-status" class="text-xs px-2 py-1 rounded bg-gray-700 text-gray-400"></div>
                     <div id="kite-status" class="text-xs px-2 py-1 rounded cursor-pointer"></div>
+                    <button onclick="switchTab('market-engine')" class="relative text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 cursor-pointer" title="Engine Notifications">
+                        🔔 <span id="notification-badge" class="hidden absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center"></span>
+                    </button>
                     <span class="text-xs text-gray-500">🇮🇳 NIFTY 100</span>
                 </div>
                 <!-- Hidden market field for backward compatibility -->
@@ -56,6 +59,11 @@
 
     const tabs = [
         {id:'journal-dashboard', icon:'📈', label:'Dashboard'},
+        {section: 'Market Monitor', items: [
+            {id:'trading-watchlist', icon:'👁️', label:'Watchlist'},
+            {id:'alert-manager', icon:'🔔', label:'Alerts'},
+            {id:'market-engine', icon:'⚡', label:'Engine'}
+        ]},
         {section: 'Screeners', items: [
             {id:'screener', icon:'🔍', label:'Screener'},
             {id:'backtest', icon:'📊', label:'Signal Scanner'},
@@ -172,6 +180,9 @@
         else if(currentTab==='backtest') c.innerHTML = await backtestView();
         else if(currentTab==='candlestick-screener') c.innerHTML = candlestickScreenerView();
         else if(currentTab==='rsi-macd-screener') c.innerHTML = rsiMacdScreenerView();
+        else if(currentTab==='trading-watchlist') c.innerHTML = await tradingWatchlistView();
+        else if(currentTab==='alert-manager') c.innerHTML = await alertManagerView();
+        else if(currentTab==='market-engine') c.innerHTML = await marketEngineView();
         else if(currentTab==='trade-bill') { c.innerHTML = tradeBillView(); triggerTradeBillCalc(); }
         else if(currentTab==='trade-bills') c.innerHTML = await tradeBillsView();
         else if(currentTab==='trade-journal') c.innerHTML = await tradeJournalView();
@@ -187,6 +198,834 @@
         else if(currentTab==='checklist') c.innerHTML = checklistView();
         else if(currentTab==='settings') { c.innerHTML = settingsView(); loadDataStatus(); loadMistakesList(); loadStrategiesList(); }
     }
+
+    // ══════════════════════════════════════════════════════════════
+    // MARKET MONITOR — Trading Watchlist + Alerts + Engine
+    // ══════════════════════════════════════════════════════════════
+
+    async function tradingWatchlistView() {
+        let html = '';
+        try {
+            const resp = await fetch('/api/v2/trading-watchlist');
+            const data = await resp.json();
+            const wl = data.watchlist;
+            const symbols = data.symbols || [];
+            const rows = data.data || [];
+
+            html = `
+            <div class="space-y-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-xl font-bold">Trading Watchlist</h2>
+                        <p class="text-gray-500 text-sm">Multi-timeframe indicator dashboard — ${symbols.length} symbols</p>
+                    </div>
+                    <div class="flex gap-2">
+                        <input id="wl-add-symbol" type="text" placeholder="Add symbol (e.g. RELIANCE)"
+                            class="bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm w-48"
+                            onkeydown="if(event.key==='Enter') addWatchlistSymbol()">
+                        <button onclick="addWatchlistSymbol()" class="px-3 py-2 bg-blue-600 rounded-lg text-sm hover:bg-blue-700">+ Add</button>
+                        <button onclick="refreshWatchlistData()" class="px-3 py-2 bg-purple-600/30 border border-purple-500 rounded-lg text-sm hover:bg-purple-600/50">🔄 Refresh Data</button>
+                    </div>
+                </div>
+
+                ${symbols.length === 0 ? `
+                    <div class="bg-gray-800/50 border border-gray-700 rounded-xl p-12 text-center">
+                        <div class="text-4xl mb-4">👁️</div>
+                        <h3 class="text-lg font-semibold mb-2">No Symbols in Trading Watchlist</h3>
+                        <p class="text-gray-500 mb-4">Add stocks you want to monitor for trading alerts.</p>
+                        <p class="text-gray-600 text-sm">Type a symbol above and click Add, or use your Favorites to populate.</p>
+                        <button onclick="populateFromFavorites()" class="mt-4 px-4 py-2 bg-yellow-600/30 border border-yellow-500 rounded-lg hover:bg-yellow-600/50 text-sm">
+                            ⭐ Import from Favorites
+                        </button>
+                    </div>
+                ` : `
+                    <!-- Summary Cards -->
+                    <div class="grid grid-cols-4 gap-3">
+                        <div class="bg-gray-800/50 border border-gray-700 rounded-lg p-3 text-center">
+                            <div class="text-2xl font-bold text-blue-400">${symbols.length}</div>
+                            <div class="text-xs text-gray-400">Symbols</div>
+                        </div>
+                        <div class="bg-gray-800/50 border border-gray-700 rounded-lg p-3 text-center">
+                            <div class="text-2xl font-bold text-green-400">${rows.filter(r => r.day_impulse === 'green').length}</div>
+                            <div class="text-xs text-gray-400">Daily Green</div>
+                        </div>
+                        <div class="bg-gray-800/50 border border-gray-700 rounded-lg p-3 text-center">
+                            <div class="text-2xl font-bold text-red-400">${rows.filter(r => r.day_impulse === 'red').length}</div>
+                            <div class="text-xs text-gray-400">Daily Red</div>
+                        </div>
+                        <div class="bg-gray-800/50 border border-gray-700 rounded-lg p-3 text-center">
+                            <div class="text-2xl font-bold text-yellow-400">${rows.reduce((s, r) => s + (r.active_alerts || 0), 0)}</div>
+                            <div class="text-xs text-gray-400">Active Alerts</div>
+                        </div>
+                    </div>
+
+                    <!-- Multi-Timeframe Table -->
+                    <div class="bg-gray-800/50 border border-gray-700 rounded-xl overflow-hidden">
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm">
+                                <thead>
+                                    <tr class="border-b border-gray-700">
+                                        <th class="px-3 py-2 text-left text-gray-400" rowspan="2">Symbol</th>
+                                        <th class="px-3 py-2 text-right text-gray-400" rowspan="2">LTP</th>
+                                        <th class="px-2 py-1 text-center text-blue-400 border-l border-gray-600" colspan="4">Daily</th>
+                                        <th class="px-2 py-1 text-center text-purple-400 border-l border-gray-600" colspan="4">75 Min</th>
+                                        <th class="px-2 py-1 text-center text-cyan-400 border-l border-gray-600" colspan="4">15 Min</th>
+                                        <th class="px-2 py-1 text-center text-gray-400 border-l border-gray-600" rowspan="2">Alerts</th>
+                                        <th class="px-2 py-1 text-center text-gray-400" rowspan="2">Actions</th>
+                                    </tr>
+                                    <tr class="border-b border-gray-600 text-xs">
+                                        <th class="px-2 py-1 text-center text-blue-300 border-l border-gray-600">Impulse</th>
+                                        <th class="px-2 py-1 text-center text-blue-300">RSI</th>
+                                        <th class="px-2 py-1 text-center text-blue-300">ATR</th>
+                                        <th class="px-2 py-1 text-center text-blue-300">KC Pos</th>
+                                        <th class="px-2 py-1 text-center text-purple-300 border-l border-gray-600">Impulse</th>
+                                        <th class="px-2 py-1 text-center text-purple-300">RSI</th>
+                                        <th class="px-2 py-1 text-center text-purple-300">ATR</th>
+                                        <th class="px-2 py-1 text-center text-purple-300">KC Pos</th>
+                                        <th class="px-2 py-1 text-center text-cyan-300 border-l border-gray-600">Impulse</th>
+                                        <th class="px-2 py-1 text-center text-cyan-300">RSI</th>
+                                        <th class="px-2 py-1 text-center text-cyan-300">ATR</th>
+                                        <th class="px-2 py-1 text-center text-cyan-300">KC Pos</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${rows.map(r => {
+                                        const sym = r.symbol.replace('NSE:', '');
+                                        return `
+                                        <tr class="border-b border-gray-700/50 hover:bg-gray-700/30">
+                                            <td class="px-3 py-2 font-mono font-semibold text-white">${sym}</td>
+                                            <td class="px-3 py-2 text-right font-mono">${r.ltp ? r.ltp.toFixed(2) : '—'}</td>
+                                            ${renderTfCells(r, 'day')}
+                                            ${renderTfCells(r, '75min')}
+                                            ${renderTfCells(r, '15min')}
+                                            <td class="px-2 py-2 text-center border-l border-gray-600">
+                                                ${r.active_alerts > 0 ? `<span class="text-yellow-400 font-semibold">${r.active_alerts}</span>` : '<span class="text-gray-600">0</span>'}
+                                            </td>
+                                            <td class="px-2 py-2 text-center">
+                                                <div class="flex gap-1 justify-center">
+                                                    <button onclick="openCreateAlert('${r.symbol}')" class="px-2 py-1 text-xs bg-yellow-600/30 rounded hover:bg-yellow-600/50" title="Create Alert">🔔</button>
+                                                    <button onclick="openWatchlistDetail('${r.symbol}')" class="px-2 py-1 text-xs bg-blue-600/30 rounded hover:bg-blue-600/50" title="View Details">📊</button>
+                                                    <button onclick="removeWatchlistSymbol('${r.symbol}')" class="px-2 py-1 text-xs bg-red-600/30 rounded hover:bg-red-600/50" title="Remove">✕</button>
+                                                </div>
+                                            </td>
+                                        </tr>`;
+                                    }).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `}
+            </div>`;
+        } catch (e) {
+            html = `<div class="text-red-400">Error loading watchlist: ${e.message}</div>`;
+        }
+        return html;
+    }
+
+    function renderTfCells(r, tf) {
+        const impulse = r[tf + '_impulse'];
+        const rsi = r[tf + '_rsi'];
+        const atr = r[tf + '_atr'];
+        const kcUpper = r[tf + '_kc_upper'];
+        const kcLower = r[tf + '_kc_lower'];
+        const ltp = r.ltp;
+
+        // Impulse color badge
+        const impColor = impulse === 'green' ? 'bg-green-500' : impulse === 'red' ? 'bg-red-500' : 'bg-blue-500';
+        const impLabel = impulse ? impulse.charAt(0).toUpperCase() + impulse.slice(1) : '—';
+
+        // RSI color
+        const rsiColor = rsi > 70 ? 'text-red-400' : rsi < 30 ? 'text-green-400' : 'text-gray-300';
+
+        // KC position: where is LTP relative to KC bands
+        let kcPos = '—';
+        if (ltp && kcUpper && kcLower) {
+            const kcMid = (kcUpper + kcLower) / 2;
+            if (ltp >= kcUpper) kcPos = 'Above';
+            else if (ltp <= kcLower) kcPos = 'Below';
+            else if (ltp >= kcMid) kcPos = 'Mid-Up';
+            else kcPos = 'Mid-Lo';
+        }
+        const kcColor = kcPos === 'Below' ? 'text-green-400' : kcPos === 'Above' ? 'text-red-400' : 'text-gray-400';
+
+        const borderClass = tf === 'day' || tf === '75min' || tf === '15min' ? 'border-l border-gray-600' : '';
+
+        return `
+            <td class="px-2 py-2 text-center ${borderClass}">
+                <span class="inline-block w-2 h-2 rounded-full ${impColor}" title="${impLabel}"></span>
+                <span class="text-xs ml-1">${impLabel}</span>
+            </td>
+            <td class="px-2 py-2 text-center ${rsiColor} font-mono text-xs">${rsi ? rsi.toFixed(0) : '—'}</td>
+            <td class="px-2 py-2 text-center text-gray-400 font-mono text-xs">${atr ? atr.toFixed(1) : '—'}</td>
+            <td class="px-2 py-2 text-center ${kcColor} text-xs">${kcPos}</td>
+        `;
+    }
+
+    async function addWatchlistSymbol() {
+        const input = document.getElementById('wl-add-symbol');
+        const symbol = input.value.trim().toUpperCase();
+        if (!symbol) return;
+
+        try {
+            const resp = await fetch('/api/v2/trading-watchlist/add-symbol', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({symbol})
+            });
+            const data = await resp.json();
+            if (data.success) {
+                input.value = '';
+                toast(`${symbol} added to watchlist`, 'success');
+                render();
+            } else {
+                toast(data.error || 'Failed to add symbol', 'error');
+            }
+        } catch (e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    async function removeWatchlistSymbol(symbol) {
+        if (!confirm(`Remove ${symbol} from trading watchlist?`)) return;
+        try {
+            const resp = await fetch(`/api/v2/trading-watchlist/remove-symbol/${encodeURIComponent(symbol)}`, {method: 'DELETE'});
+            const data = await resp.json();
+            if (data.success) {
+                toast(`${symbol} removed`, 'success');
+                render();
+            } else {
+                toast(data.error || 'Failed to remove', 'error');
+            }
+        } catch (e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    async function populateFromFavorites() {
+        try {
+            const resp = await fetch('/api/v2/favorites');
+            const data = await resp.json();
+            const favs = data.favorites || [];
+            if (favs.length === 0) {
+                toast('No favorites found. Add favorites first.', 'error');
+                return;
+            }
+            const symbols = favs.map(f => f.symbol.replace('NSE:', '').trim().toUpperCase());
+            const saveResp = await fetch('/api/v2/trading-watchlist', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({symbols, name: 'Trading Watchlist'})
+            });
+            const saveData = await saveResp.json();
+            if (saveData.success) {
+                toast(`Imported ${symbols.length} favorites to watchlist`, 'success');
+                render();
+            }
+        } catch (e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    async function refreshWatchlistData() {
+        toast('Refreshing multi-timeframe data for all watchlist symbols...', 'info');
+        try {
+            const resp = await fetch('/api/v2/timeframe/refresh', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({})
+            });
+            const data = await resp.json();
+            if (data.success) {
+                const r = data.result || {};
+                toast(`Data refreshed: ${r.success||0}/${r.total||0} symbols in ${r.elapsed_seconds||0}s`, 'success');
+                render();
+            } else {
+                toast(data.error || 'Failed to refresh data', 'error');
+            }
+        } catch (e) {
+            toast('Failed to refresh data: ' + e.message, 'error');
+        }
+    }
+
+    function openCreateAlert(symbol) {
+        // Switch to alert manager and pre-fill symbol
+        window._prefillAlertSymbol = symbol;
+        switchTab('alert-manager');
+    }
+
+    function openWatchlistDetail(symbol) {
+        // Show detail modal with multi-TF chart data
+        toast(`Detail view for ${symbol} — coming in Phase 2`, 'info');
+    }
+
+    // ========== ALERT MANAGER ==========
+    let alertEditId = null;
+
+    async function alertManagerView() {
+        const prefill = window._prefillAlertSymbol || '';
+        window._prefillAlertSymbol = null;
+
+        let alertsHtml = '';
+        try {
+            const resp = await fetch('/api/v2/alerts');
+            const data = await resp.json();
+            const alerts = data.alerts || [];
+
+            const active = alerts.filter(a => a.status === 'active');
+            const paused = alerts.filter(a => a.status === 'paused');
+            const triggered = alerts.filter(a => a.status === 'triggered');
+
+            alertsHtml = `
+            <div class="space-y-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-xl font-bold">Alert Manager</h2>
+                        <p class="text-gray-500 text-sm">${active.length} active, ${paused.length} paused, ${triggered.length} triggered</p>
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="showCreateAlertForm('${prefill}')" class="px-4 py-2 bg-yellow-600 rounded-lg text-sm font-medium hover:bg-yellow-700">+ New Alert</button>
+                        <button onclick="viewAlertHistory()" class="px-3 py-2 bg-gray-700 rounded-lg text-sm hover:bg-gray-600">📜 History</button>
+                    </div>
+                </div>
+
+                <!-- Summary Cards -->
+                <div class="grid grid-cols-3 gap-3">
+                    <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-3 text-center">
+                        <div class="text-2xl font-bold text-green-400">${active.length}</div>
+                        <div class="text-xs text-gray-400">Active</div>
+                    </div>
+                    <div class="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 text-center">
+                        <div class="text-2xl font-bold text-yellow-400">${paused.length}</div>
+                        <div class="text-xs text-gray-400">Paused</div>
+                    </div>
+                    <div class="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3 text-center">
+                        <div class="text-2xl font-bold text-blue-400">${triggered.length}</div>
+                        <div class="text-xs text-gray-400">Triggered</div>
+                    </div>
+                </div>
+
+                <!-- Create Alert Form (hidden by default) -->
+                <div id="alert-form-container" class="hidden"></div>
+
+                <!-- Alerts Table -->
+                ${alerts.length === 0 ? `
+                    <div class="bg-gray-800/50 border border-gray-700 rounded-xl p-12 text-center">
+                        <div class="text-4xl mb-4">🔔</div>
+                        <h3 class="text-lg font-semibold mb-2">No Alerts Yet</h3>
+                        <p class="text-gray-500 mb-4">Create alerts to get notified when stocks hit your target prices.</p>
+                        <button onclick="showCreateAlertForm('')" class="px-4 py-2 bg-yellow-600 rounded-lg hover:bg-yellow-700">+ Create First Alert</button>
+                    </div>
+                ` : `
+                    <div class="bg-gray-800/50 border border-gray-700 rounded-xl overflow-hidden">
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="border-b border-gray-700">
+                                    <th class="px-3 py-2 text-left text-gray-400">Symbol</th>
+                                    <th class="px-3 py-2 text-left text-gray-400">Alert Name</th>
+                                    <th class="px-3 py-2 text-left text-gray-400">Dir</th>
+                                    <th class="px-3 py-2 text-left text-gray-400">Condition</th>
+                                    <th class="px-3 py-2 text-center text-gray-400">Candle</th>
+                                    <th class="px-3 py-2 text-center text-gray-400">Auto</th>
+                                    <th class="px-3 py-2 text-center text-gray-400">SL / Target</th>
+                                    <th class="px-3 py-2 text-center text-gray-400">Qty</th>
+                                    <th class="px-3 py-2 text-center text-gray-400">Status</th>
+                                    <th class="px-3 py-2 text-center text-gray-400">Triggers</th>
+                                    <th class="px-3 py-2 text-center text-gray-400">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${alerts.map(a => {
+                                    const sym = a.symbol.replace('NSE:','');
+                                    const statusColor = a.status === 'active' ? 'text-green-400' : a.status === 'paused' ? 'text-yellow-400' : 'text-blue-400';
+                                    return `
+                                    <tr class="border-b border-gray-700/50 hover:bg-gray-700/30">
+                                        <td class="px-3 py-2 font-mono font-semibold">${sym}</td>
+                                        <td class="px-3 py-2 text-gray-300">${a.alert_name || '—'}</td>
+                                        <td class="px-3 py-2"><span class="${a.direction==='LONG'?'text-green-400':'text-red-400'}">${a.direction}</span></td>
+                                        <td class="px-3 py-2 font-mono text-xs">${a.condition_operator || '<='} ${a.condition_value || '—'}</td>
+                                        <td class="px-3 py-2 text-center">${a.candle_confirm ? '✅' : '—'}</td>
+                                        <td class="px-3 py-2 text-center">${a.auto_trade ? '⚡' : '—'}</td>
+                                        <td class="px-3 py-2 text-center font-mono text-xs">${a.stop_loss || '—'} / ${a.target_price || '—'}</td>
+                                        <td class="px-3 py-2 text-center font-mono">${a.quantity || '—'}</td>
+                                        <td class="px-3 py-2 text-center ${statusColor} font-semibold text-xs uppercase">${a.status}</td>
+                                        <td class="px-3 py-2 text-center font-mono">${a.trigger_count || 0}</td>
+                                        <td class="px-3 py-2 text-center">
+                                            <div class="flex gap-1 justify-center">
+                                                <button onclick="toggleAlert(${a.id})" class="px-2 py-1 text-xs ${a.status==='active'?'bg-yellow-600/30':'bg-green-600/30'} rounded hover:opacity-80" title="${a.status==='active'?'Pause':'Activate'}">${a.status==='active'?'⏸':'▶'}</button>
+                                                <button onclick="editAlert(${a.id})" class="px-2 py-1 text-xs bg-blue-600/30 rounded hover:bg-blue-600/50" title="Edit">✏️</button>
+                                                <button onclick="deleteAlert(${a.id})" class="px-2 py-1 text-xs bg-red-600/30 rounded hover:bg-red-600/50" title="Delete">🗑️</button>
+                                            </div>
+                                        </td>
+                                    </tr>`;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `}
+            </div>`;
+
+        } catch (e) {
+            alertsHtml = `<div class="text-red-400">Error loading alerts: ${e.message}</div>`;
+        }
+
+        // Auto-show create form if prefill symbol given
+        if (prefill) {
+            setTimeout(() => showCreateAlertForm(prefill), 100);
+        }
+
+        return alertsHtml;
+    }
+
+    function showCreateAlertForm(symbol) {
+        alertEditId = null;
+        const container = document.getElementById('alert-form-container');
+        if (!container) return;
+        container.classList.remove('hidden');
+        container.innerHTML = renderAlertForm({symbol: symbol || '', direction: 'LONG', condition_operator: '<=', cooldown_minutes: 60, timeframe: '15min'});
+    }
+
+    async function editAlert(id) {
+        try {
+            const resp = await fetch(`/api/v2/alerts/${id}`);
+            const data = await resp.json();
+            if (!data.success) { toast('Alert not found', 'error'); return; }
+            alertEditId = id;
+            const container = document.getElementById('alert-form-container');
+            if (!container) return;
+            container.classList.remove('hidden');
+            container.innerHTML = renderAlertForm(data.alert);
+            container.scrollIntoView({behavior: 'smooth'});
+        } catch (e) { toast('Error: ' + e.message, 'error'); }
+    }
+
+    function renderAlertForm(a) {
+        const isEdit = !!alertEditId;
+        return `
+        <div class="bg-gray-800/50 border border-yellow-500/50 rounded-xl p-4">
+            <h3 class="text-lg font-semibold mb-3">${isEdit ? 'Edit Alert' : 'Create Alert'}</h3>
+            <div class="grid grid-cols-4 gap-3">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Symbol</label>
+                    <input id="af-symbol" value="${(a.symbol||'').replace('NSE:','')}" class="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm" placeholder="RELIANCE">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Alert Name</label>
+                    <input id="af-name" value="${a.alert_name||''}" class="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm" placeholder="Buy at support">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Direction</label>
+                    <select id="af-direction" class="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm">
+                        <option value="LONG" ${a.direction==='LONG'?'selected':''}>LONG</option>
+                        <option value="SHORT" ${a.direction==='SHORT'?'selected':''}>SHORT</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Timeframe</label>
+                    <select id="af-timeframe" class="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm">
+                        <option value="15min" ${a.timeframe==='15min'?'selected':''}>15 Min</option>
+                        <option value="75min" ${a.timeframe==='75min'?'selected':''}>75 Min</option>
+                        <option value="day" ${a.timeframe==='day'?'selected':''}>Daily</option>
+                    </select>
+                </div>
+            </div>
+            <div class="grid grid-cols-4 gap-3 mt-3">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Operator</label>
+                    <select id="af-operator" class="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm">
+                        <option value="<=" ${a.condition_operator==='<='?'selected':''}>Price &lt;= (at or below)</option>
+                        <option value=">=" ${a.condition_operator==='>='?'selected':''}>Price &gt;= (at or above)</option>
+                        <option value="<" ${a.condition_operator==='<'?'selected':''}>Price &lt; (below)</option>
+                        <option value=">" ${a.condition_operator==='>'?'selected':''}>Price &gt; (above)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Target Price</label>
+                    <input id="af-value" type="number" step="0.05" value="${a.condition_value||''}" class="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm" placeholder="2500.00">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Stop Loss</label>
+                    <input id="af-sl" type="number" step="0.05" value="${a.stop_loss||''}" class="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm" placeholder="SL price">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Take Profit</label>
+                    <input id="af-tp" type="number" step="0.05" value="${a.target_price||''}" class="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm" placeholder="Target price">
+                </div>
+            </div>
+            <div class="grid grid-cols-4 gap-3 mt-3">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Quantity</label>
+                    <input id="af-qty" type="number" value="${a.quantity||''}" class="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm" placeholder="Shares">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Cooldown (min)</label>
+                    <input id="af-cooldown" type="number" value="${a.cooldown_minutes||60}" class="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm">
+                </div>
+                <div class="flex items-end gap-4">
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input id="af-candle" type="checkbox" ${a.candle_confirm?'checked':''} class="w-4 h-4">
+                        <span class="text-sm">Candle Confirm</span>
+                    </label>
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input id="af-auto" type="checkbox" ${a.auto_trade?'checked':''} class="w-4 h-4">
+                        <span class="text-sm">Auto Trade</span>
+                    </label>
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Candle Pattern</label>
+                    <input id="af-pattern" value="${a.candle_pattern||''}" class="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm" placeholder="e.g. hammer, engulfing">
+                </div>
+            </div>
+            <div class="mt-3">
+                <label class="block text-xs text-gray-400 mb-1">Notes</label>
+                <input id="af-notes" value="${a.notes||''}" class="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm" placeholder="Notes about this alert">
+            </div>
+            <div class="flex gap-2 mt-4">
+                <button onclick="saveAlert()" class="px-4 py-2 bg-yellow-600 rounded-lg text-sm font-medium hover:bg-yellow-700">${isEdit ? 'Update Alert' : 'Create Alert'}</button>
+                <button onclick="document.getElementById('alert-form-container').classList.add('hidden')" class="px-4 py-2 bg-gray-700 rounded-lg text-sm hover:bg-gray-600">Cancel</button>
+            </div>
+        </div>`;
+    }
+
+    async function saveAlert() {
+        const payload = {
+            symbol: document.getElementById('af-symbol').value.trim(),
+            alert_name: document.getElementById('af-name').value.trim(),
+            direction: document.getElementById('af-direction').value,
+            timeframe: document.getElementById('af-timeframe').value,
+            condition_operator: document.getElementById('af-operator').value,
+            condition_value: parseFloat(document.getElementById('af-value').value) || null,
+            condition_type: 'price_level',
+            stop_loss: parseFloat(document.getElementById('af-sl').value) || null,
+            target_price: parseFloat(document.getElementById('af-tp').value) || null,
+            quantity: parseInt(document.getElementById('af-qty').value) || null,
+            cooldown_minutes: parseInt(document.getElementById('af-cooldown').value) || 60,
+            candle_confirm: document.getElementById('af-candle').checked,
+            auto_trade: document.getElementById('af-auto').checked,
+            candle_pattern: document.getElementById('af-pattern').value.trim(),
+            notes: document.getElementById('af-notes').value.trim(),
+            status: 'active'
+        };
+
+        if (!payload.symbol) { toast('Symbol is required', 'error'); return; }
+        if (!payload.condition_value) { toast('Target price is required', 'error'); return; }
+
+        try {
+            const url = alertEditId ? `/api/v2/alerts/${alertEditId}` : '/api/v2/alerts';
+            const method = alertEditId ? 'PUT' : 'POST';
+            const resp = await fetch(url, {method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+            const data = await resp.json();
+            if (data.success) {
+                toast(alertEditId ? 'Alert updated' : 'Alert created', 'success');
+                alertEditId = null;
+                render();
+            } else {
+                toast(data.error || 'Failed', 'error');
+            }
+        } catch (e) { toast('Error: ' + e.message, 'error'); }
+    }
+
+    async function toggleAlert(id) {
+        try {
+            const resp = await fetch(`/api/v2/alerts/${id}/toggle`, {method: 'POST'});
+            const data = await resp.json();
+            if (data.success) { toast(`Alert ${data.status}`, 'success'); render(); }
+        } catch (e) { toast('Error: ' + e.message, 'error'); }
+    }
+
+    async function deleteAlert(id) {
+        if (!confirm('Delete this alert?')) return;
+        try {
+            const resp = await fetch(`/api/v2/alerts/${id}`, {method: 'DELETE'});
+            const data = await resp.json();
+            if (data.success) { toast('Alert deleted', 'success'); render(); }
+        } catch (e) { toast('Error: ' + e.message, 'error'); }
+    }
+
+    async function viewAlertHistory() {
+        try {
+            const resp = await fetch('/api/v2/alerts/history');
+            const data = await resp.json();
+            const history = data.history || [];
+            document.getElementById('modal-body').innerHTML = `
+                <div class="p-6">
+                    <h3 class="text-lg font-bold mb-4">Alert Trigger History</h3>
+                    ${history.length === 0 ? '<p class="text-gray-500">No triggers recorded yet.</p>' : `
+                        <table class="w-full text-sm">
+                            <thead><tr class="border-b border-gray-700">
+                                <th class="px-3 py-2 text-left">Time</th>
+                                <th class="px-3 py-2 text-left">Symbol</th>
+                                <th class="px-3 py-2 text-left">Alert</th>
+                                <th class="px-3 py-2 text-right">Price</th>
+                                <th class="px-3 py-2 text-left">Action</th>
+                            </tr></thead>
+                            <tbody>
+                                ${history.map(h => `
+                                    <tr class="border-b border-gray-700/50">
+                                        <td class="px-3 py-2 text-xs text-gray-400">${h.trigger_time || '—'}</td>
+                                        <td class="px-3 py-2 font-mono">${(h.symbol||'').replace('NSE:','')}</td>
+                                        <td class="px-3 py-2">${h.alert_name || '—'}</td>
+                                        <td class="px-3 py-2 text-right font-mono">${h.trigger_price ? h.trigger_price.toFixed(2) : '—'}</td>
+                                        <td class="px-3 py-2 text-xs">${h.action_taken || '—'}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    `}
+                    <button onclick="document.getElementById('modal').classList.add('hidden')" class="mt-4 px-4 py-2 bg-gray-700 rounded-lg text-sm">Close</button>
+                </div>`;
+            document.getElementById('modal').classList.remove('hidden');
+        } catch (e) { toast('Error: ' + e.message, 'error'); }
+    }
+
+    // ========== MARKET ENGINE ==========
+    let _notificationPollTimer = null;
+
+    async function marketEngineView() {
+        let html = '';
+        try {
+            const resp = await fetch('/api/v2/engine/status');
+            const s = await resp.json();
+
+            const statusColor = s.status === 'running' ? 'text-green-400' : s.status === 'waiting' ? 'text-yellow-400' : 'text-gray-400';
+            const statusIcon = s.running ? '🟢' : '🔴';
+
+            html = `
+            <div class="space-y-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-xl font-bold">Market Engine</h2>
+                        <p class="text-gray-500 text-sm">Background daemon — 5-minute refresh cycle</p>
+                    </div>
+                    <div class="flex gap-2">
+                        ${s.running ? `
+                            <button onclick="engineRefresh()" class="px-3 py-2 bg-blue-600/30 border border-blue-500 rounded-lg text-sm hover:bg-blue-600/50">🔄 Refresh Now</button>
+                            <button onclick="engineStop()" class="px-4 py-2 bg-red-600 rounded-lg text-sm font-medium hover:bg-red-700">⏹ Stop Engine</button>
+                        ` : `
+                            <button onclick="engineStart()" class="px-4 py-2 bg-green-600 rounded-lg text-sm font-medium hover:bg-green-700">▶ Start Engine</button>
+                        `}
+                    </div>
+                </div>
+
+                <!-- Status Dashboard -->
+                <div class="grid grid-cols-6 gap-3">
+                    <div class="bg-gray-800/50 border border-gray-700 rounded-lg p-3 text-center">
+                        <div class="text-2xl">${statusIcon}</div>
+                        <div class="text-xs text-gray-400 mt-1">Status</div>
+                        <div class="text-sm font-semibold ${statusColor} uppercase">${s.status || 'stopped'}</div>
+                    </div>
+                    <div class="bg-gray-800/50 border border-gray-700 rounded-lg p-3 text-center">
+                        <div class="text-2xl font-bold text-blue-400">${s.cycles_completed || 0}</div>
+                        <div class="text-xs text-gray-400">Cycles</div>
+                    </div>
+                    <div class="bg-gray-800/50 border border-gray-700 rounded-lg p-3 text-center">
+                        <div class="text-2xl font-bold text-purple-400">${s.symbols_count || 0}</div>
+                        <div class="text-xs text-gray-400">Symbols</div>
+                    </div>
+                    <div class="bg-gray-800/50 border border-gray-700 rounded-lg p-3 text-center">
+                        <div class="text-2xl font-bold text-yellow-400">${s.alerts_triggered || 0}</div>
+                        <div class="text-xs text-gray-400">Triggers</div>
+                    </div>
+                    <div class="bg-gray-800/50 border border-gray-700 rounded-lg p-3 text-center">
+                        <div class="text-sm font-mono text-gray-300">${s.last_cycle_duration ? s.last_cycle_duration + 's' : '—'}</div>
+                        <div class="text-xs text-gray-400">Last Cycle</div>
+                    </div>
+                    <div class="bg-gray-800/50 border border-gray-700 rounded-lg p-3 text-center">
+                        <div class="text-2xl font-bold text-cyan-400">${s.pending_notifications || 0}</div>
+                        <div class="text-xs text-gray-400">Notifications</div>
+                    </div>
+                </div>
+
+                <!-- Timing Info -->
+                <div class="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
+                    <h3 class="text-sm font-semibold text-gray-300 mb-2">Engine Details</h3>
+                    <div class="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                            <span class="text-gray-500">Started:</span>
+                            <span class="text-gray-300 ml-2">${s.started_at ? new Date(s.started_at).toLocaleString() : '—'}</span>
+                        </div>
+                        <div>
+                            <span class="text-gray-500">Last Cycle:</span>
+                            <span class="text-gray-300 ml-2">${s.last_cycle ? new Date(s.last_cycle).toLocaleString() : '—'}</span>
+                        </div>
+                        <div>
+                            <span class="text-gray-500">Thread Alive:</span>
+                            <span class="${s.thread_alive ? 'text-green-400' : 'text-red-400'} ml-2">${s.thread_alive ? 'Yes' : 'No'}</span>
+                        </div>
+                        <div>
+                            <span class="text-gray-500">Alerts Evaluated:</span>
+                            <span class="text-gray-300 ml-2">${s.alerts_evaluated || 0} cycles</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Pending Notifications -->
+                <div id="engine-notifications-container"></div>
+
+                <!-- Recent Errors -->
+                ${s.errors_recent && s.errors_recent.length > 0 ? `
+                    <div class="bg-red-900/20 border border-red-500/30 rounded-xl p-4">
+                        <h3 class="text-sm font-semibold text-red-400 mb-2">Recent Errors</h3>
+                        ${s.errors_recent.map(e => `
+                            <div class="text-xs text-gray-400 mb-1">
+                                <span class="text-red-400">${e.time}</span> — ${e.error}
+                            </div>
+                        `).join('')}
+                    </div>
+                ` : ''}
+            </div>`;
+
+            // Load notifications after render
+            setTimeout(loadEngineNotifications, 100);
+
+        } catch (e) {
+            html = `<div class="text-red-400">Error loading engine status: ${e.message}</div>`;
+        }
+        return html;
+    }
+
+    async function engineStart() {
+        try {
+            const resp = await fetch('/api/v2/engine/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cycle_seconds: 300})});
+            const data = await resp.json();
+            toast(data.message, data.success ? 'success' : 'error');
+            if (data.success) { startNotificationPolling(); render(); }
+        } catch (e) { toast('Error: ' + e.message, 'error'); }
+    }
+
+    async function engineStop() {
+        try {
+            const resp = await fetch('/api/v2/engine/stop', {method: 'POST'});
+            const data = await resp.json();
+            toast(data.message, data.success ? 'success' : 'error');
+            stopNotificationPolling();
+            render();
+        } catch (e) { toast('Error: ' + e.message, 'error'); }
+    }
+
+    async function engineRefresh() {
+        try {
+            const resp = await fetch('/api/v2/engine/refresh', {method: 'POST'});
+            const data = await resp.json();
+            toast(data.message, data.success ? 'success' : 'info');
+        } catch (e) { toast('Error: ' + e.message, 'error'); }
+    }
+
+    async function loadEngineNotifications() {
+        try {
+            const resp = await fetch('/api/v2/engine/notifications');
+            const data = await resp.json();
+            const notifs = data.notifications || [];
+            const container = document.getElementById('engine-notifications-container');
+            if (!container) return;
+
+            if (notifs.length === 0) {
+                container.innerHTML = '';
+                return;
+            }
+
+            container.innerHTML = `
+                <div class="bg-gray-800/50 border border-yellow-500/30 rounded-xl p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="text-sm font-semibold text-yellow-400">Notifications (${notifs.length})</h3>
+                        <button onclick="acknowledgeAllNotifications()" class="text-xs text-gray-500 hover:text-gray-300">Dismiss All</button>
+                    </div>
+                    ${notifs.map(n => {
+                        const typeColor = n.type === 'alert_triggered' ? 'border-yellow-500' :
+                                          n.type === 'trade_created' ? 'border-green-500' :
+                                          n.type === 'error' ? 'border-red-500' : 'border-blue-500';
+                        const typeIcon = n.type === 'alert_triggered' ? '🔔' :
+                                         n.type === 'trade_created' ? '📈' :
+                                         n.type === 'error' ? '❌' : 'ℹ️';
+                        return `
+                        <div class="border-l-2 ${typeColor} pl-3 py-2 mb-2">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <span class="text-sm font-semibold">${typeIcon} ${n.title}</span>
+                                    <span class="text-xs text-gray-500 ml-2">${new Date(n.timestamp).toLocaleTimeString()}</span>
+                                </div>
+                                <button onclick="acknowledgeNotification(${n.id})" class="text-xs text-gray-500 hover:text-gray-300">✕</button>
+                            </div>
+                            <p class="text-xs text-gray-400 mt-1">${n.message}</p>
+                        </div>`;
+                    }).join('')}
+                </div>`;
+        } catch (e) {
+            // Silently fail — polling will retry
+        }
+    }
+
+    async function acknowledgeNotification(id) {
+        try {
+            await fetch('/api/v2/engine/notifications/acknowledge', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({id})
+            });
+            loadEngineNotifications();
+            updateNotificationBadge();
+        } catch (e) {}
+    }
+
+    async function acknowledgeAllNotifications() {
+        try {
+            await fetch('/api/v2/engine/notifications/acknowledge', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({})
+            });
+            loadEngineNotifications();
+            updateNotificationBadge();
+        } catch (e) {}
+    }
+
+    // Notification polling (10-second interval)
+    const _toastedNotifIds = new Set();  // Track which notifications we've already toasted
+
+    function startNotificationPolling() {
+        stopNotificationPolling();
+        _notificationPollTimer = setInterval(async () => {
+            try {
+                const resp = await fetch('/api/v2/engine/notifications');
+                const data = await resp.json();
+                const notifs = data.notifications || [];
+                if (notifs.length > 0) {
+                    updateNotificationBadge(notifs.length);
+                    // Toast only truly new notifications (not 'info' type like "Engine Started")
+                    for (const n of notifs) {
+                        if (!_toastedNotifIds.has(n.id) && n.type !== 'info') {
+                            toast(n.title + ': ' + n.message,
+                                  n.type === 'error' ? 'error' : n.type === 'trade_created' ? 'success' : 'info');
+                            _toastedNotifIds.add(n.id);
+                        }
+                    }
+                } else {
+                    updateNotificationBadge(0);
+                }
+            } catch (e) {}
+        }, 10000);
+    }
+
+    function stopNotificationPolling() {
+        if (_notificationPollTimer) {
+            clearInterval(_notificationPollTimer);
+            _notificationPollTimer = null;
+        }
+    }
+
+    function updateNotificationBadge(count) {
+        const badge = document.getElementById('notification-badge');
+        if (badge) {
+            badge.textContent = count || '';
+            badge.classList.toggle('hidden', !count);
+        }
+    }
+
+    // Auto-start polling on page load ONLY if engine is actually running
+    document.addEventListener('DOMContentLoaded', async () => {
+        try {
+            const resp = await fetch('/api/v2/engine/status');
+            const s = await resp.json();
+            if (s.running && s.status === 'running') startNotificationPolling();
+        } catch (e) {}
+    });
 
     // ========== SCREENER ==========
     let indicatorFilters = null; // Will hold user's indicator config
@@ -648,63 +1487,71 @@
     }
 
     let allStocks = null;
-
-    async function getAvailableStocks() {
-        if (allStocks) return allStocks;
-        
-        const market = document.getElementById('market').value;
-        const response = await api('POST', '/screener/weekly', {market});
-        allStocks = (response.all_results || []).map(r => ({
-            symbol: r.symbol,
-            name: r.name,
-            price: r.price,
-            ema_22: r.ema_22,
-            atr: r.atr
-        }));
-        return allStocks;
-    }
+    let _typeaheadTimer = null;
 
     async function handleTickerTypeahead(e) {
-        const input = e.target.value.toUpperCase();
+        const input = e.target.value.trim().toUpperCase();
         const list = document.getElementById('ticker-suggestions');
-        
-        if (!input) {
+
+        if (!input || input.length < 1) {
             list.innerHTML = '';
             return;
         }
 
-        try {
-            const stocks = await getAvailableStocks();
-            const matches = stocks.filter(s => 
-                s.symbol.startsWith(input) || s.name.toUpperCase().includes(input)
-            ).slice(0, 8);
+        // Debounce: wait 200ms after last keystroke
+        clearTimeout(_typeaheadTimer);
+        _typeaheadTimer = setTimeout(async () => {
+            try {
+                const resp = await fetch(`/api/v2/instruments/search?q=${encodeURIComponent(input)}&limit=10`);
+                const matches = await resp.json();
 
-            list.innerHTML = matches.map(s => `
-                <div onclick="selectStock('${s.symbol}')" class="px-3 py-2 hover:bg-[#1f2937] cursor-pointer text-sm">
-                    <div class="font-mono font-bold text-blue-400">${s.symbol}</div>
-                    <div class="text-xs text-gray-500">${s.name} - ₹${s.price?.toFixed(2)}</div>
-                </div>
-            `).join('');
-        } catch(e) {
-            console.log('Error fetching stocks:', e);
-        }
+                if (!Array.isArray(matches) || matches.length === 0) {
+                    list.innerHTML = '<div class="px-3 py-2 text-gray-500 text-xs">No matches. Load instruments from Settings first.</div>';
+                    return;
+                }
+
+                list.innerHTML = matches.map(s => `
+                    <div onclick="selectStock('${s.symbol}')" class="px-3 py-2 hover:bg-gray-700/50 cursor-pointer text-sm border-b border-gray-700/30">
+                        <div class="font-mono font-bold text-blue-400">${s.symbol}</div>
+                        <div class="text-xs text-gray-500">${s.name || ''}</div>
+                    </div>
+                `).join('');
+            } catch(err) {
+                console.log('Typeahead error:', err);
+                list.innerHTML = '';
+            }
+        }, 200);
     }
 
     async function selectStock(symbol) {
-        document.getElementById('tb-ticker').value = symbol;
+        // Strip NSE: prefix if present — APIs handle it internally
+        const cleanSymbol = symbol.replace('NSE:', '');
+        document.getElementById('tb-ticker').value = cleanSymbol;
         document.getElementById('ticker-suggestions').innerHTML = '';
 
         try {
             // Fetch stock data, live CMP, ATR, and candle patterns in parallel
+            // Use clean symbol (no NSE: prefix) — APIs add it internally
             const [stockResp, cmpResp, atrResp, candleResp] = await Promise.all([
-                fetch(`/api/v2/data/stock/${encodeURIComponent(symbol)}`).then(r => r.json()).catch(() => null),
-                fetch(`/api/v2/live-cmp/${encodeURIComponent(symbol)}`).then(r => r.json()).catch(() => null),
-                fetch(`/api/v2/stock-atr/${encodeURIComponent(symbol)}`).then(r => r.json()).catch(() => null),
-                fetch(`/api/v2/candle-pattern/${encodeURIComponent(symbol)}`).then(r => r.json()).catch(() => null)
+                fetch(`/api/v2/data/stock/${encodeURIComponent(cleanSymbol)}`).then(r => r.json()).catch(() => null),
+                fetch(`/api/v2/live-cmp/${encodeURIComponent(cleanSymbol)}`).then(r => r.json()).catch(() => null),
+                fetch(`/api/v2/stock-atr/${encodeURIComponent(cleanSymbol)}`).then(r => r.json()).catch(() => null),
+                fetch(`/api/v2/candle-pattern/${encodeURIComponent(cleanSymbol)}`).then(r => r.json()).catch(() => null)
             ]);
 
             if (!stockResp || stockResp.error) {
-                toast(stockResp?.error || `No cached data for ${symbol}`, 'warning');
+                // No cached data — try to at least get live CMP
+                if (cmpResp?.cmp) {
+                    document.getElementById('tb-cmp').value = cmpResp.cmp.toFixed(2);
+                    const srcEl = document.getElementById('cmp-source');
+                    if (srcEl) { srcEl.textContent = '● Live from Kite'; srcEl.className = 'text-xs mt-0.5 text-green-400'; }
+                    if (atrResp?.atr) document.getElementById('tb-atr').value = atrResp.atr.toFixed(2);
+                    toast(`${cleanSymbol} — Live CMP loaded. No cached data for entry/SL/target.`, 'info');
+                    autoCalculateTradeBill();
+                    startCMPRefresh(cleanSymbol);
+                    return;
+                }
+                toast(stockResp?.error || `No data for ${cleanSymbol}. Load market data from Settings.`, 'error');
                 return;
             }
 
@@ -745,10 +1592,10 @@
 
             // Trigger calculations
             autoCalculateTradeBill();
-            toast(`${symbol} loaded (${cmpSource})`, 'success');
+            toast(`${cleanSymbol} loaded (${cmpSource})`, 'success');
 
             // Start live CMP refresh if market is open
-            startCMPRefresh(symbol);
+            startCMPRefresh(cleanSymbol);
         } catch(e) {
             console.error('Error fetching stock data:', e);
             toast(`Error: ${e.message}. Load data from Settings first.`, 'error');
@@ -814,7 +1661,7 @@
             const data = await resp.json();
             historicalStocks = data.stocks || [];
         } catch(e) {
-            historicalStocks = ['NSE:RELIANCE','NSE:TCS','NSE:HDFCBANK','NSE:INFY','NSE:ICICIBANK','NSE:HINDUNILVR','NSE:SBIN','NSE:BHARTIARTL','NSE:ITC','NSE:KOTAKBANK'];
+            historicalStocks = ['RELIANCE','TCS','HDFCBANK','INFY','ICICIBANK','HINDUNILVR','SBIN','BHARTIARTL','ITC','KOTAKBANK'];
         }
         
         const html = `
@@ -1255,11 +2102,11 @@
         const market = 'IN';
         // NIFTY 100 stocks for NSE India
         const stocks = [
-            'NSE:RELIANCE', 'NSE:TCS', 'NSE:HDFCBANK', 'NSE:INFY', 'NSE:ICICIBANK',
-            'NSE:HINDUNILVR', 'NSE:SBIN', 'NSE:BHARTIARTL', 'NSE:ITC', 'NSE:KOTAKBANK',
-            'NSE:LT', 'NSE:AXISBANK', 'NSE:ASIANPAINT', 'NSE:MARUTI', 'NSE:TITAN',
-            'NSE:SUNPHARMA', 'NSE:ULTRACEMCO', 'NSE:BAJFINANCE', 'NSE:WIPRO', 'NSE:HCLTECH',
-            'NSE:POWERGRID', 'NSE:NTPC', 'NSE:M&M', 'NSE:JSWSTEEL'
+            'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK',
+            'HINDUNILVR', 'SBIN', 'BHARTIARTL', 'ITC', 'KOTAKBANK',
+            'LT', 'AXISBANK', 'ASIANPAINT', 'MARUTI', 'TITAN',
+            'SUNPHARMA', 'ULTRACEMCO', 'BAJFINANCE', 'WIPRO', 'HCLTECH',
+            'POWERGRID', 'NTPC', 'M&M', 'JSWSTEEL'
         ];
         
         if (rsiMacdSelectedStocks.length === 0) rsiMacdSelectedStocks = stocks.slice(0, 20);
@@ -1426,7 +2273,7 @@
                     <div class="grid grid-cols-3 gap-4">
                         <div>
                             <label class="text-sm text-gray-400">Ticker (NSE)</label>
-                            <input id="tb-ticker" value="${tb.ticker||''}" placeholder="NSE:RELIANCE" onkeyup="handleTickerTypeahead(event)" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono">
+                            <input id="tb-ticker" value="${tb.ticker||''}" placeholder="RELIANCE" onkeyup="handleTickerTypeahead(event)" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono">
                             <div id="ticker-suggestions" class="mt-1 bg-[#1f2937] rounded-lg border border-gray-600 max-h-40 overflow-y-auto"></div>
                         </div>
                         <div>
@@ -2945,7 +3792,7 @@
                 <div class="bg-[#111827] rounded-xl p-4 border border-gray-700">
                     <h4 class="text-sm font-bold text-gray-400 border-b border-gray-600 pb-2 mb-3">Trade Setup</h4>
                     <div class="grid grid-cols-8 gap-3 text-xs">
-                        <div><label class="text-gray-500">Ticker</label><input id="tl-ticker" value="${j.ticker||''}" placeholder="NSE:RELIANCE" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                        <div><label class="text-gray-500">Ticker</label><input id="tl-ticker" value="${j.ticker||''}" placeholder="RELIANCE" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
                         <div><label class="text-gray-500">Date</label><input type="date" id="tl-date" value="${j.journal_date||new Date().toISOString().split('T')[0]}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded"></div>
                         <div><label class="text-gray-500">Direction</label><select id="tl-direction" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded">${directions.map(d => `<option ${j.direction===d?'selected':''}>${d}</option>`).join('')}</select></div>
                         <div><label class="text-gray-500">Strategy</label><select id="tl-strategy" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded">${strategies.map(s => `<option ${j.strategy===s?'selected':''}>${s}</option>`).join('')}</select></div>

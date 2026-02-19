@@ -94,6 +94,9 @@ if __name__ == '__main__':
 
     threading.Thread(target=open_browser, daemon=True).start()
 
+    # Market Engine is NOT auto-started — user starts it from the Engine tab
+    print("  Market Engine: Ready (start from Engine tab in UI)")
+
     app.run(
         host='0.0.0.0',
         port=5001,

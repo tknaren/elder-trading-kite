@@ -888,6 +888,161 @@ class Database:
                 ALTER TABLE trade_journal_v2 ADD mistake NVARCHAR(200)
         """)
 
+        # ══════════════════════════════════════════════════════════════
+        # MARKET MONITOR TABLES (Watchlist + Alerts + Engine)
+        # ══════════════════════════════════════════════════════════════
+
+        # Intraday OHLCV — multi-timeframe candles (15min, 75min, day)
+        conn.execute("""
+            IF OBJECT_ID('intraday_ohlcv', 'U') IS NULL
+            CREATE TABLE intraday_ohlcv (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                symbol NVARCHAR(100) NOT NULL,
+                timeframe NVARCHAR(20) NOT NULL,
+                candle_time DATETIME2 NOT NULL,
+                [open] FLOAT NOT NULL,
+                high FLOAT NOT NULL,
+                low FLOAT NOT NULL,
+                [close] FLOAT NOT NULL,
+                volume BIGINT NOT NULL DEFAULT 0,
+                created_at DATETIME2 DEFAULT GETDATE(),
+                CONSTRAINT UQ_intraday_ohlcv UNIQUE(symbol, timeframe, candle_time)
+            )
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_intraday_ohlcv_sym_tf')
+            CREATE INDEX idx_intraday_ohlcv_sym_tf ON intraday_ohlcv(symbol, timeframe, candle_time DESC)
+        """)
+
+        # Intraday Indicators — per timeframe per candle
+        conn.execute("""
+            IF OBJECT_ID('intraday_indicators', 'U') IS NULL
+            CREATE TABLE intraday_indicators (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                symbol NVARCHAR(100) NOT NULL,
+                timeframe NVARCHAR(20) NOT NULL,
+                candle_time DATETIME2 NOT NULL,
+                ema_13 FLOAT,
+                ema_22 FLOAT,
+                ema_50 FLOAT,
+                macd_line FLOAT,
+                macd_signal FLOAT,
+                macd_histogram FLOAT,
+                rsi FLOAT,
+                atr FLOAT,
+                force_index FLOAT,
+                stochastic FLOAT,
+                stoch_d FLOAT,
+                impulse_color NVARCHAR(10),
+                kc_upper FLOAT,
+                kc_middle FLOAT,
+                kc_lower FLOAT,
+                created_at DATETIME2 DEFAULT GETDATE(),
+                CONSTRAINT UQ_intraday_indicators UNIQUE(symbol, timeframe, candle_time)
+            )
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_intraday_ind_sym_tf')
+            CREATE INDEX idx_intraday_ind_sym_tf ON intraday_indicators(symbol, timeframe, candle_time DESC)
+        """)
+
+        # Stock Alerts — user-defined price/candle alerts
+        conn.execute("""
+            IF OBJECT_ID('stock_alerts', 'U') IS NULL
+            CREATE TABLE stock_alerts (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                user_id INT NOT NULL,
+                symbol NVARCHAR(100) NOT NULL,
+                alert_name NVARCHAR(200),
+                direction NVARCHAR(20) DEFAULT 'LONG',
+                condition_type NVARCHAR(50) NOT NULL,
+                condition_value FLOAT,
+                condition_operator NVARCHAR(10) DEFAULT '<=',
+                timeframe NVARCHAR(20) DEFAULT '15min',
+                candle_confirm BIT DEFAULT 0,
+                candle_pattern NVARCHAR(200),
+                auto_trade BIT DEFAULT 0,
+                stop_loss FLOAT,
+                target_price FLOAT,
+                quantity INT,
+                status NVARCHAR(20) DEFAULT 'active',
+                triggered_at DATETIME2,
+                trigger_count INT DEFAULT 0,
+                cooldown_minutes INT DEFAULT 60,
+                last_trigger_time DATETIME2,
+                notes NVARCHAR(MAX),
+                created_at DATETIME2 DEFAULT GETDATE(),
+                updated_at DATETIME2 DEFAULT GETDATE(),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_alerts_user_status')
+            CREATE INDEX idx_alerts_user_status ON stock_alerts(user_id, status)
+        """)
+
+        # Alert History — audit log of trigger events
+        conn.execute("""
+            IF OBJECT_ID('alert_history', 'U') IS NULL
+            CREATE TABLE alert_history (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                alert_id INT NOT NULL,
+                user_id INT NOT NULL,
+                symbol NVARCHAR(100) NOT NULL,
+                trigger_price FLOAT,
+                trigger_time DATETIME2 DEFAULT GETDATE(),
+                action_taken NVARCHAR(50),
+                trade_bill_id INT,
+                gtt_order_id NVARCHAR(100),
+                journal_id INT,
+                details NVARCHAR(MAX),
+                created_at DATETIME2 DEFAULT GETDATE(),
+                FOREIGN KEY (alert_id) REFERENCES stock_alerts(id),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+
+        # Market Engine State — persists background engine config
+        conn.execute("""
+            IF OBJECT_ID('market_engine_state', 'U') IS NULL
+            CREATE TABLE market_engine_state (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                engine_key NVARCHAR(100) NOT NULL UNIQUE,
+                engine_value NVARCHAR(MAX),
+                updated_at DATETIME2 DEFAULT GETDATE()
+            )
+        """)
+
+        # Column migrations for watchlists table
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('watchlists') AND name = 'is_trading_watchlist')
+                ALTER TABLE watchlists ADD is_trading_watchlist BIT DEFAULT 0
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('watchlists') AND name = 'auto_refresh')
+                ALTER TABLE watchlists ADD auto_refresh BIT DEFAULT 1
+        """)
+
+        # Column migrations for trade_bills — link to alerts
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('trade_bills') AND name = 'alert_id')
+                ALTER TABLE trade_bills ADD alert_id INT
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('trade_bills') AND name = 'auto_created')
+                ALTER TABLE trade_bills ADD auto_created BIT DEFAULT 0
+        """)
+
+        # Column migrations for trade_journal_v2 — link to alerts
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('trade_journal_v2') AND name = 'alert_id')
+                ALTER TABLE trade_journal_v2 ADD alert_id INT
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('trade_journal_v2') AND name = 'auto_created')
+                ALTER TABLE trade_journal_v2 ADD auto_created BIT DEFAULT 0
+        """)
+
         # Fix cache table schemas - add missing columns
         conn.execute("""
             IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('kite_orders_cache') AND name = 'user_id')

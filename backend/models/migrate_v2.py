@@ -71,6 +71,51 @@ def migrate_database(connection_string: str = None):
                 errors.append(f"{table}.{column} -> {error_msg}")
 
     conn.commit()
+
+    # ── Data cleanup: Strip NSE: prefix from all symbol columns ──
+    # All trades are NSE-only, so we store bare symbols (e.g., 'RELIANCE' not 'NSE:RELIANCE')
+    # Kite API functions add the prefix internally when needed.
+    data_cleanups = [
+        ("UPDATE intraday_ohlcv SET symbol = REPLACE(symbol, 'NSE:', '') WHERE symbol LIKE 'NSE:%'",
+         "intraday_ohlcv"),
+        ("UPDATE intraday_indicators SET symbol = REPLACE(symbol, 'NSE:', '') WHERE symbol LIKE 'NSE:%'",
+         "intraday_indicators"),
+        ("UPDATE stock_alerts SET symbol = REPLACE(symbol, 'NSE:', '') WHERE symbol LIKE 'NSE:%'",
+         "stock_alerts"),
+        ("UPDATE alert_history SET symbol = REPLACE(symbol, 'NSE:', '') WHERE symbol LIKE 'NSE:%'",
+         "alert_history"),
+    ]
+
+    cleanup_count = 0
+    for sql, table_name in data_cleanups:
+        try:
+            cursor.execute(sql)
+            rows_affected = cursor.rowcount
+            if rows_affected > 0:
+                cleanup_count += rows_affected
+        except pyodbc.Error:
+            pass  # Table may not exist yet
+
+    # Also normalize watchlist JSON arrays to strip NSE: prefix
+    try:
+        cursor.execute("SELECT id, symbols FROM watchlists WHERE symbols LIKE '%NSE:%'")
+        import json as _json
+        for row in cursor.fetchall():
+            wl_id = row[0]
+            raw = _json.loads(row[1]) if row[1] else []
+            cleaned = list(dict.fromkeys(
+                s.replace('NSE:', '').strip().upper() for s in raw if s
+            ))
+            cursor.execute("UPDATE watchlists SET symbols = ? WHERE id = ?",
+                           (_json.dumps(cleaned), wl_id))
+            cleanup_count += 1
+    except pyodbc.Error:
+        pass
+
+    if cleanup_count > 0:
+        conn.commit()
+        print(f"Data cleanup: {cleanup_count} rows normalized (NSE: prefix removed)")
+
     conn.close()
 
     print(f"Migration complete: {success} applied, {skipped} skipped, {len(errors)} errors")

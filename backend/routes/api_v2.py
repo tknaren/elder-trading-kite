@@ -119,7 +119,11 @@ def load_market_data():
 
     # Check if already loaded today
     if last_refresh:
-        last_date = last_refresh[:10]  # Extract date part
+        # Handle both datetime objects and strings
+        if hasattr(last_refresh, 'strftime'):
+            last_date = last_refresh.strftime('%Y-%m-%d')
+        else:
+            last_date = str(last_refresh)[:10]  # Extract date part from string
         if last_date == today:
             return jsonify({
                 'success': True,
@@ -307,12 +311,15 @@ def get_data_status():
     })
 
 
-def _is_data_stale(last_refresh: str) -> bool:
+def _is_data_stale(last_refresh) -> bool:
     """Check if data is stale (not refreshed today)"""
     if not last_refresh:
         return True
     try:
-        last_date = last_refresh[:10]
+        if hasattr(last_refresh, 'strftime'):
+            last_date = last_refresh.strftime('%Y-%m-%d')
+        else:
+            last_date = str(last_refresh)[:10]
         today = datetime.now().strftime('%Y-%m-%d')
         return last_date != today
     except:
@@ -2250,11 +2257,15 @@ def load_instruments():
     """
     try:
         client = get_client()
-        if not client:
-            return jsonify({'error': 'Kite not connected'}), 400
+        if not client or not client.kite:
+            return jsonify({'error': 'Kite not connected. Login first.'}), 400
 
-        # Fetch all NSE instruments
-        instruments = client.instruments('NSE')
+        if not client._authenticated:
+            return jsonify({'error': 'Not authenticated with Kite. Please login first.'}), 401
+
+        # Fetch all NSE instruments via Kite SDK
+        client._rate_limit()
+        instruments = client.kite.instruments('NSE')
 
         db = get_db()
         loaded_count = 0
@@ -3062,3 +3073,586 @@ def get_account_overview():
             'money_locked': total_positions_value
         }
     })
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TRADING WATCHLIST ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════════
+
+@api_v2.route('/trading-watchlist', methods=['GET'])
+def get_trading_watchlist():
+    """Get the trading watchlist with LTP and latest indicators per timeframe"""
+    db = get_db()
+    user_id = get_user_id()
+
+    # Find the trading watchlist
+    wl = db.execute('''
+        SELECT id, name, symbols FROM watchlists
+        WHERE user_id = ? AND is_trading_watchlist = 1
+    ''', (user_id,)).fetchone()
+
+    if not wl:
+        return jsonify({'success': True, 'watchlist': None, 'symbols': [], 'data': []})
+
+    raw_symbols = json.loads(wl['symbols']) if wl['symbols'] else []
+    # Normalize all symbols to bare format (strip NSE: prefix)
+    symbols = [s.replace('NSE:', '').strip().upper() for s in raw_symbols]
+
+    # Fetch live LTP from Kite for all symbols at once (batch call)
+    ltp_map = {}
+    try:
+        client = get_client()
+        if client and client._authenticated and symbols:
+            ltp_data = client.get_ltp(symbols)
+            for sym_key, data in ltp_data.items():
+                bare = sym_key.replace('NSE:', '').strip()
+                ltp_map[bare] = data.get('last_price')
+    except Exception as e:
+        print(f"  LTP fetch for watchlist: {e}")
+
+    # Build enriched data for each symbol
+    enriched = []
+    for sym in symbols:
+        row = {'symbol': sym}
+
+        # Get latest indicator per timeframe (1D, 75min, 15min)
+        for tf in ['day', '75min', '15min']:
+            ind = db.execute('''
+                SELECT TOP 1 rsi, atr, impulse_color, kc_upper, kc_middle, kc_lower,
+                       ema_13, ema_22, macd_histogram, candle_time
+                FROM intraday_indicators
+                WHERE symbol = ? AND timeframe = ?
+                ORDER BY candle_time DESC
+            ''', (sym, tf)).fetchone()
+
+            if ind:
+                row[f'{tf}_rsi'] = ind['rsi']
+                row[f'{tf}_atr'] = ind['atr']
+                row[f'{tf}_impulse'] = ind['impulse_color']
+                row[f'{tf}_kc_upper'] = ind['kc_upper']
+                row[f'{tf}_kc_middle'] = ind['kc_middle']
+                row[f'{tf}_kc_lower'] = ind['kc_lower']
+                row[f'{tf}_ema13'] = ind['ema_13']
+                row[f'{tf}_ema22'] = ind['ema_22']
+                row[f'{tf}_macd_hist'] = ind['macd_histogram']
+                row[f'{tf}_time'] = str(ind['candle_time']) if ind['candle_time'] else None
+
+        # Use live LTP if available, fallback to latest daily close
+        if sym in ltp_map:
+            row['ltp'] = ltp_map[sym]
+        else:
+            latest = db.execute('''
+                SELECT TOP 1 [close] FROM intraday_ohlcv
+                WHERE symbol = ? AND timeframe = 'day'
+                ORDER BY candle_time DESC
+            ''', (sym,)).fetchone()
+            row['ltp'] = latest['close'] if latest else None
+
+        # Count active alerts for this symbol
+        alert_count = db.execute('''
+            SELECT COUNT(*) as cnt FROM stock_alerts
+            WHERE user_id = ? AND symbol = ? AND status = 'active'
+        ''', (user_id, sym)).fetchone()
+        row['active_alerts'] = alert_count['cnt'] if alert_count else 0
+
+        enriched.append(row)
+
+    return jsonify({
+        'success': True,
+        'watchlist': {'id': wl['id'], 'name': wl['name']},
+        'symbols': symbols,
+        'data': enriched
+    })
+
+
+@api_v2.route('/trading-watchlist', methods=['POST'])
+def create_or_update_trading_watchlist():
+    """Create or update the trading watchlist"""
+    db = get_db()
+    user_id = get_user_id()
+    data = request.get_json()
+    # Normalize all symbols to bare format (strip NSE: prefix)
+    symbols = [s.replace('NSE:', '').strip().upper() for s in data.get('symbols', [])]
+    name = data.get('name', 'Trading Watchlist')
+
+    # Check if trading watchlist exists
+    existing = db.execute('''
+        SELECT id FROM watchlists
+        WHERE user_id = ? AND is_trading_watchlist = 1
+    ''', (user_id,)).fetchone()
+
+    if existing:
+        db.execute('''
+            UPDATE watchlists SET symbols = ?, name = ?, auto_refresh = 1
+            WHERE id = ?
+        ''', (json.dumps(symbols), name, existing['id']))
+        wl_id = existing['id']
+    else:
+        row = db.execute('''
+            INSERT INTO watchlists (user_id, name, market, symbols, is_default, is_trading_watchlist, auto_refresh)
+            OUTPUT INSERTED.id
+            VALUES (?, ?, 'IN', ?, 0, 1, 1)
+        ''', (user_id, name, json.dumps(symbols))).fetchone()
+        wl_id = int(row[0])
+
+    db.commit()
+    return jsonify({'success': True, 'id': wl_id, 'symbols': symbols})
+
+
+@api_v2.route('/trading-watchlist/add-symbol', methods=['POST'])
+def add_trading_watchlist_symbol():
+    """Add a single symbol to the trading watchlist"""
+    db = get_db()
+    user_id = get_user_id()
+    data = request.get_json()
+    symbol = data.get('symbol', '').strip()
+
+    if not symbol:
+        return jsonify({'error': 'Symbol is required'}), 400
+
+    # Store clean symbol without exchange prefix
+    symbol = symbol.replace('NSE:', '').strip().upper()
+
+    # Get or create trading watchlist
+    wl = db.execute('''
+        SELECT id, symbols FROM watchlists
+        WHERE user_id = ? AND is_trading_watchlist = 1
+    ''', (user_id,)).fetchone()
+
+    if wl:
+        raw_symbols = json.loads(wl['symbols']) if wl['symbols'] else []
+        # Normalize existing symbols: strip NSE: prefix, deduplicate
+        symbols = list(dict.fromkeys(
+            s.replace('NSE:', '').strip().upper() for s in raw_symbols
+        ))
+        if symbol not in symbols:
+            symbols.append(symbol)
+        # Always update to ensure normalized format is persisted
+        db.execute('UPDATE watchlists SET symbols = ? WHERE id = ?',
+                   (json.dumps(symbols), wl['id']))
+        wl_id = wl['id']
+    else:
+        symbols = [symbol]
+        row = db.execute('''
+            INSERT INTO watchlists (user_id, name, market, symbols, is_default, is_trading_watchlist, auto_refresh)
+            OUTPUT INSERTED.id
+            VALUES (?, 'Trading Watchlist', 'IN', ?, 0, 1, 1)
+        ''', (user_id, json.dumps(symbols))).fetchone()
+        wl_id = int(row[0])
+
+    db.commit()
+    return jsonify({'success': True, 'id': wl_id, 'symbols': symbols})
+
+
+@api_v2.route('/trading-watchlist/remove-symbol/<path:symbol>', methods=['DELETE'])
+def remove_trading_watchlist_symbol(symbol):
+    """Remove a symbol from the trading watchlist"""
+    db = get_db()
+    user_id = get_user_id()
+
+    # Normalize to bare symbol
+    bare_symbol = symbol.replace('NSE:', '').strip().upper()
+
+    wl = db.execute('''
+        SELECT id, symbols FROM watchlists
+        WHERE user_id = ? AND is_trading_watchlist = 1
+    ''', (user_id,)).fetchone()
+
+    if not wl:
+        return jsonify({'error': 'Trading watchlist not found'}), 404
+
+    symbols = json.loads(wl['symbols']) if wl['symbols'] else []
+
+    # Remove symbol (try bare and with NSE: prefix for backward compat)
+    if bare_symbol in symbols:
+        symbols.remove(bare_symbol)
+    elif f'NSE:{bare_symbol}' in symbols:
+        symbols.remove(f'NSE:{bare_symbol}')
+    else:
+        return jsonify({'error': f'Symbol {bare_symbol} not in watchlist'}), 404
+
+    db.execute('UPDATE watchlists SET symbols = ? WHERE id = ?',
+               (json.dumps(symbols), wl['id']))
+
+    # Also deactivate any alerts for this symbol (check both formats)
+    db.execute('''
+        UPDATE stock_alerts SET status = 'paused'
+        WHERE user_id = ? AND (symbol = ? OR symbol = ?) AND status = 'active'
+    ''', (user_id, bare_symbol, f'NSE:{bare_symbol}'))
+
+    db.commit()
+    return jsonify({'success': True, 'symbols': symbols})
+
+
+@api_v2.route('/trading-watchlist/symbols', methods=['GET'])
+def get_trading_watchlist_symbols():
+    """Lightweight endpoint — just symbol list for the engine"""
+    db = get_db()
+    user_id = get_user_id()
+
+    wl = db.execute('''
+        SELECT symbols FROM watchlists
+        WHERE user_id = ? AND is_trading_watchlist = 1 AND auto_refresh = 1
+    ''', (user_id,)).fetchone()
+
+    if not wl:
+        return jsonify({'success': True, 'symbols': []})
+
+    symbols = json.loads(wl['symbols']) if wl['symbols'] else []
+    return jsonify({'success': True, 'symbols': symbols})
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TIMEFRAME DATA ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════════
+
+@api_v2.route('/timeframe/refresh', methods=['POST'])
+def refresh_timeframe_data():
+    """Refresh multi-timeframe data for all watchlist symbols (or specific symbol)"""
+    from services.timeframe_data import refresh_all_timeframes, refresh_symbol_timeframes
+    data = request.get_json() or {}
+    symbol = data.get('symbol')
+
+    if symbol:
+        # Refresh single symbol
+        result = refresh_symbol_timeframes(symbol)
+        return jsonify({'success': True, 'result': result})
+    else:
+        # Refresh all watchlist symbols
+        db = get_db()
+        user_id = get_user_id()
+        wl = db.execute('''
+            SELECT symbols FROM watchlists
+            WHERE user_id = ? AND is_trading_watchlist = 1
+        ''', (user_id,)).fetchone()
+
+        if not wl:
+            return jsonify({'error': 'No trading watchlist found'}), 404
+
+        symbols = json.loads(wl['symbols']) if wl['symbols'] else []
+        if not symbols:
+            return jsonify({'error': 'Watchlist is empty'}), 400
+
+        result = refresh_all_timeframes(symbols)
+        return jsonify({'success': True, 'result': result})
+
+
+@api_v2.route('/timeframe/indicators/<path:symbol>', methods=['GET'])
+def get_timeframe_indicators(symbol):
+    """Get latest indicators for a symbol across all timeframes"""
+    from services.timeframe_data import get_latest_indicators
+
+    result = {}
+    for tf in ['day', '75min', '15min']:
+        ind = get_latest_indicators(symbol, tf)
+        if ind:
+            result[tf] = ind
+
+    return jsonify({'success': True, 'symbol': symbol, 'indicators': result})
+
+
+@api_v2.route('/timeframe/ohlcv/<path:symbol>', methods=['GET'])
+def get_timeframe_ohlcv(symbol):
+    """Get stored OHLCV candles for a symbol and timeframe"""
+    from services.timeframe_data import get_ohlcv_history
+
+    timeframe = request.args.get('timeframe', 'day')
+    limit = int(request.args.get('limit', 100))
+
+    candles = get_ohlcv_history(symbol, timeframe, limit)
+    return jsonify({'success': True, 'symbol': symbol, 'timeframe': timeframe, 'candles': candles})
+
+
+@api_v2.route('/timeframe/status', methods=['GET'])
+def get_timeframe_status():
+    """Get data freshness status for all watchlist symbols"""
+    db = get_db()
+    user_id = get_user_id()
+
+    wl = db.execute('''
+        SELECT symbols FROM watchlists
+        WHERE user_id = ? AND is_trading_watchlist = 1
+    ''', (user_id,)).fetchone()
+
+    if not wl:
+        return jsonify({'success': True, 'symbols': []})
+
+    symbols = json.loads(wl['symbols']) if wl['symbols'] else []
+    status_list = []
+
+    for sym in symbols:
+        sym_status = {'symbol': sym}
+        for tf in ['day', '75min', '15min']:
+            row = db.execute('''
+                SELECT TOP 1 candle_time FROM intraday_ohlcv
+                WHERE symbol = ? AND timeframe = ?
+                ORDER BY candle_time DESC
+            ''', (sym, tf)).fetchone()
+            sym_status[f'{tf}_latest'] = str(row['candle_time']) if row else None
+
+            ind_row = db.execute('''
+                SELECT TOP 1 candle_time FROM intraday_indicators
+                WHERE symbol = ? AND timeframe = ?
+                ORDER BY candle_time DESC
+            ''', (sym, tf)).fetchone()
+            sym_status[f'{tf}_ind_latest'] = str(ind_row['candle_time']) if ind_row else None
+
+        status_list.append(sym_status)
+
+    return jsonify({'success': True, 'status': status_list})
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ALERT CRUD ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════════
+
+@api_v2.route('/alerts', methods=['GET'])
+def get_alerts():
+    """Get all alerts for the user, optionally filtered by status or symbol"""
+    db = get_db()
+    user_id = get_user_id()
+    status = request.args.get('status')
+    symbol = request.args.get('symbol')
+
+    query = 'SELECT * FROM stock_alerts WHERE user_id = ?'
+    params = [user_id]
+
+    if status:
+        query += ' AND status = ?'
+        params.append(status)
+    if symbol:
+        query += ' AND symbol = ?'
+        params.append(symbol)
+
+    query += ' ORDER BY created_at DESC'
+    alerts = db.execute(query, tuple(params)).fetchall()
+    return jsonify({'success': True, 'alerts': [dict(a) for a in alerts]})
+
+
+@api_v2.route('/alerts/<int:alert_id>', methods=['GET'])
+def get_alert(alert_id):
+    """Get a single alert by ID"""
+    db = get_db()
+    user_id = get_user_id()
+
+    alert = db.execute('''
+        SELECT * FROM stock_alerts WHERE id = ? AND user_id = ?
+    ''', (alert_id, user_id)).fetchone()
+
+    if not alert:
+        return jsonify({'error': 'Alert not found'}), 404
+
+    return jsonify({'success': True, 'alert': dict(alert)})
+
+
+@api_v2.route('/alerts', methods=['POST'])
+def create_alert():
+    """Create a new price alert"""
+    db = get_db()
+    user_id = get_user_id()
+    data = request.get_json()
+
+    symbol = data.get('symbol', '').strip()
+    if not symbol:
+        return jsonify({'error': 'Symbol is required'}), 400
+    # Store bare symbol without exchange prefix (all trades are NSE)
+    symbol = symbol.replace('NSE:', '').strip().upper()
+
+    row = db.execute('''
+        INSERT INTO stock_alerts (
+            user_id, symbol, alert_name, direction,
+            condition_type, condition_value, condition_operator,
+            timeframe, candle_confirm, candle_pattern,
+            auto_trade, stop_loss, target_price, quantity,
+            cooldown_minutes, notes
+        )
+        OUTPUT INSERTED.id
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        user_id, symbol,
+        data.get('alert_name', f'{symbol} Alert'),
+        data.get('direction', 'LONG'),
+        data.get('condition_type', 'price_below'),
+        data.get('condition_value'),
+        data.get('condition_operator', '<='),
+        data.get('timeframe', '15min'),
+        1 if data.get('candle_confirm') else 0,
+        data.get('candle_pattern'),
+        1 if data.get('auto_trade') else 0,
+        data.get('stop_loss'),
+        data.get('target_price'),
+        data.get('quantity'),
+        data.get('cooldown_minutes', 60),
+        data.get('notes')
+    )).fetchone()
+
+    db.commit()
+    alert_id = int(row[0])
+    return jsonify({'success': True, 'id': alert_id}), 201
+
+
+@api_v2.route('/alerts/<int:alert_id>', methods=['PUT'])
+def update_alert(alert_id):
+    """Update an existing alert"""
+    db = get_db()
+    user_id = get_user_id()
+    data = request.get_json()
+
+    # Verify ownership
+    existing = db.execute('''
+        SELECT id FROM stock_alerts WHERE id = ? AND user_id = ?
+    ''', (alert_id, user_id)).fetchone()
+    if not existing:
+        return jsonify({'error': 'Alert not found'}), 404
+
+    db.execute('''
+        UPDATE stock_alerts SET
+            alert_name = ?, direction = ?,
+            condition_type = ?, condition_value = ?, condition_operator = ?,
+            timeframe = ?, candle_confirm = ?, candle_pattern = ?,
+            auto_trade = ?, stop_loss = ?, target_price = ?, quantity = ?,
+            cooldown_minutes = ?, notes = ?, status = ?,
+            updated_at = GETDATE()
+        WHERE id = ?
+    ''', (
+        data.get('alert_name'),
+        data.get('direction'),
+        data.get('condition_type'),
+        data.get('condition_value'),
+        data.get('condition_operator'),
+        data.get('timeframe'),
+        1 if data.get('candle_confirm') else 0,
+        data.get('candle_pattern'),
+        1 if data.get('auto_trade') else 0,
+        data.get('stop_loss'),
+        data.get('target_price'),
+        data.get('quantity'),
+        data.get('cooldown_minutes'),
+        data.get('notes'),
+        data.get('status', 'active'),
+        alert_id
+    ))
+    db.commit()
+    return jsonify({'success': True})
+
+
+@api_v2.route('/alerts/<int:alert_id>', methods=['DELETE'])
+def delete_alert(alert_id):
+    """Delete an alert"""
+    db = get_db()
+    user_id = get_user_id()
+
+    existing = db.execute('''
+        SELECT id FROM stock_alerts WHERE id = ? AND user_id = ?
+    ''', (alert_id, user_id)).fetchone()
+    if not existing:
+        return jsonify({'error': 'Alert not found'}), 404
+
+    db.execute('DELETE FROM stock_alerts WHERE id = ?', (alert_id,))
+    db.commit()
+    return jsonify({'success': True})
+
+
+@api_v2.route('/alerts/<int:alert_id>/toggle', methods=['POST'])
+def toggle_alert(alert_id):
+    """Toggle alert status between active and paused"""
+    db = get_db()
+    user_id = get_user_id()
+
+    alert = db.execute('''
+        SELECT id, status FROM stock_alerts WHERE id = ? AND user_id = ?
+    ''', (alert_id, user_id)).fetchone()
+    if not alert:
+        return jsonify({'error': 'Alert not found'}), 404
+
+    new_status = 'paused' if alert['status'] == 'active' else 'active'
+    db.execute('''
+        UPDATE stock_alerts SET status = ?, updated_at = GETDATE() WHERE id = ?
+    ''', (new_status, alert_id))
+    db.commit()
+    return jsonify({'success': True, 'status': new_status})
+
+
+@api_v2.route('/alerts/history', methods=['GET'])
+def get_alert_history():
+    """Get alert trigger history"""
+    db = get_db()
+    user_id = get_user_id()
+    limit = int(request.args.get('limit', 50))
+
+    rows = db.execute('''
+        SELECT TOP (?) ah.*, sa.alert_name, sa.condition_type, sa.condition_value
+        FROM alert_history ah
+        LEFT JOIN stock_alerts sa ON ah.alert_id = sa.id
+        WHERE ah.user_id = ?
+        ORDER BY ah.trigger_time DESC
+    ''', (limit, user_id)).fetchall()
+
+    return jsonify({'success': True, 'history': [dict(r) for r in rows]})
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# MARKET ENGINE ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════════
+
+@api_v2.route('/engine/status', methods=['GET'])
+def engine_status():
+    """Get market engine status and stats"""
+    from services.market_engine import get_engine_status
+    return jsonify({'success': True, **get_engine_status()})
+
+
+@api_v2.route('/engine/start', methods=['POST'])
+def engine_start():
+    """Start the market engine"""
+    from services.market_engine import start_engine
+    from flask import current_app
+    data = request.get_json() or {}
+    cycle_seconds = data.get('cycle_seconds', 300)
+    started = start_engine(current_app._get_current_object(), cycle_seconds)
+    if started:
+        return jsonify({'success': True, 'message': 'Engine started'})
+    return jsonify({'success': False, 'message': 'Engine already running'})
+
+
+@api_v2.route('/engine/stop', methods=['POST'])
+def engine_stop():
+    """Stop the market engine"""
+    from services.market_engine import stop_engine
+    stopped = stop_engine()
+    if stopped:
+        return jsonify({'success': True, 'message': 'Engine stopped'})
+    return jsonify({'success': False, 'message': 'Engine not running'})
+
+
+@api_v2.route('/engine/refresh', methods=['POST'])
+def engine_refresh():
+    """Trigger an immediate engine cycle"""
+    from services.market_engine import trigger_manual_refresh
+    from flask import current_app
+    triggered = trigger_manual_refresh(current_app._get_current_object())
+    if triggered:
+        return jsonify({'success': True, 'message': 'Refresh triggered'})
+    return jsonify({'success': False, 'message': 'Engine not running. Start it first.'})
+
+
+@api_v2.route('/engine/notifications', methods=['GET'])
+def engine_notifications():
+    """Get pending (unacknowledged) notifications"""
+    from services.market_engine import get_pending_notifications
+    return jsonify({'success': True, 'notifications': get_pending_notifications()})
+
+
+@api_v2.route('/engine/notifications/acknowledge', methods=['POST'])
+def engine_acknowledge():
+    """Acknowledge a notification or all notifications"""
+    from services.market_engine import acknowledge_notification, acknowledge_all_notifications
+    data = request.get_json() or {}
+    nid = data.get('id')
+
+    if nid:
+        ok = acknowledge_notification(nid)
+        return jsonify({'success': ok})
+    else:
+        acknowledge_all_notifications()
+        return jsonify({'success': True})
