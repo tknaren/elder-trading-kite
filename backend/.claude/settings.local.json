@@ -10,7 +10,9 @@
       "Bash(python test_fixes.py:*)",
       "Bash(python:*)",
       "Bash(grep:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(pip show:*)",
+      "Bash(dir:*)"
     ]
   }
 }

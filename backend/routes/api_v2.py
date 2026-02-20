@@ -1468,6 +1468,7 @@ def update_trade_journal(journal_id):
             max_drawdown = ?, percent_captured = ?,
             open_trade_comments = ?, followup_analysis = ?,
             strategy = ?, mistake = ?,
+            tv_link_entry = ?, tv_link_exit = ?, tv_link_result = ?,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
     ''', (
@@ -1511,6 +1512,9 @@ def update_trade_journal(journal_id):
         data.get('followup_analysis'),
         data.get('strategy'),
         data.get('mistake'),
+        data.get('tv_link_entry'),
+        data.get('tv_link_exit'),
+        data.get('tv_link_result'),
         journal_id
     ))
     db.commit()
@@ -3876,3 +3880,286 @@ def engine_acknowledge():
     else:
         acknowledge_all_notifications()
         return jsonify({'success': True})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DAY HIGH/LOW AUTO-FILL & GRADE AUTO-CALCULATE
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_v2.route('/ohlcv/day-range/<path:symbol>', methods=['GET'])
+def get_day_range(symbol):
+    """
+    Get day's high and low for a symbol on a given date.
+    Query: ?date=2025-01-15
+    Returns: {high, low, open, close}
+    """
+    symbol = symbol.replace('NSE:', '').strip().upper()
+    date_str = request.args.get('date', '')
+    db = get_db()
+
+    if not date_str:
+        return jsonify({'error': 'date parameter required'}), 400
+
+    # Try daily timeframe first
+    row = db.execute('''
+        SELECT TOP 1 high, low, [open], [close]
+        FROM intraday_ohlcv
+        WHERE symbol = ? AND timeframe = 'day'
+          AND CAST(candle_time AS DATE) = ?
+        ORDER BY candle_time DESC
+    ''', (symbol, date_str)).fetchone()
+
+    if row:
+        return jsonify({
+            'high': row['high'], 'low': row['low'],
+            'open': row['open'], 'close': row['close']
+        })
+
+    # Fallback: aggregate from 15min candles for the day
+    agg = db.execute('''
+        SELECT MAX(high) AS high, MIN(low) AS low,
+               (SELECT TOP 1 [open] FROM intraday_ohlcv
+                WHERE symbol = ? AND timeframe = '15min'
+                  AND CAST(candle_time AS DATE) = ?
+                ORDER BY candle_time ASC) AS [open],
+               (SELECT TOP 1 [close] FROM intraday_ohlcv
+                WHERE symbol = ? AND timeframe = '15min'
+                  AND CAST(candle_time AS DATE) = ?
+                ORDER BY candle_time DESC) AS [close]
+        FROM intraday_ohlcv
+        WHERE symbol = ? AND timeframe = '15min'
+          AND CAST(candle_time AS DATE) = ?
+    ''', (symbol, date_str, symbol, date_str, symbol, date_str)).fetchone()
+
+    if agg and agg['high']:
+        return jsonify({
+            'high': agg['high'], 'low': agg['low'],
+            'open': agg['open'], 'close': agg['close']
+        })
+
+    return jsonify({'error': 'No OHLCV data for this date'}), 404
+
+
+@api_v2.route('/auto-grade', methods=['POST'])
+def auto_calculate_grade():
+    """
+    Auto-calculate entry/exit grade based on position in day's range.
+    For Long: A = bottom 33%, B = middle 33%, C = top 33%
+    For Short: A = top 33%, B = middle 33%, C = bottom 33%
+
+    Body: {price, day_high, day_low, direction}
+    """
+    data = request.get_json()
+    price = data.get('price', 0)
+    day_high = data.get('day_high', 0)
+    day_low = data.get('day_low', 0)
+    direction = data.get('direction', 'Long')
+
+    if not day_high or not day_low or day_high <= day_low or not price:
+        return jsonify({'grade': 'B'})  # Default to B if data missing
+
+    day_range = day_high - day_low
+    position = (price - day_low) / day_range  # 0 = bottom, 1 = top
+
+    if direction == 'Long':
+        # For Long entries: lower is better
+        if position <= 0.33:
+            grade = 'A'
+        elif position <= 0.66:
+            grade = 'B'
+        else:
+            grade = 'C'
+    else:
+        # For Short entries: higher is better
+        if position >= 0.66:
+            grade = 'A'
+        elif position >= 0.33:
+            grade = 'B'
+        else:
+            grade = 'C'
+
+    return jsonify({'grade': grade, 'position_pct': round(position * 100, 1)})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CSV IMPORT / EXPORT
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_v2.route('/export/<entity>', methods=['GET'])
+def export_csv(entity):
+    """Export data as CSV. entity = trade-bills|trade-journal|watchlist|alerts"""
+    import csv
+    from io import StringIO
+    db = get_db()
+    user_id = get_user_id()
+    output = StringIO()
+    writer = csv.writer(output)
+
+    if entity == 'trade-bills':
+        rows = db.execute('''
+            SELECT ticker, current_market_price, entry_price, stop_loss, target_price,
+                   quantity, atr, candle_pattern, max_risk, risk_per_share, position_size,
+                   risk_percent, risk_amount_currency, reward_amount_currency, risk_reward_ratio,
+                   break_even, trailing_stop, is_filled, stop_entered, target_entered,
+                   journal_entered, comments, status, created_at
+            FROM trade_bills WHERE user_id = ? ORDER BY created_at DESC
+        ''', (user_id,)).fetchall()
+        writer.writerow(['ticker', 'cmp', 'entry_price', 'stop_loss', 'target_price',
+                         'quantity', 'atr', 'candle_pattern', 'max_risk', 'risk_per_share',
+                         'position_size', 'risk_percent', 'risk_amount', 'reward_amount',
+                         'rr_ratio', 'break_even', 'trailing_stop', 'is_filled',
+                         'stop_entered', 'target_entered', 'journal_entered', 'comments',
+                         'status', 'created_at'])
+        for r in rows:
+            writer.writerow([r[k] for k in r.keys()])
+
+    elif entity == 'trade-journal':
+        rows = db.execute('''
+            SELECT ticker, direction, status, journal_date, entry_price, quantity,
+                   stop_loss, target_price, strategy, trade_grade, avg_entry, avg_exit,
+                   gain_loss_amount, gain_loss_percent, total_shares, remaining_qty,
+                   entry_tactic, exit_tactic, mistake, open_trade_comments,
+                   followup_analysis, tv_link_entry, tv_link_exit, tv_link_result
+            FROM trade_journal_v2 WHERE user_id = ? ORDER BY journal_date DESC
+        ''', (user_id,)).fetchall()
+        headers = ['ticker', 'direction', 'status', 'journal_date', 'entry_price',
+                   'quantity', 'stop_loss', 'target_price', 'strategy', 'trade_grade',
+                   'avg_entry', 'avg_exit', 'gain_loss_amount', 'gain_loss_percent',
+                   'total_shares', 'remaining_qty', 'entry_tactic', 'exit_tactic',
+                   'mistake', 'open_trade_comments', 'followup_analysis',
+                   'tv_link_entry', 'tv_link_exit', 'tv_link_result']
+        writer.writerow(headers)
+        for r in rows:
+            writer.writerow([r.get(k, '') for k in headers])
+
+    elif entity == 'watchlist':
+        rows = db.execute('''
+            SELECT symbol FROM trading_watchlist WHERE user_id = ?
+        ''', (user_id,)).fetchall()
+        writer.writerow(['symbol'])
+        for r in rows:
+            writer.writerow([r['symbol']])
+
+    elif entity == 'alerts':
+        rows = db.execute('''
+            SELECT symbol, alert_type, trigger_value, direction, status, notes
+            FROM stock_alerts WHERE user_id = ? ORDER BY created_at DESC
+        ''', (user_id,)).fetchall()
+        writer.writerow(['symbol', 'alert_type', 'trigger_value', 'direction', 'status', 'notes'])
+        for r in rows:
+            writer.writerow([r[k] for k in r.keys()])
+    else:
+        return jsonify({'error': f'Unknown entity: {entity}'}), 400
+
+    csv_content = output.getvalue()
+    from flask import Response
+    return Response(
+        csv_content,
+        mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename={entity}_{datetime.now().strftime("%Y%m%d")}.csv'}
+    )
+
+
+@api_v2.route('/import/<entity>', methods=['POST'])
+def import_csv(entity):
+    """Import data from CSV. entity = trade-bills|trade-journal|watchlist|alerts"""
+    import csv
+    from io import StringIO
+    db = get_db()
+    user_id = get_user_id()
+
+    csv_data = request.get_data(as_text=True)
+    if not csv_data:
+        return jsonify({'error': 'No CSV data provided'}), 400
+
+    reader = csv.DictReader(StringIO(csv_data))
+    imported = 0
+
+    if entity == 'trade-bills':
+        for row in reader:
+            try:
+                db.execute('''
+                    INSERT INTO trade_bills (user_id, ticker, current_market_price, entry_price,
+                        stop_loss, target_price, quantity, comments, status, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE())
+                ''', (user_id, row.get('ticker', ''), _float(row.get('cmp')),
+                      _float(row.get('entry_price')), _float(row.get('stop_loss')),
+                      _float(row.get('target_price')), _int(row.get('quantity')),
+                      row.get('comments', ''), row.get('status', 'active')))
+                imported += 1
+            except Exception as e:
+                print(f"Import error row: {e}")
+        db.commit()
+
+    elif entity == 'trade-journal':
+        for row in reader:
+            try:
+                db.execute('''
+                    INSERT INTO trade_journal_v2 (user_id, ticker, direction, status,
+                        journal_date, entry_price, quantity, stop_loss, target_price,
+                        strategy, trade_grade, open_trade_comments, followup_analysis)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (user_id, row.get('ticker', ''), row.get('direction', 'Long'),
+                      row.get('status', 'open'), row.get('journal_date'),
+                      _float(row.get('entry_price')), _int(row.get('quantity')),
+                      _float(row.get('stop_loss')), _float(row.get('target_price')),
+                      row.get('strategy', ''), row.get('trade_grade', ''),
+                      row.get('open_trade_comments', ''), row.get('followup_analysis', '')))
+                imported += 1
+            except Exception as e:
+                print(f"Import error row: {e}")
+        db.commit()
+
+    elif entity == 'watchlist':
+        for row in reader:
+            symbol = (row.get('symbol') or '').replace('NSE:', '').strip().upper()
+            if symbol:
+                try:
+                    existing = db.execute(
+                        'SELECT id FROM trading_watchlist WHERE user_id = ? AND symbol = ?',
+                        (user_id, symbol)).fetchone()
+                    if not existing:
+                        db.execute(
+                            'INSERT INTO trading_watchlist (user_id, symbol) VALUES (?, ?)',
+                            (user_id, symbol))
+                        imported += 1
+                except Exception as e:
+                    print(f"Import error: {e}")
+        db.commit()
+
+    elif entity == 'alerts':
+        for row in reader:
+            symbol = (row.get('symbol') or '').replace('NSE:', '').strip().upper()
+            if symbol:
+                try:
+                    db.execute('''
+                        INSERT INTO stock_alerts (user_id, symbol, alert_type, trigger_value,
+                            direction, status, notes, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, GETDATE())
+                    ''', (user_id, symbol, row.get('alert_type', 'price_above'),
+                          _float(row.get('trigger_value')), row.get('direction', 'above'),
+                          row.get('status', 'active'), row.get('notes', '')))
+                    imported += 1
+                except Exception as e:
+                    print(f"Import error: {e}")
+        db.commit()
+    else:
+        return jsonify({'error': f'Unknown entity: {entity}'}), 400
+
+    return jsonify({'success': True, 'imported': imported})
+
+
+def _float(v):
+    """Safely parse float"""
+    try:
+        return float(v) if v else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _int(v):
+    """Safely parse int"""
+    try:
+        return int(float(v)) if v else None
+    except (ValueError, TypeError):
+        return None

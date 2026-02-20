@@ -54,6 +54,10 @@ def migrate_database(connection_string: str = None):
         ('account_settings', 'kite_access_token', 'NVARCHAR(500)'),
         ('account_settings', 'kite_token_expiry', 'NVARCHAR(50)'),
         ('account_settings', 'last_data_refresh', 'NVARCHAR(50)'),
+        # TradingView chart links for TradeLog
+        ('trade_journal_v2', 'tv_link_entry', 'NVARCHAR(500)'),
+        ('trade_journal_v2', 'tv_link_exit', 'NVARCHAR(500)'),
+        ('trade_journal_v2', 'tv_link_result', 'NVARCHAR(500)'),
     ]
 
     for table, column, sql_type in column_migrations:

@@ -161,32 +161,106 @@
 
     // Export trades to CSV
     async function exportTrades() {
-        try {
-            const resp = await fetch('/api/v2/trade-journal');
-            const data = await resp.json();
-            const trades = data.journals || [];
-            if (trades.length === 0) {
-                toast('No trades to export', 'error');
-                return;
-            }
+        await exportCSVData('trade-journal');
+    }
 
-            const headers = ['Date', 'Ticker', 'Strategy', 'Direction', 'Avg Entry', 'Total Shares', 'Stop Loss', 'Target', 'Status', 'Gain/Loss', 'G/L %', 'Grade', 'Mistake', 'Comments'];
-            const rows = trades.map(t => [
-                t.journal_date, t.ticker, t.strategy, t.direction, t.avg_entry || t.entry_price, t.total_shares || t.quantity,
-                t.stop_loss, t.target_price, t.status, t.gain_loss_amount, t.gain_loss_percent, t.trade_grade, t.mistake, t.open_trade_comments
-            ]);
-            
-            const csv = [headers.join(','), ...rows.map(r => r.map(v => `"${v || ''}"`).join(','))].join('\n');
+    // ========== UNIVERSAL CSV IMPORT / EXPORT ==========
+    async function exportCSVData(entity) {
+        try {
+            const resp = await fetch(`/api/v2/export/${entity}`);
+            if (!resp.ok) { const err = await resp.json(); toast(err.error || 'Export failed', 'error'); return; }
+            const csv = await resp.text();
+            if (!csv.trim()) { toast('No data to export', 'error'); return; }
             const blob = new Blob([csv], {type: 'text/csv'});
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `trade_log_${new Date().toISOString().split('T')[0]}.csv`;
+            a.download = `${entity}_${new Date().toISOString().split('T')[0]}.csv`;
             a.click();
-            toast('Trades exported!', 'success');
+            URL.revokeObjectURL(url);
+            toast(`${entity} exported!`, 'success');
         } catch(e) {
             toast('Export error: ' + e.message, 'error');
         }
+    }
+
+    async function importCSVData(entity) {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.csv';
+        input.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const text = await file.text();
+            try {
+                const resp = await fetch(`/api/v2/import/${entity}`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'text/csv'},
+                    body: text
+                });
+                const result = await resp.json();
+                if (result.success) {
+                    toast(`Imported ${result.imported} records!`, 'success');
+                    await render();
+                } else {
+                    toast(result.error || 'Import failed', 'error');
+                }
+            } catch(err) {
+                toast('Import error: ' + err.message, 'error');
+            }
+        };
+        input.click();
+    }
+
+    // ========== AUTO-FILL DAY HIGH/LOW ==========
+    async function autoFillDayRange(type, index) {
+        // type = 'entry' or 'exit'
+        const dateEl = document.getElementById(`tl-new-${type}-date`);
+        const ticker = document.getElementById('tl-ticker')?.value;
+        if (!ticker || !dateEl?.value) return;
+
+        const dateVal = dateEl.value.split('T')[0]; // extract date from datetime-local
+        try {
+            const resp = await fetch(`/api/v2/ohlcv/day-range/${encodeURIComponent(ticker)}?date=${dateVal}`);
+            const data = await resp.json();
+            if (data.high && data.low) {
+                document.getElementById(`tl-new-${type}-high`).value = data.high;
+                document.getElementById(`tl-new-${type}-low`).value = data.low;
+                // Auto-calculate grade after filling day range
+                autoCalcGradeLocal(type);
+                toast(`Day range filled: H=${data.high} L=${data.low}`, 'info');
+            }
+        } catch(e) { /* silently fail - OHLCV data may not be available */ }
+    }
+
+    // ========== AUTO-CALCULATE GRADE ==========
+    function autoCalcGradeLocal(type) {
+        const priceEl = document.getElementById(`tl-new-${type}-fillprice`) || document.getElementById(`tl-new-${type}-ordprice`);
+        const highEl = document.getElementById(`tl-new-${type}-high`);
+        const lowEl = document.getElementById(`tl-new-${type}-low`);
+        const gradeEl = document.getElementById(`tl-new-${type}-grade`);
+        const directionEl = document.getElementById('tl-direction');
+
+        const price = parseFloat(priceEl?.value);
+        const high = parseFloat(highEl?.value);
+        const low = parseFloat(lowEl?.value);
+        const direction = directionEl?.value || 'Long';
+
+        if (!price || !high || !low || high <= low) return;
+
+        const range = high - low;
+        const position = (price - low) / range; // 0 = bottom, 1 = top
+
+        let grade;
+        if (direction === 'Long') {
+            // Long: A = bottom 33%, B = middle 33%, C = top 33%
+            grade = position <= 0.33 ? 'A' : position <= 0.66 ? 'B' : 'C';
+        } else {
+            // Short: A = top 33%, B = middle 33%, C = bottom 33%
+            grade = position >= 0.66 ? 'A' : position >= 0.33 ? 'B' : 'C';
+        }
+
+        if (gradeEl) gradeEl.value = grade;
     }
 
     // Initialize on load
@@ -299,6 +373,8 @@
                         <p class="text-gray-500 text-sm">Multi-timeframe indicator dashboard — ${symbols.length} symbols</p>
                     </div>
                     <div class="flex gap-2">
+                        <button onclick="exportCSVData('watchlist')" class="px-3 py-2 bg-gray-700 rounded-lg text-sm hover:bg-gray-600">📥 Export</button>
+                        <button onclick="importCSVData('watchlist')" class="px-3 py-2 bg-gray-700 rounded-lg text-sm hover:bg-gray-600">📤 Import</button>
                         <input id="wl-add-symbol" type="text" placeholder="Add symbol (e.g. RELIANCE)"
                             class="bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm w-48"
                             onkeydown="if(event.key==='Enter') addWatchlistSymbol()">
@@ -563,6 +639,8 @@
                         <p class="text-gray-500 text-sm">${active.length} active, ${paused.length} paused, ${triggered.length} triggered</p>
                     </div>
                     <div class="flex gap-2">
+                        <button onclick="exportCSVData('alerts')" class="px-3 py-2 bg-gray-700 rounded-lg text-sm hover:bg-gray-600">📥 Export</button>
+                        <button onclick="importCSVData('alerts')" class="px-3 py-2 bg-gray-700 rounded-lg text-sm hover:bg-gray-600">📤 Import</button>
                         <button onclick="showCreateAlertForm('${prefill}')" class="px-4 py-2 bg-yellow-600 rounded-lg text-sm font-medium hover:bg-yellow-700">+ New Alert</button>
                         <button onclick="viewAlertHistory()" class="px-3 py-2 bg-gray-700 rounded-lg text-sm hover:bg-gray-600">📜 History</button>
                     </div>
@@ -2469,12 +2547,13 @@
                         <button onclick="saveTradeBill()" class="flex-1 py-3 bg-green-600 rounded-lg font-medium hover:bg-green-700 disabled:opacity-50" id="save-btn">💾 Save Trade Bill</button>
                     </div>
                     <div class="flex gap-2">
-                        <button onclick="fillJournalFromBill()" class="flex-1 py-3 bg-blue-600 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed" id="fill-journal-btn" ${tb.id ? '' : 'disabled'}>📓 Journal</button>
-                        <button onclick="placeGttOrder()" class="flex-1 py-3 bg-orange-600 rounded-lg font-medium hover:bg-orange-700 disabled:opacity-40 disabled:cursor-not-allowed" id="gtt-btn" ${tb.id ? '' : 'disabled'}>📊 GTT Buy</button>
-                        <button onclick="placeNrmlOrder()" class="flex-1 py-3 bg-cyan-600 rounded-lg font-medium hover:bg-cyan-700 disabled:opacity-40 disabled:cursor-not-allowed" id="nrml-btn" ${tb.id ? '' : 'disabled'}>🔷 NRML Buy</button>
-                        <button onclick="placeOcoSellOrder()" class="flex-1 py-3 bg-red-600 rounded-lg font-medium hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed" id="oco-btn" ${tb.id ? '' : 'disabled'}>🎯 OCO Split Sell</button>
+                        <button onclick="fillJournalFromBill()" class="flex-1 py-2.5 bg-blue-600 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-sm" id="fill-journal-btn" ${tb.id ? '' : 'disabled'}>📓 Journal</button>
+                        <button onclick="placeGttOrder()" class="flex-1 py-2.5 bg-orange-600 rounded-lg font-medium hover:bg-orange-700 disabled:opacity-40 disabled:cursor-not-allowed text-sm" id="gtt-btn" ${tb.id ? '' : 'disabled'}>📊 GTT Buy</button>
+                        <button onclick="placeNrmlOrder('BUY')" class="flex-1 py-2.5 bg-cyan-600 rounded-lg font-medium hover:bg-cyan-700 disabled:opacity-40 disabled:cursor-not-allowed text-sm" id="nrml-btn" ${tb.id ? '' : 'disabled'}>🔷 NRML Buy</button>
+                        <button onclick="placeNrmlOrder('SELL')" class="flex-1 py-2.5 bg-pink-600 rounded-lg font-medium hover:bg-pink-700 disabled:opacity-40 disabled:cursor-not-allowed text-sm" id="nrml-sell-btn" ${tb.id ? '' : 'disabled'}>🔻 NRML Sell</button>
+                        <button onclick="placeOcoSellOrder()" class="flex-1 py-2.5 bg-red-600 rounded-lg font-medium hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed text-sm" id="oco-btn" ${tb.id ? '' : 'disabled'}>🎯 OCO Sell</button>
                     </div>
-                    <p class="text-xs text-gray-500 text-center">${tb.id ? 'Buttons enabled - bill is saved.' : 'Save the Trade Bill first to enable order buttons.'} OCO Split = full qty SL + half qty target.</p>
+                    <p class="text-xs text-gray-500 text-center">${tb.id ? 'Buttons enabled - bill is saved.' : 'Save the Trade Bill first to enable order buttons.'} OCO Sell = SL GTT (full qty) + Target GTT (half qty).</p>
                 </div>
             </div>
         `;
@@ -2707,6 +2786,7 @@
                 document.getElementById('fill-journal-btn').disabled = false;
                 document.getElementById('gtt-btn').disabled = false;
                 document.getElementById('nrml-btn').disabled = false;
+                document.getElementById('nrml-sell-btn').disabled = false;
                 document.getElementById('oco-btn').disabled = false;
             }
         } catch(e) {
@@ -2903,32 +2983,33 @@
         }
     }
 
-    // Place NRML Order
-    async function placeNrmlOrder() {
-        if (!window.currentBillId) {
+    // Place NRML Order (BUY or SELL)
+    async function placeNrmlOrder(txnType='BUY', overrideTicker=null, overrideQty=null, overridePrice=null) {
+        // Support calling from TradeBill or TradeLog
+        const ticker = overrideTicker || (document.getElementById('tb-ticker') ? document.getElementById('tb-ticker').value : '');
+        const qty = overrideQty || (document.getElementById('tb-qty') ? parseInt(document.getElementById('tb-qty').value) : 0);
+        const price = overridePrice || (document.getElementById('tb-entry') ? parseFloat(document.getElementById('tb-entry').value) : 0);
+        const cmp = document.getElementById('tb-cmp') ? parseFloat(document.getElementById('tb-cmp').value) || 0 : 0;
+
+        if (!window.currentBillId && !overrideTicker) {
             toast('Please save the Trade Bill first', 'error');
             return;
         }
 
-        const entry = parseFloat(document.getElementById('tb-entry').value);
-        const qty = parseInt(document.getElementById('tb-qty').value);
-        const ticker = document.getElementById('tb-ticker').value;
-        const cmp = parseFloat(document.getElementById('tb-cmp').value) || 0;
-
-        if (!entry || !qty || !ticker) {
-            toast('Missing entry price, quantity or ticker', 'error');
+        if (!price || !qty || !ticker) {
+            toast('Missing price, quantity or ticker', 'error');
             return;
         }
 
-        const totalValue = (entry * qty).toLocaleString();
-        const confirmed = await showOrderConfirmation('🔷 Place NRML Buy Order', [
-            { label: 'Order Type', value: 'NRML (Normal/Delivery)', color: 'text-cyan-400' },
+        const isBuy = txnType === 'BUY';
+        const totalValue = (price * qty).toLocaleString();
+        const confirmed = await showOrderConfirmation(`${isBuy ? '🔷' : '🔻'} Place NRML ${txnType} Order`, [
+            { label: 'Order Type', value: 'NRML (Delivery)', color: isBuy ? 'text-cyan-400' : 'text-pink-400' },
             { label: 'Symbol', value: ticker, color: 'text-blue-400' },
-            { label: 'Transaction', value: 'BUY', color: 'text-green-400' },
-            { label: 'Price', value: `₹${entry.toFixed(2)}` },
+            { label: 'Transaction', value: txnType, color: isBuy ? 'text-green-400' : 'text-red-400' },
+            { label: 'Price', value: `₹${price.toFixed(2)}` },
             { label: 'Quantity', value: `${qty} shares` },
             { label: 'Total Value', value: `₹${totalValue}`, color: 'text-yellow-400' },
-            { label: 'Current CMP', value: cmp ? `₹${cmp.toFixed(2)}` : 'N/A' },
             { label: 'Product', value: 'CNC (Delivery)' },
             { label: 'Order Type', value: 'LIMIT' }
         ]);
@@ -2940,18 +3021,60 @@
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
                     symbol: ticker,
-                    transaction_type: 'BUY',
+                    transaction_type: txnType,
                     quantity: qty,
-                    price: entry,
+                    price: price,
                     order_type: 'LIMIT'
                 })
             });
             const data = await result.json();
 
             if (data.success) {
-                toast(`NRML Order placed! Order ID: ${data.order_id}`, 'success');
+                toast(`NRML ${txnType} Order placed! Order ID: ${data.order_id}`, 'success');
             } else {
                 toast(data.error || 'Failed to place order', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
+    }
+
+    // Place Sell GTT from TradeLog for remaining position
+    async function placeTradeLogSellGtt(ticker, remainingQty, targetPrice, slPrice) {
+        if (!ticker || !remainingQty || !targetPrice) {
+            toast('Missing ticker, remaining quantity, or target price', 'error');
+            return;
+        }
+
+        const confirmed = await showOrderConfirmation('📊 Place Sell GTT (Remaining Position)', [
+            { label: 'Order Type', value: 'GTT SELL (Remaining 50%)', color: 'text-orange-400' },
+            { label: 'Symbol', value: ticker, color: 'text-blue-400' },
+            { label: 'Transaction', value: 'SELL', color: 'text-red-400' },
+            { label: 'Trigger (Target)', value: `₹${targetPrice.toFixed(2)}`, color: 'text-green-400' },
+            { label: 'Quantity', value: `${remainingQty} shares` },
+            { label: 'Product', value: 'CNC (Delivery)' }
+        ]);
+        if (!confirmed) return;
+
+        try {
+            const result = await fetch('/api/v2/kite/gtt', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    symbol: ticker,
+                    transaction_type: 'SELL',
+                    trigger_price: targetPrice,
+                    quantity: remainingQty,
+                    order_type: 'LIMIT',
+                    limit_price: targetPrice
+                })
+            });
+            const data = await result.json();
+
+            if (data.success) {
+                toast(`Sell GTT placed! Trigger ID: ${data.trigger_id}`, 'success');
+            } else {
+                toast(data.error || 'Failed to place GTT', 'error');
             }
         } catch(e) {
             toast('Error: ' + e.message, 'error');
@@ -2972,7 +3095,11 @@
                 <div class="space-y-6">
                     <div class="flex justify-between items-center">
                         <h2 class="text-2xl font-bold">📋 Trade Bills</h2>
-                        <button onclick="newTradeBill()" class="px-4 py-2 bg-blue-600 rounded-lg hover:bg-blue-700">➕ New Trade Bill</button>
+                        <div class="flex gap-2">
+                            <button onclick="exportCSVData('trade-bills')" class="px-3 py-2 bg-gray-700 rounded-lg hover:bg-gray-600 text-sm">📥 Export CSV</button>
+                            <button onclick="importCSVData('trade-bills')" class="px-3 py-2 bg-gray-700 rounded-lg hover:bg-gray-600 text-sm">📤 Import CSV</button>
+                            <button onclick="newTradeBill()" class="px-4 py-2 bg-blue-600 rounded-lg hover:bg-blue-700">➕ New Trade Bill</button>
+                        </div>
                     </div>
 
                     ${bills.length > 0 ? `
@@ -3092,7 +3219,7 @@
         const mentalStates = ['Confident', 'Neutral', 'Anxious', 'FOMO', 'Revenge'];
         const directions = ['Long', 'Short'];
         const statuses = ['open', 'closed', 'cancelled'];
-        const grades = ['A', 'B', 'C', 'D', 'F'];
+        const grades = ['A', 'B', 'C'];
 
         return `
             <div class="space-y-4">
@@ -3855,8 +3982,9 @@
                 <div class="flex justify-between items-center">
                     <h2 class="text-2xl font-bold">Trade Log</h2>
                     <div class="flex gap-2">
+                        <button onclick="exportCSVData('trade-journal')" class="px-3 py-2 bg-gray-700 rounded-lg hover:bg-gray-600 text-sm">📥 Export CSV</button>
+                        <button onclick="importCSVData('trade-journal')" class="px-3 py-2 bg-gray-700 rounded-lg hover:bg-gray-600 text-sm">📤 Import CSV</button>
                         <button onclick="newTradeLog()" class="px-4 py-2 bg-green-600 rounded-lg hover:bg-green-700">+ New Trade</button>
-                        <button onclick="exportTrades()" class="px-4 py-2 bg-gray-700 rounded-lg hover:bg-gray-600">Export</button>
                     </div>
                 </div>
 
@@ -3950,7 +4078,7 @@
         const entryTactics = ['Limit Order', 'Market Order', 'Stop Order', 'Scale In', 'Breakout'];
         const exitTactics = ['Target Hit', 'Stop Loss Hit', 'Trailing Stop', 'Time Exit', 'Scale Out', 'Manual'];
         const directions = ['Long', 'Short'];
-        const grades = ['A', 'B', 'C', 'D', 'F'];
+        const grades = ['A', 'B', 'C'];
 
         return `
             <div class="space-y-4">
@@ -3962,6 +4090,11 @@
                         ${j.id ? `<span class="px-2 py-1 rounded text-xs ${j.status==='closed'?'bg-gray-500/20 text-gray-400':'bg-blue-500/20 text-blue-400'}">${j.status||'open'}</span>` : ''}
                     </div>
                     <div class="flex gap-2">
+                        ${j.id && j.status !== 'closed' && (j.remaining_qty || 0) > 0 ? `
+                            <button onclick="placeTradeLogSellGtt('${j.ticker}', ${j.remaining_qty || 0}, ${j.target_price || 0}, ${j.stop_loss || 0})" class="px-3 py-2 bg-orange-600 rounded-lg hover:bg-orange-700 text-sm" title="Sell remaining ${j.remaining_qty} shares via GTT">📤 Sell GTT (${j.remaining_qty})</button>
+                            <button onclick="placeNrmlOrder('BUY', '${j.ticker}')" class="px-3 py-2 bg-cyan-600 rounded-lg hover:bg-cyan-700 text-sm" title="Place NRML Buy order">🔷 NRML Buy</button>
+                            <button onclick="placeNrmlOrder('SELL', '${j.ticker}', ${j.remaining_qty || 0})" class="px-3 py-2 bg-pink-600 rounded-lg hover:bg-pink-700 text-sm" title="Place NRML Sell order">🔻 NRML Sell</button>
+                        ` : ''}
                         <button onclick="saveTradeLogDetail()" class="px-4 py-2 bg-green-600 rounded-lg hover:bg-green-700">Save Trade</button>
                     </div>
                 </div>
@@ -4027,15 +4160,15 @@
                                 `).join('') : ''}
                                 <!-- Inline Add Entry Row -->
                                 <tr class="border-t border-blue-500/30 bg-blue-500/5">
-                                    <td class="p-1"><input type="datetime-local" id="tl-new-entry-date" value="${new Date().toISOString().slice(0,16)}" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono"></td>
+                                    <td class="p-1"><input type="datetime-local" id="tl-new-entry-date" value="${new Date().toISOString().slice(0,16)}" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono" onchange="autoFillDayRange('entry')"></td>
                                     <td class="p-1"><input type="number" id="tl-new-entry-qty" placeholder="Qty" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
-                                    <td class="p-1"><input type="number" id="tl-new-entry-ordprice" step="0.01" placeholder="Order" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
-                                    <td class="p-1"><input type="number" id="tl-new-entry-fillprice" step="0.01" placeholder="Filled" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-entry-ordprice" step="0.01" placeholder="Order" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right" onchange="autoCalcGradeLocal('entry')"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-entry-fillprice" step="0.01" placeholder="Filled" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right" onchange="autoCalcGradeLocal('entry')"></td>
                                     <td class="p-1"><input type="number" id="tl-new-entry-slip" step="0.01" value="0" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
                                     <td class="p-1"><input type="number" id="tl-new-entry-comm" step="0.01" value="0" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
                                     <td class="p-1 text-right text-xs font-mono text-gray-500">auto</td>
-                                    <td class="p-1"><input type="number" id="tl-new-entry-high" step="0.01" placeholder="High" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
-                                    <td class="p-1"><input type="number" id="tl-new-entry-low" step="0.01" placeholder="Low" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-entry-high" step="0.01" placeholder="High" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right" onchange="autoCalcGradeLocal('entry')"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-entry-low" step="0.01" placeholder="Low" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right" onchange="autoCalcGradeLocal('entry')"></td>
                                     <td class="p-1"><select id="tl-new-entry-grade" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs">${grades.map(g => `<option>${g}</option>`).join('')}</select></td>
                                     <td class="p-1 text-center"><button onclick="addTradeLogEntry()" class="px-2 py-1 bg-green-600 rounded hover:bg-green-700 text-xs font-bold">+ Add</button></td>
                                 </tr>
@@ -4090,15 +4223,15 @@
                                 `).join('') : ''}
                                 <!-- Inline Add Exit Row -->
                                 <tr class="border-t border-orange-500/30 bg-orange-500/5">
-                                    <td class="p-1"><input type="datetime-local" id="tl-new-exit-date" value="${new Date().toISOString().slice(0,16)}" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono"></td>
+                                    <td class="p-1"><input type="datetime-local" id="tl-new-exit-date" value="${new Date().toISOString().slice(0,16)}" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono" onchange="autoFillDayRange('exit')"></td>
                                     <td class="p-1"><input type="number" id="tl-new-exit-qty" placeholder="Qty" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
-                                    <td class="p-1"><input type="number" id="tl-new-exit-ordprice" step="0.01" placeholder="Order" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
-                                    <td class="p-1"><input type="number" id="tl-new-exit-fillprice" step="0.01" placeholder="Filled" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-exit-ordprice" step="0.01" placeholder="Order" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right" onchange="autoCalcGradeLocal('exit')"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-exit-fillprice" step="0.01" placeholder="Filled" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right" onchange="autoCalcGradeLocal('exit')"></td>
                                     <td class="p-1"><input type="number" id="tl-new-exit-slip" step="0.01" value="0" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
                                     <td class="p-1"><input type="number" id="tl-new-exit-comm" step="0.01" value="0" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
                                     <td class="p-1 text-right text-xs font-mono text-gray-500">auto</td>
-                                    <td class="p-1"><input type="number" id="tl-new-exit-high" step="0.01" placeholder="High" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
-                                    <td class="p-1"><input type="number" id="tl-new-exit-low" step="0.01" placeholder="Low" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-exit-high" step="0.01" placeholder="High" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right" onchange="autoCalcGradeLocal('exit')"></td>
+                                    <td class="p-1"><input type="number" id="tl-new-exit-low" step="0.01" placeholder="Low" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs font-mono text-right" onchange="autoCalcGradeLocal('exit')"></td>
                                     <td class="p-1"><select id="tl-new-exit-grade" class="w-full px-1 py-1 bg-[#1f2937] border border-gray-600 rounded text-xs">${grades.map(g => `<option>${g}</option>`).join('')}</select></td>
                                     <td class="p-1 text-center"><button onclick="addTradeLogExit()" class="px-2 py-1 bg-orange-600 rounded hover:bg-orange-700 text-xs font-bold">+ Add</button></td>
                                 </tr>
@@ -4124,6 +4257,34 @@
                         <div><label class="text-gray-500">Gain/Loss ${sym}</label><input value="${j.gain_loss_amount ? sym + j.gain_loss_amount.toFixed(2) : ''}" class="w-full px-2 py-1.5 ${(j.gain_loss_amount||0)>=0?'bg-green-900/20':'bg-red-900/20'} border border-gray-600 rounded font-mono" readonly></div>
                         <div><label class="text-gray-500">Low During Trade</label><input value="${j.low_during_trade ? sym + j.low_during_trade.toFixed(2) : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
                         <div><label class="text-gray-500">% Captured</label><input id="tl-captured" value="${j.percent_captured ? j.percent_captured.toFixed(1)+'%' : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                    </div>
+                </div>
+
+                <!-- TradingView Charts -->
+                <div class="bg-[#111827] rounded-xl p-4 border border-indigo-500/30">
+                    <h4 class="font-bold text-indigo-400 mb-3">TradingView Charts</h4>
+                    <div class="grid grid-cols-3 gap-3 text-sm">
+                        <div>
+                            <label class="text-gray-500">Entry Chart Link</label>
+                            <div class="flex gap-1">
+                                <input id="tl-tv-entry" value="${j.tv_link_entry||''}" placeholder="https://www.tradingview.com/chart/..." class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono text-xs">
+                                ${j.tv_link_entry ? `<a href="${j.tv_link_entry}" target="_blank" rel="noopener" class="px-2 py-1.5 bg-indigo-600/30 border border-indigo-500 rounded hover:bg-indigo-600/50 text-xs whitespace-nowrap">🔗 Open</a>` : ''}
+                            </div>
+                        </div>
+                        <div>
+                            <label class="text-gray-500">Exit Chart Link</label>
+                            <div class="flex gap-1">
+                                <input id="tl-tv-exit" value="${j.tv_link_exit||''}" placeholder="https://www.tradingview.com/chart/..." class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono text-xs">
+                                ${j.tv_link_exit ? `<a href="${j.tv_link_exit}" target="_blank" rel="noopener" class="px-2 py-1.5 bg-indigo-600/30 border border-indigo-500 rounded hover:bg-indigo-600/50 text-xs whitespace-nowrap">🔗 Open</a>` : ''}
+                            </div>
+                        </div>
+                        <div>
+                            <label class="text-gray-500">Result Chart Link</label>
+                            <div class="flex gap-1">
+                                <input id="tl-tv-result" value="${j.tv_link_result||''}" placeholder="https://www.tradingview.com/chart/..." class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono text-xs">
+                                ${j.tv_link_result ? `<a href="${j.tv_link_result}" target="_blank" rel="noopener" class="px-2 py-1.5 bg-indigo-600/30 border border-indigo-500 rounded hover:bg-indigo-600/50 text-xs whitespace-nowrap">🔗 Open</a>` : ''}
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -4187,7 +4348,10 @@
             trade_grade: document.getElementById('tl-grade').value,
             open_trade_comments: document.getElementById('tl-comments').value,
             followup_analysis: document.getElementById('tl-followup').value,
-            mistake: document.getElementById('tl-mistake').value || null
+            mistake: document.getElementById('tl-mistake').value || null,
+            tv_link_entry: document.getElementById('tl-tv-entry')?.value || null,
+            tv_link_exit: document.getElementById('tl-tv-exit')?.value || null,
+            tv_link_result: document.getElementById('tl-tv-result')?.value || null
         };
 
         if (!data.ticker) { toast('Ticker is required', 'error'); return; }
