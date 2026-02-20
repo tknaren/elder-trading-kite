@@ -89,17 +89,22 @@ def close_db_connection(error):
 @api_v2.route('/data/load', methods=['POST'])
 def load_market_data():
     """
-    Bulk load OHLCV data and pre-calculate all indicators for NIFTY 100.
+    Bulk load OHLCV data and pre-calculate all indicators for NSE 500 stocks.
+    Loads instruments from Kite, then fetches historical data for top 500.
     Called manually by user from Settings page after market close.
 
     This is the ONLY place where Kite API is called for historical data.
     All other features read from the database cache.
+
+    Body params:
+        force: bool - Force refresh even if loaded today
+        limit: int - Max instruments to load (default 500)
     """
-    from services.screener_v2 import NIFTY_100, calculate_all_indicators, analyze_weekly_trend
+    from services.screener_v2 import calculate_all_indicators, analyze_weekly_trend, NIFTY_100
     from services.kite_client import get_client, clear_session_cache
 
     client = get_client()
-    if not client.check_auth():
+    if not client or not client.kite or not client.access_token:
         return jsonify({
             'success': False,
             'error': 'Not authenticated with Kite Connect. Please login first.'
@@ -107,6 +112,7 @@ def load_market_data():
 
     db = get_db()
     user_id = get_user_id()
+    req_data = request.get_json() or {}
 
     # Check last refresh date
     sync_info = db.execute('''
@@ -117,8 +123,9 @@ def load_market_data():
     last_refresh = sync_info['last_refresh'] if sync_info else None
     today = datetime.now().strftime('%Y-%m-%d')
 
-    # Check if already loaded today
-    if last_refresh:
+    # Check if already loaded today (allow force refresh via request body)
+    force = req_data.get('force', False)
+    if last_refresh and not force:
         # Handle both datetime objects and strings
         if hasattr(last_refresh, 'strftime'):
             last_date = last_refresh.strftime('%Y-%m-%d')
@@ -136,11 +143,69 @@ def load_market_data():
     # Clear session cache to force fresh load
     clear_session_cache()
 
+    # Step 1: Ensure instruments are loaded in cache
+    cached_instruments = db.execute('''
+        SELECT tradingsymbol FROM nse_instruments ORDER BY tradingsymbol
+    ''').fetchall()
+
+    if not cached_instruments:
+        # Auto-load instruments from Kite if cache is empty
+        try:
+            client._rate_limit()
+            instruments = client.kite.instruments('NSE')
+            for inst in instruments:
+                if inst.get('segment') != 'NSE' or inst.get('instrument_type') != 'EQ':
+                    continue
+                symbol = inst['tradingsymbol']
+                name = inst.get('name', symbol)
+                token = inst['instrument_token']
+                lot_size = inst.get('lot_size', 1)
+                tick_size = inst.get('tick_size', 0.05)
+                db.execute('''
+                    MERGE nse_instruments AS target
+                    USING (SELECT ? AS tradingsymbol) AS source
+                    ON target.tradingsymbol = source.tradingsymbol
+                    WHEN MATCHED THEN
+                        UPDATE SET name = ?, instrument_token = ?, lot_size = ?,
+                                   tick_size = ?, updated_at = GETDATE()
+                    WHEN NOT MATCHED THEN
+                        INSERT (tradingsymbol, name, instrument_token, lot_size, tick_size)
+                        VALUES (?, ?, ?, ?, ?);
+                ''', (symbol, name, token, lot_size, tick_size,
+                      symbol, name, token, lot_size, tick_size))
+            db.commit()
+            cached_instruments = db.execute('''
+                SELECT tradingsymbol FROM nse_instruments ORDER BY tradingsymbol
+            ''').fetchall()
+            print(f"  Auto-loaded {len(cached_instruments)} instruments for market data load")
+        except Exception as e:
+            return jsonify({
+                'success': False,
+                'error': f'Failed to load instruments from Kite: {str(e)}'
+            }), 500
+
+    # Step 2: Build NSE 500 symbol list
+    # Priority order: NIFTY 100 first, then remaining instruments up to 500
+    max_symbols = int(req_data.get('limit', 500))
+    all_cached = set(r['tradingsymbol'] for r in cached_instruments)
+
+    # Start with NIFTY 100 (known liquid stocks)
+    nifty_100_bare = [s.replace('NSE:', '') for s in NIFTY_100]
+    priority_symbols = [s for s in nifty_100_bare if s in all_cached]
+
+    # Add remaining cached instruments up to the limit
+    remaining = sorted(all_cached - set(priority_symbols))
+    symbol_list_bare = priority_symbols + remaining[:max(0, max_symbols - len(priority_symbols))]
+
+    # Build NSE:SYMBOL format
+    symbol_list = [f"NSE:{s}" for s in symbol_list_bare]
+    print(f"📊 Loading market data for {len(symbol_list)} NSE instruments (limit: {max_symbols})")
+
     symbols_loaded = 0
     symbols_failed = []
-    total = len(NIFTY_100)
+    total = len(symbol_list)
 
-    for i, symbol in enumerate(NIFTY_100):
+    for i, symbol in enumerate(symbol_list):
         try:
             exchange, tradingsymbol = client.parse_symbol(symbol)
             full_symbol = f"{exchange}:{tradingsymbol}"
@@ -423,9 +488,10 @@ def run_screener_v2():
     user_id = get_user_id()
     today = datetime.now().date()
 
-    db.execute('''
-        INSERT INTO weekly_scans 
+    row = db.execute('''
+        INSERT INTO weekly_scans
         (user_id, market, scan_date, week_start, week_end, results, summary)
+        OUTPUT INSERTED.id
         VALUES (?, ?, ?, ?, ?, ?, ?)
     ''', (
         user_id, market, today,
@@ -433,10 +499,10 @@ def run_screener_v2():
         today + timedelta(days=6-today.weekday()),
         json.dumps(results['all_results']),
         json.dumps(results['summary'])
-    ))
+    )).fetchone()
     db.commit()
 
-    scan_id = db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id']
+    scan_id = int(row[0])
     results['scan_id'] = scan_id
 
     return jsonify(results)
@@ -719,12 +785,17 @@ def create_gtt():
     if quantity <= 0:
         return jsonify({'success': False, 'error': 'Quantity must be a positive integer'}), 400
 
+    # Accept both 'limit_price' and 'price' from frontend
+    limit_price = data.get('limit_price') or data.get('price')
+    if not limit_price:
+        return jsonify({'success': False, 'error': 'limit_price or price is required'}), 400
+
     result = place_gtt_order(
         symbol=data['symbol'],
         transaction_type=data.get('transaction_type', TRANSACTION_BUY),
         quantity=quantity,
         trigger_price=data['trigger_price'],
-        limit_price=data['limit_price']
+        limit_price=limit_price
     )
 
     if result['success']:
@@ -909,13 +980,15 @@ def place_nrml_order():
     if quantity <= 0:
         return jsonify({'success': False, 'error': 'Quantity must be positive'}), 400
 
+    # Use CNC for NSE equity delivery (NRML is for F&O derivatives)
+    product = data.get('product', PRODUCT_CNC)
     result = place_order(
         symbol=data['symbol'],
         transaction_type=data.get('transaction_type', TRANSACTION_BUY),
         quantity=quantity,
         price=data.get('price'),
         order_type=data.get('order_type', ORDER_TYPE_LIMIT),
-        product='NRML',
+        product=product,
         trigger_price=data.get('trigger_price')
     )
 
@@ -1201,12 +1274,14 @@ def create_bill_from_screener():
     position_value = quantity * entry
 
     # Create trade bill
-    db.execute('''
+    bill_row = db.execute('''
         INSERT INTO trade_bills (
             user_id, symbol, market, direction, entry_price, stop_loss,
             target_price, quantity, position_value, risk_amount,
             risk_reward_ratio, signal_strength, grade, notes, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        )
+        OUTPUT INSERTED.id
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         user_id, symbol, 'US', 'LONG',
         entry, stop, screener_data['target'],
@@ -1216,10 +1291,10 @@ def create_bill_from_screener():
         screener_data['grade'],
         f"Created from screener. High-value signals: {', '.join(screener_data.get('high_value_signals', []))}",
         'PENDING'
-    ))
+    )).fetchone()
     db.commit()
 
-    bill_id = db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id']
+    bill_id = int(bill_row[0])
 
     return jsonify({
         'success': True,
@@ -1313,7 +1388,7 @@ def create_trade_journal():
     # initial_stop_loss = first entry's stop loss (static, never changes)
     initial_sl = data.get('initial_stop_loss') or data.get('stop_loss')
 
-    cursor = db.execute('''
+    row = db.execute('''
         INSERT INTO trade_journal_v2 (
             user_id, trade_bill_id, ticker, cmp, direction, status, journal_date,
             remaining_qty, order_type, mental_state, entry_price, quantity,
@@ -1321,7 +1396,9 @@ def create_trade_journal():
             trailing_stop, new_target, potential_gain, target_a, target_b, target_c,
             entry_tactic, entry_reason, exit_tactic, exit_reason,
             open_trade_comments, followup_analysis, strategy, mistake
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        )
+        OUTPUT INSERTED.id
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         user_id,
         data.get('trade_bill_id'),
@@ -1354,11 +1431,10 @@ def create_trade_journal():
         data.get('followup_analysis'),
         data.get('strategy'),
         data.get('mistake')
-    ))
+    )).fetchone()
     db.commit()
 
-    journal_id = int(db.execute(
-        'SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
+    journal_id = int(row[0])
     return jsonify({'success': True, 'id': journal_id}), 201
 
 
@@ -1480,11 +1556,13 @@ def add_trade_entry(journal_id):
     if not journal:
         return jsonify({'error': 'Journal not found'}), 404
 
-    cursor = db.execute('''
+    row = db.execute('''
         INSERT INTO trade_entries (
             journal_id, entry_datetime, quantity, order_price, filled_price,
             slippage, commission, position_size, day_high, day_low, grade, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        )
+        OUTPUT INSERTED.id
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         journal_id,
         data.get('entry_datetime'),
@@ -1498,11 +1576,10 @@ def add_trade_entry(journal_id):
         data.get('day_low'),
         data.get('grade'),
         data.get('notes')
-    ))
+    )).fetchone()
     db.commit()
 
-    entry_id = int(db.execute(
-        'SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
+    entry_id = int(row[0])
 
     # Update journal totals
     _recalculate_journal_totals(db, journal_id)
@@ -1525,11 +1602,13 @@ def add_trade_exit(journal_id):
     if not journal:
         return jsonify({'error': 'Journal not found'}), 404
 
-    cursor = db.execute('''
+    row = db.execute('''
         INSERT INTO trade_exits (
             journal_id, exit_datetime, quantity, order_price, filled_price,
             slippage, commission, position_size, day_high, day_low, grade, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        )
+        OUTPUT INSERTED.id
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         journal_id,
         data.get('exit_datetime'),
@@ -1543,10 +1622,10 @@ def add_trade_exit(journal_id):
         data.get('day_low'),
         data.get('grade'),
         data.get('notes')
-    ))
+    )).fetchone()
     db.commit()
 
-    exit_id = int(db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
+    exit_id = int(row[0])
 
     # Update journal totals
     _recalculate_journal_totals(db, journal_id)
@@ -1673,12 +1752,14 @@ def create_journal_from_bill(bill_id):
     potential_gain = abs(target - entry) * qty if entry and target else 0
 
     # Create journal from bill data
-    cursor = db.execute('''
+    j_row = db.execute('''
         INSERT INTO trade_journal_v2 (
             user_id, trade_bill_id, ticker, cmp, direction, status, journal_date,
             entry_price, quantity, target_price, stop_loss, rr_ratio,
             potential_loss, potential_gain, target_a, target_b, target_c
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        )
+        OUTPUT INSERTED.id
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         user_id,
         bill_id,
@@ -1697,11 +1778,10 @@ def create_journal_from_bill(bill_id):
         bill.get('target_1_3_a'),
         bill.get('target_1_2_b'),
         bill.get('target_1_1_c')
-    ))
+    )).fetchone()
     db.commit()
 
-    journal_id = int(db.execute(
-        'SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
+    journal_id = int(j_row[0])
 
     # Update trade bill to mark journal entered
     db.execute('''
@@ -2215,8 +2295,9 @@ def scan_single_stock_history(symbol):
 @api_v2.route('/instruments/search', methods=['GET'])
 def search_instruments():
     """
-    Typeahead search for NSE instruments (NIFTY 500).
-    Returns matches without exchange prefix for clean display.
+    Typeahead search for NSE instruments.
+    Searches the local nse_instruments cache first.
+    If cache is empty, auto-downloads from Kite Connect on the fly.
 
     Query params:
         q: search query (min 1 char)
@@ -2229,6 +2310,15 @@ def search_instruments():
         return jsonify([])
 
     db = get_db()
+
+    # Check if instruments cache has data
+    count_row = db.execute('SELECT COUNT(*) AS cnt FROM nse_instruments').fetchone()
+    cache_count = count_row['cnt'] if count_row else 0
+
+    if cache_count == 0:
+        # No instruments in local DB - advise user to load from Settings
+        return jsonify({'message': 'No instruments in local database. Please load market data from Settings first.', 'instruments': []})
+
     search_pattern = f'%{query}%'
 
     results = db.execute('''
@@ -2320,8 +2410,8 @@ def sync_all_from_kite():
     """
     try:
         client = get_client()
-        if not client:
-            return jsonify({'error': 'Kite not connected'}), 400
+        if not client or not client.kite or not client.access_token:
+            return jsonify({'error': 'Kite not connected. Please login first.'}), 400
 
         db = get_db()
         user_id = get_user_id()
@@ -2330,7 +2420,8 @@ def sync_all_from_kite():
 
         # 1. Sync Orders
         try:
-            orders = client.orders()
+            client._rate_limit()
+            orders = client.kite.orders()
             # Clear old cache for today
             db.execute(
                 "DELETE FROM kite_orders_cache WHERE user_id = ? AND CAST(cached_at AS DATE) = CAST(GETDATE() AS DATE)", (user_id,))
@@ -2360,7 +2451,8 @@ def sync_all_from_kite():
 
         # 2. Sync Positions
         try:
-            positions = client.positions()
+            client._rate_limit()
+            positions = client.kite.positions()
             day_positions = positions.get('day', [])
             net_positions = positions.get('net', [])
             all_positions = net_positions or day_positions
@@ -2390,7 +2482,8 @@ def sync_all_from_kite():
 
         # 3. Sync Holdings
         try:
-            holdings = client.holdings()
+            client._rate_limit()
+            holdings = client.kite.holdings()
 
             db.execute(
                 "DELETE FROM kite_holdings_cache WHERE user_id = ?", (user_id,))
@@ -2441,6 +2534,47 @@ def sync_all_from_kite():
                 ))
         except Exception as e:
             results['holdings_error'] = str(e)
+
+        # 4. Sync GTT Orders
+        try:
+            client._rate_limit()
+            gtt_orders = client.kite.get_gtts()
+
+            # Clear old GTT cache
+            db.execute("DELETE FROM kite_gtt_cache WHERE user_id = ?", (user_id,))
+
+            for gtt in gtt_orders:
+                condition = gtt.get('condition', {})
+                orders_list = gtt.get('orders', [])
+                first_order = orders_list[0] if orders_list else {}
+
+                db.execute('''
+                    INSERT INTO kite_gtt_cache
+                    (user_id, trigger_id, tradingsymbol, exchange, trigger_type,
+                     status, trigger_values, quantity, trigger_price,
+                     limit_price, transaction_type, created_at, updated_at,
+                     expires_at, gtt_data)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    user_id, gtt.get('id'),
+                    condition.get('tradingsymbol', gtt.get('tradingsymbol', '')),
+                    condition.get('exchange', gtt.get('exchange', 'NSE')),
+                    gtt.get('type', 'single'),
+                    gtt.get('status', 'active'),
+                    json.dumps(condition.get('trigger_values', [])),
+                    first_order.get('quantity', 0),
+                    condition.get('trigger_values', [0])[0] if condition.get('trigger_values') else 0,
+                    first_order.get('price', 0),
+                    first_order.get('transaction_type', ''),
+                    gtt.get('created_at', sync_time),
+                    gtt.get('updated_at', sync_time),
+                    gtt.get('expires_at', ''),
+                    json.dumps(gtt)
+                ))
+
+            results['gtt_orders'] = len(gtt_orders)
+        except Exception as e:
+            results['gtt_error'] = str(e)
 
         db.commit()
         results['sync_time'] = sync_time
@@ -2539,14 +2673,34 @@ def get_orders_history():
         else:
             other.append(order_dict)
 
-    # Also get active GTT orders
+    # Also get active GTT orders (live from Kite + cached)
     gtt_list = []
     try:
         gtt_result = get_gtt_orders()
         if gtt_result.get('success'):
-            gtt_list = gtt_result.get('orders', [])
+            gtt_list = gtt_result.get('gtts', [])
     except:
-        pass
+        # Fallback to cached GTT orders
+        try:
+            cached_gtts = db.execute('''
+                SELECT trigger_id, tradingsymbol, trigger_type, status,
+                       trigger_values, quantity, trigger_price, limit_price,
+                       transaction_type, gtt_data
+                FROM kite_gtt_cache WHERE user_id = ?
+            ''', (user_id,)).fetchall()
+            for g in cached_gtts:
+                gtt_list.append({
+                    'trigger_id': g['trigger_id'],
+                    'tradingsymbol': g['tradingsymbol'],
+                    'trigger_type': g['trigger_type'],
+                    'status': g['status'],
+                    'trigger_values': json.loads(g['trigger_values']) if g['trigger_values'] else [],
+                    'quantity': g['quantity'],
+                    'trigger_price': g['trigger_price'],
+                    'transaction_type': g['transaction_type']
+                })
+        except:
+            pass
 
     return jsonify({
         'success': True,
@@ -2744,12 +2898,13 @@ def create_mistake():
     max_order = db.execute('SELECT MAX(display_order) AS mx FROM mistakes').fetchone()
     next_order = (max_order['mx'] or 0) + 1
 
-    db.execute('''
+    m_row = db.execute('''
         INSERT INTO mistakes (name, description, display_order)
+        OUTPUT INSERTED.id
         VALUES (?, ?, ?)
-    ''', (name, data.get('description', ''), next_order))
+    ''', (name, data.get('description', ''), next_order)).fetchone()
     db.commit()
-    mid = int(db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
+    mid = int(m_row[0])
     return jsonify({'success': True, 'id': mid}), 201
 
 
@@ -2797,12 +2952,13 @@ def create_global_strategy():
         return jsonify({'error': 'Name is required'}), 400
 
     db = get_db()
-    db.execute('''
+    s_row = db.execute('''
         INSERT INTO strategies (user_id, name, description, config)
+        OUTPUT INSERTED.id
         VALUES (NULL, ?, ?, ?)
-    ''', (name, data.get('description', ''), json.dumps(data.get('config', {}))))
+    ''', (name, data.get('description', ''), json.dumps(data.get('config', {})))).fetchone()
     db.commit()
-    sid = int(db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
+    sid = int(s_row[0])
     return jsonify({'success': True, 'id': sid}), 201
 
 
@@ -2834,12 +2990,18 @@ def delete_global_strategy(strategy_id):
 
 @api_v2.route('/live-cmp/<symbol>', methods=['GET'])
 def get_live_cmp(symbol):
-    """Get live CMP from Kite API. Falls back to cached close."""
+    """
+    Get live CMP from Kite API. ALWAYS tries Kite first for real-time price.
+    Falls back to cached close only when Kite is not connected.
+    """
+    full_sym = symbol if ':' in symbol else f'NSE:{symbol}'
+
+    # ALWAYS try to get live price from Kite first
     try:
         client = get_client()
-        if client and client.check_auth():
-            full_sym = symbol if ':' in symbol else f'NSE:{symbol}'
-            ltp_data = client.ltp([full_sym])
+        if client and client.kite and client.access_token:
+            client._rate_limit()
+            ltp_data = client.kite.ltp([full_sym])
             if ltp_data and full_sym in ltp_data:
                 return jsonify({
                     'symbol': full_sym,
@@ -2848,11 +3010,10 @@ def get_live_cmp(symbol):
                     'timestamp': datetime.now().isoformat()
                 })
     except Exception as e:
-        print(f"Live CMP error: {e}")
+        print(f"Live CMP error for {full_sym}: {e}")
 
-    # Fallback to cached close price
+    # Fallback to cached close price ONLY if Kite unavailable
     db = get_db()
-    full_sym = symbol if ':' in symbol else f'NSE:{symbol}'
     row = db.execute('''
         SELECT TOP 1 [close], date FROM stock_historical_data
         WHERE symbol = ? ORDER BY date DESC
@@ -2959,6 +3120,7 @@ def detect_candle_pattern(symbol):
 def get_portfolio_context():
     """
     Get combined positions + holdings context for Trade Bill and dashboard.
+    Auto-fetches from Kite if cache is empty and Kite is connected.
     Shows: open positions, capital locked, total P/L, holdings value.
     """
     user_id = get_user_id()
@@ -2979,25 +3141,83 @@ def get_portfolio_context():
         WHERE user_id = ?
     ''', (user_id,)).fetchall()
 
+    # If cache is empty, try to sync directly from Kite
+    if not positions and not holdings:
+        try:
+            client = get_client()
+            if client and client.kite and client.access_token:
+                # Fetch positions directly from Kite
+                try:
+                    client._rate_limit()
+                    kite_positions = client.kite.positions()
+                    net_positions = kite_positions.get('net', [])
+                    positions_list = []
+                    for pos in net_positions:
+                        if pos.get('quantity', 0) != 0:
+                            positions_list.append({
+                                'tradingsymbol': pos.get('tradingsymbol', ''),
+                                'product': pos.get('product', ''),
+                                'quantity': pos.get('quantity', 0),
+                                'average_price': pos.get('average_price', 0),
+                                'last_price': pos.get('last_price', 0),
+                                'pnl': pos.get('pnl', 0)
+                            })
+                    positions = positions_list
+                except Exception as e:
+                    print(f"Portfolio positions fetch error: {e}")
+
+                # Fetch holdings directly from Kite
+                try:
+                    client._rate_limit()
+                    kite_holdings = client.kite.holdings()
+                    holdings_list = []
+                    for h in kite_holdings:
+                        holdings_list.append({
+                            'tradingsymbol': h.get('tradingsymbol', ''),
+                            'quantity': h.get('quantity', 0),
+                            'average_price': h.get('average_price', 0),
+                            'last_price': h.get('last_price', 0),
+                            'pnl': h.get('pnl', 0),
+                            'day_change': h.get('day_change', 0),
+                            'day_change_percentage': h.get('day_change_percentage', 0)
+                        })
+                    holdings = holdings_list
+                except Exception as e:
+                    print(f"Portfolio holdings fetch error: {e}")
+        except Exception as e:
+            print(f"Portfolio auto-sync error: {e}")
+
     # Get account settings
     account = db.execute('''
         SELECT trading_capital FROM account_settings WHERE user_id = ?
     ''', (user_id,)).fetchone()
     capital = account['trading_capital'] if account else 500000
 
-    # Calculate totals
-    positions_value = sum(abs(p['quantity'] * p['average_price']) for p in positions)
-    positions_pnl = sum(p['pnl'] or 0 for p in positions)
-    holdings_value = sum(h['quantity'] * h['last_price'] for h in holdings)
-    holdings_pnl = sum(h['pnl'] or 0 for h in holdings)
+    # Calculate totals (handle both dict and DictRow objects)
+    def get_val(row, key, default=0):
+        try:
+            return row[key] or default
+        except (KeyError, TypeError):
+            return default
+
+    positions_value = sum(abs(get_val(p, 'quantity') * get_val(p, 'average_price')) for p in positions)
+    positions_pnl = sum(get_val(p, 'pnl') for p in positions)
+    holdings_value = sum(get_val(h, 'quantity') * get_val(h, 'last_price') for h in holdings)
+    holdings_pnl = sum(get_val(h, 'pnl') for h in holdings)
 
     total_locked = positions_value + holdings_value
     capital_used_pct = (total_locked / capital * 100) if capital > 0 else 0
 
+    # Convert to dicts for JSON serialization
+    def to_dict(row):
+        if isinstance(row, dict):
+            return row
+        return dict(row)
+
     return jsonify({
         'success': True,
-        'positions': [dict(p) for p in positions],
-        'holdings': [dict(h) for h in holdings],
+        'positions': [to_dict(p) for p in positions],
+        'holdings': [to_dict(h) for h in holdings],
         'summary': {
             'open_positions': len(positions),
             'total_holdings': len(holdings),

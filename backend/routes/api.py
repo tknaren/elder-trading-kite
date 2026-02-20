@@ -125,19 +125,19 @@ def weekly_screener():
 
     # Save scan to database (quick DB operation)
     db = get_db()
-    db.execute('''
-        INSERT INTO weekly_scans 
+    row = db.execute('''
+        INSERT INTO weekly_scans
         (user_id, market, scan_date, week_start, week_end, results, summary)
+        OUTPUT INSERTED.id
         VALUES (?, ?, ?, ?, ?, ?, ?)
     ''', (
         user_id, market, today, week_start, week_end,
         json.dumps(results['all_results']),
         json.dumps(results['summary'])
-    ))
+    )).fetchone()
     db.commit()
 
-    scan_id = db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id']
-    results['scan_id'] = int(scan_id)
+    results['scan_id'] = int(row[0])
     results['week_start'] = week_start.isoformat()
     results['week_end'] = week_end.isoformat()
 
@@ -185,18 +185,18 @@ def daily_screener():
 
     # Save to database
     today = datetime.now().date()
-    db.execute('''
-        INSERT INTO daily_scans 
+    row = db.execute('''
+        INSERT INTO daily_scans
         (user_id, weekly_scan_id, market, scan_date, results)
+        OUTPUT INSERTED.id
         VALUES (?, ?, ?, ?, ?)
     ''', (
         user_id, weekly_scan_id, weekly_scan['market'],
         today, json.dumps(results['all_results'])
-    ))
+    )).fetchone()
     db.commit()
 
-    scan_id = db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id']
-    results['scan_id'] = int(scan_id)
+    results['scan_id'] = int(row[0])
     results['weekly_scan_id'] = weekly_scan_id
 
     # Sanitize results for JSON serialization
@@ -358,20 +358,21 @@ def create_setting():
     db = get_db()
     user_id = get_user_id()
 
-    db.execute('''
-        INSERT INTO account_settings 
+    row = db.execute('''
+        INSERT INTO account_settings
         (user_id, account_name, market, trading_capital, risk_per_trade,
          max_monthly_drawdown, target_rr, max_open_positions, currency, broker)
+        OUTPUT INSERTED.id
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         user_id, data['account_name'], data['market'], data['trading_capital'],
         data.get('risk_per_trade', 2), data.get('max_monthly_drawdown', 6),
         data.get('target_rr', 2), data.get('max_open_positions', 5),
         data['currency'], data.get('broker')
-    ))
+    )).fetchone()
     db.commit()
 
-    return jsonify({'message': 'Setting created', 'id': int(db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])})
+    return jsonify({'message': 'Setting created', 'id': int(row[0])})
 
 
 @api.route('/settings/<int:id>', methods=['PUT'])
@@ -532,11 +533,12 @@ def create_setup():
     db = get_db()
     user_id = get_user_id()
 
-    db.execute('''
-        INSERT INTO trade_setups 
+    row = db.execute('''
+        INSERT INTO trade_setups
         (user_id, daily_scan_id, symbol, market, strategy_id, apgar_score,
          apgar_details, entry_price, stop_loss, target_price, position_size,
          risk_amount, status)
+        OUTPUT INSERTED.id
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         user_id, data.get('daily_scan_id'), data['symbol'], data['market'],
@@ -544,10 +546,10 @@ def create_setup():
         json.dumps(data.get('apgar_details', {})),
         data['entry_price'], data['stop_loss'], data['target_price'],
         data.get('position_size'), data.get('risk_amount'), 'pending'
-    ))
+    )).fetchone()
     db.commit()
 
-    return jsonify({'message': 'Setup created', 'id': int(db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])})
+    return jsonify({'message': 'Setup created', 'id': int(row[0])})
 
 
 # ============ TRADE JOURNAL ============
@@ -583,21 +585,22 @@ def create_journal_entry():
     db = get_db()
     user_id = get_user_id()
 
-    db.execute('''
-        INSERT INTO trade_journal 
+    row = db.execute('''
+        INSERT INTO trade_journal
         (user_id, symbol, market, direction, entry_date, entry_price,
          position_size, stop_loss, target_price, strategy_id, apgar_score,
          notes, status)
+        OUTPUT INSERTED.id
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         user_id, data['symbol'], data['market'], data.get('direction', 'LONG'),
         data.get('entry_date'), data['entry_price'], data['position_size'],
         data['stop_loss'], data['target_price'], data.get('strategy_id'),
         data.get('apgar_score'), data.get('notes'), 'open'
-    ))
+    )).fetchone()
     db.commit()
 
-    return jsonify({'message': 'Entry created', 'id': int(db.execute('SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])})
+    return jsonify({'message': 'Entry created', 'id': int(row[0])})
 
 
 @api.route('/journal/<int:id>', methods=['PUT'])
@@ -756,8 +759,11 @@ def create_trade_bill():
                 risk_percent, channel_height, potential_gain, target_1_1_c, target_1_2_b,
                 target_1_3_a, risk_amount_currency, reward_amount_currency, risk_reward_ratio,
                 break_even, trailing_stop, is_filled, stop_entered, target_entered,
-                journal_entered, comments, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                journal_entered, comments, status, created_at,
+                atr, candle_pattern, candle_1_conviction, candle_2_conviction
+            )
+            OUTPUT INSERTED.id
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             user_id, data.get('ticker'), data.get('current_market_price'),
             data.get('entry_price'), data.get(
@@ -780,11 +786,12 @@ def create_trade_bill():
                 'stop_entered') else 0,
             1 if data.get('target_entered') else 0, 1 if data.get(
                 'journal_entered') else 0,
-            data.get('comments', ''), 'active', datetime.now().isoformat()
+            data.get('comments', ''), 'active', datetime.now().isoformat(),
+            data.get('atr'), data.get('candle_pattern'),
+            data.get('candle_1_conviction'), data.get('candle_2_conviction')
         ))
+        trade_bill_id = int(cursor.fetchone()[0])
         conn.commit()
-        trade_bill_id = int(conn.execute(
-            'SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
         conn.close()
 
         return jsonify({
@@ -1038,13 +1045,15 @@ def create_trade_log_entry():
     db = get_db()
 
     try:
-        db.execute('''
+        row = db.execute('''
             INSERT INTO trade_log (
                 user_id, entry_date, symbol, strategy, direction,
                 entry_price, shares, stop_loss, take_profit,
                 exit_date, exit_price, trade_costs, gross_pnl, net_pnl,
                 mistake, discipline_rating, notes, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            )
+            OUTPUT INSERTED.id
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             user_id, data.get('entry_date'), data.get('symbol'),
             data.get('strategy'), data.get('direction'),
@@ -1055,11 +1064,10 @@ def create_trade_log_entry():
             data.get('net_pnl'), data.get('mistake'),
             data.get('discipline_rating', 8), data.get('notes'),
             'closed' if data.get('exit_date') else 'open'
-        ))
+        )).fetchone()
         db.commit()
 
-        trade_id = int(db.execute(
-            'SELECT SCOPE_IDENTITY() AS id').fetchone()['id'])
+        trade_id = int(row[0])
         return jsonify({'success': True, 'id': trade_id, 'message': 'Trade saved'}), 201
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 400

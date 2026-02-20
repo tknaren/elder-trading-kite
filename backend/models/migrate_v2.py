@@ -116,6 +116,131 @@ def migrate_database(connection_string: str = None):
         conn.commit()
         print(f"Data cleanup: {cleanup_count} rows normalized (NSE: prefix removed)")
 
+    # ── Recreate Kite cache tables with correct schema ──
+    # These are temporary cache tables, safe to drop and recreate
+    cache_table_recreations = [
+        ('kite_orders_cache', '''
+            CREATE TABLE kite_orders_cache (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                user_id INT NOT NULL DEFAULT 1,
+                order_id NVARCHAR(100) NOT NULL,
+                tradingsymbol NVARCHAR(100) NOT NULL,
+                exchange NVARCHAR(20) DEFAULT 'NSE',
+                transaction_type NVARCHAR(20),
+                order_type NVARCHAR(20),
+                quantity INT,
+                price FLOAT,
+                trigger_price FLOAT,
+                average_price FLOAT,
+                filled_quantity INT DEFAULT 0,
+                pending_quantity INT DEFAULT 0,
+                product NVARCHAR(20),
+                status NVARCHAR(50),
+                tag NVARCHAR(50),
+                placed_at NVARCHAR(100),
+                order_data NVARCHAR(MAX),
+                cached_at DATETIME2 DEFAULT GETDATE()
+            )
+        '''),
+        ('kite_positions_cache', '''
+            CREATE TABLE kite_positions_cache (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                user_id INT NOT NULL DEFAULT 1,
+                tradingsymbol NVARCHAR(100) NOT NULL,
+                exchange NVARCHAR(20) DEFAULT 'NSE',
+                product NVARCHAR(20),
+                quantity INT,
+                average_price FLOAT,
+                last_price FLOAT,
+                pnl FLOAT,
+                buy_value FLOAT,
+                sell_value FLOAT,
+                position_data NVARCHAR(MAX),
+                cached_at DATETIME2 DEFAULT GETDATE()
+            )
+        '''),
+        ('kite_holdings_cache', '''
+            CREATE TABLE kite_holdings_cache (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                user_id INT NOT NULL DEFAULT 1,
+                tradingsymbol NVARCHAR(100) NOT NULL,
+                exchange NVARCHAR(20) DEFAULT 'NSE',
+                isin NVARCHAR(50),
+                quantity INT,
+                average_price FLOAT,
+                last_price FLOAT,
+                pnl FLOAT,
+                day_change FLOAT,
+                day_change_percentage FLOAT,
+                holding_data NVARCHAR(MAX),
+                cached_at DATETIME2 DEFAULT GETDATE()
+            )
+        '''),
+        ('kite_gtt_cache', '''
+            CREATE TABLE kite_gtt_cache (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                user_id INT NOT NULL DEFAULT 1,
+                trigger_id INT NOT NULL,
+                tradingsymbol NVARCHAR(100) NOT NULL,
+                exchange NVARCHAR(20) DEFAULT 'NSE',
+                trigger_type NVARCHAR(20),
+                status NVARCHAR(50),
+                trigger_values NVARCHAR(500),
+                quantity INT,
+                trigger_price FLOAT,
+                limit_price FLOAT,
+                transaction_type NVARCHAR(20),
+                created_at NVARCHAR(100),
+                updated_at NVARCHAR(100),
+                expires_at NVARCHAR(100),
+                gtt_data NVARCHAR(MAX),
+                cached_at DATETIME2 DEFAULT GETDATE()
+            )
+        '''),
+        ('holdings_snapshot', '''
+            CREATE TABLE holdings_snapshot (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                user_id INT NOT NULL DEFAULT 1,
+                tradingsymbol NVARCHAR(100) NOT NULL,
+                snapshot_date DATE NOT NULL,
+                quantity INT,
+                average_price FLOAT,
+                last_price FLOAT,
+                pnl FLOAT,
+                day_change FLOAT,
+                day_change_percentage FLOAT,
+                updated_at DATETIME2 DEFAULT GETDATE()
+            )
+        '''),
+    ]
+
+    cache_recreated = 0
+    for table_name, create_sql in cache_table_recreations:
+        try:
+            # Check if the table needs updating by checking for user_id column
+            needs_update = False
+            if not _column_exists(cursor, table_name, 'user_id'):
+                needs_update = True
+            elif table_name == 'kite_orders_cache' and not _column_exists(cursor, table_name, 'tradingsymbol'):
+                needs_update = True
+            elif table_name == 'kite_gtt_cache':
+                # Always ensure gtt_cache exists
+                cursor.execute(f"SELECT OBJECT_ID('{table_name}', 'U')")
+                if cursor.fetchone()[0] is None:
+                    needs_update = True
+
+            if needs_update:
+                cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+                cursor.execute(create_sql)
+                cache_recreated += 1
+                print(f"  Recreated cache table: {table_name}")
+        except pyodbc.Error as e:
+            print(f"  Error recreating {table_name}: {e}")
+
+    if cache_recreated > 0:
+        conn.commit()
+        print(f"Cache tables recreated: {cache_recreated}")
+
     conn.close()
 
     print(f"Migration complete: {success} applied, {skipped} skipped, {len(errors)} errors")

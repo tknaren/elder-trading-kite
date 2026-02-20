@@ -378,6 +378,371 @@ def run_tests():
         conn.close()
 
     # ──────────────────────────────────────────────────────────────────
+    # TEST 8: Trade Journal CRUD (SCOPE_IDENTITY fix)
+    # ──────────────────────────────────────────────────────────────────
+    print("\n── Test 8: Trade Journal CRUD (OUTPUT INSERTED.id fix) ──")
+
+    # 8a. Create a new trade journal
+    journal_data = {
+        'ticker': 'TESTSTOCK',
+        'journal_date': '2024-01-15',
+        'direction': 'Long',
+        'strategy': 'EL - Elder System',
+        'stop_loss': 100.0,
+        'target_price': 120.0,
+        'entry_tactic': 'Limit Order',
+        'entry_reason': 'Test entry'
+    }
+    resp = client.post('/api/v2/trade-journal',
+                       data=json.dumps(journal_data),
+                       content_type='application/json')
+    test("POST /trade-journal returns 201", resp.status_code == 201)
+    data = resp.get_json()
+    test("create journal returns success", data.get('success') == True)
+    journal_id = data.get('id')
+    test("create journal returns valid id (OUTPUT INSERTED.id works)",
+         journal_id is not None and isinstance(journal_id, int) and journal_id > 0,
+         f"Got id: {journal_id}")
+
+    if journal_id:
+        # 8b. Add entry leg
+        entry_data = {
+            'entry_datetime': '2024-01-15T10:30:00',
+            'quantity': 10,
+            'order_price': 110.0,
+            'filled_price': 110.25,
+            'slippage': 0.25,
+            'commission': 15.0,
+            'position_size': 1102.50,
+            'grade': 'A'
+        }
+        resp = client.post(f'/api/v2/trade-journal/{journal_id}/entry',
+                           data=json.dumps(entry_data),
+                           content_type='application/json')
+        test("POST /trade-journal/{id}/entry returns 201", resp.status_code == 201)
+        data = resp.get_json()
+        test("add entry returns success", data.get('success') == True)
+        entry_id = data.get('id')
+        test("add entry returns valid id",
+             entry_id is not None and isinstance(entry_id, int) and entry_id > 0,
+             f"Got entry_id: {entry_id}")
+
+        # 8c. Add exit leg
+        exit_data = {
+            'exit_datetime': '2024-01-16T14:00:00',
+            'quantity': 10,
+            'order_price': 118.0,
+            'filled_price': 117.80,
+            'slippage': 0.20,
+            'commission': 15.0,
+            'position_size': 1178.00,
+            'grade': 'B'
+        }
+        resp = client.post(f'/api/v2/trade-journal/{journal_id}/exit',
+                           data=json.dumps(exit_data),
+                           content_type='application/json')
+        test("POST /trade-journal/{id}/exit returns 201", resp.status_code == 201)
+        data = resp.get_json()
+        test("add exit returns success", data.get('success') == True)
+        exit_id = data.get('id')
+        test("add exit returns valid id",
+             exit_id is not None and isinstance(exit_id, int) and exit_id > 0,
+             f"Got exit_id: {exit_id}")
+
+        # 8d. Get journal and verify totals recalculated
+        resp = client.get(f'/api/v2/trade-journal/{journal_id}')
+        test("GET /trade-journal/{id} returns 200", resp.status_code == 200)
+        data = resp.get_json()
+        test("journal has entries", len(data.get('entries', [])) > 0)
+        test("journal has exits", len(data.get('exits', [])) > 0)
+        test("journal avg_entry calculated", data.get('avg_entry') is not None and data.get('avg_entry') > 0,
+             f"avg_entry={data.get('avg_entry')}")
+        test("journal status auto-closed", data.get('status') == 'closed',
+             f"status={data.get('status')}")
+        test("journal gain_loss_amount calculated", data.get('gain_loss_amount') is not None,
+             f"gain_loss={data.get('gain_loss_amount')}")
+
+        # 8e. Delete the test journal
+        resp = client.delete(f'/api/v2/trade-journal/{journal_id}')
+        test("DELETE /trade-journal/{id} returns 200", resp.status_code == 200)
+    else:
+        # Skip dependent tests
+        for _ in range(11):
+            test("trade journal dependent test", False, "Skipped — journal creation failed")
+
+    # ──────────────────────────────────────────────────────────────────
+    # TEST 9: Load Market Data Endpoint
+    # ──────────────────────────────────────────────────────────────────
+    print("\n── Test 9: Load Market Data ──")
+
+    # 9a. Data load endpoint exists and doesn't crash (401 = no Kite auth, which is fine)
+    resp = client.post('/api/v2/data/load',
+                       data=json.dumps({}),
+                       content_type='application/json')
+    test("POST /data/load does not return 500",
+         resp.status_code != 500,
+         f"Status: {resp.status_code}")
+
+    # 9b. Data status endpoint
+    resp = client.get('/api/v2/data/status')
+    test("GET /data/status returns 200", resp.status_code == 200)
+    data = resp.get_json()
+    test("data/status has symbols_cached field", 'symbols_cached' in data)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Test 10: CMP Endpoint (always live from Kite)
+    # ──────────────────────────────────────────────────────────────────
+    print("\n── Test 10: Live CMP Endpoint ──")
+
+    resp = client.get('/api/v2/live-cmp/RELIANCE')
+    test("GET /live-cmp/RELIANCE returns 200 or 404",
+         resp.status_code in (200, 404),
+         f"Status: {resp.status_code}")
+    data = resp.get_json()
+    if resp.status_code == 200:
+        test("CMP response has 'cmp' field", 'cmp' in data)
+        test("CMP response has 'source' field", 'source' in data)
+        test("CMP source is 'live' or 'cache'",
+             data.get('source') in ('live', 'cache'),
+             f"Source: {data.get('source')}")
+    else:
+        test("CMP 404 has error message", 'error' in data)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Test 11: GTT Order Endpoint (parameter validation)
+    # ──────────────────────────────────────────────────────────────────
+    print("\n── Test 11: GTT Order Parameter Validation ──")
+
+    # Test missing quantity
+    resp = client.post('/api/v2/kite/gtt',
+                       data=json.dumps({
+                           'symbol': 'RELIANCE',
+                           'trigger_price': 2500,
+                           'limit_price': 2510
+                       }),
+                       content_type='application/json')
+    test("GTT with qty=0 returns 400", resp.status_code == 400)
+
+    # Test accepts both 'price' and 'limit_price'
+    resp = client.post('/api/v2/kite/gtt',
+                       data=json.dumps({
+                           'symbol': 'RELIANCE',
+                           'transaction_type': 'BUY',
+                           'trigger_price': 2500,
+                           'price': 2510,  # Frontend sends 'price'
+                           'quantity': 10
+                       }),
+                       content_type='application/json')
+    # Should NOT return 400 for missing limit_price (accepts 'price' as fallback)
+    test("GTT accepts 'price' instead of 'limit_price'",
+         resp.status_code != 400 or 'limit_price' not in (resp.get_json() or {}).get('error', ''),
+         f"Status: {resp.status_code}")
+
+    # Test NRML order endpoint
+    resp = client.post('/api/v2/kite/orders/nrml',
+                       data=json.dumps({
+                           'symbol': 'RELIANCE',
+                           'transaction_type': 'BUY',
+                           'quantity': 10,
+                           'price': 2500,
+                           'order_type': 'LIMIT'
+                       }),
+                       content_type='application/json')
+    test("NRML order endpoint responds (not 500)",
+         resp.status_code != 500,
+         f"Status: {resp.status_code}")
+
+    # ──────────────────────────────────────────────────────────────────
+    # Test 12: Portfolio Context Endpoint
+    # ──────────────────────────────────────────────────────────────────
+    print("\n── Test 12: Portfolio Context ──")
+
+    resp = client.get('/api/v2/portfolio/context')
+    test("GET /portfolio/context returns 200", resp.status_code == 200)
+    data = resp.get_json()
+    test("portfolio has 'positions' array", 'positions' in data and isinstance(data['positions'], list))
+    test("portfolio has 'holdings' array", 'holdings' in data and isinstance(data['holdings'], list))
+    test("portfolio has 'summary' object", 'summary' in data and isinstance(data['summary'], dict))
+    summary = data.get('summary', {})
+    test("summary has trading_capital", 'trading_capital' in summary)
+    test("summary has available_capital", 'available_capital' in summary)
+    test("summary has capital_used_pct", 'capital_used_pct' in summary)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Test 13: Orders History Endpoint (with GTT)
+    # ──────────────────────────────────────────────────────────────────
+    print("\n── Test 13: Orders History with GTT ──")
+
+    resp = client.get('/api/v2/orders/history')
+    test("GET /orders/history returns 200", resp.status_code == 200)
+    data = resp.get_json()
+    test("orders history has 'pending' array", 'pending' in data)
+    test("orders history has 'executed' array", 'executed' in data)
+    test("orders history has 'gtt_orders' array", 'gtt_orders' in data)
+    test("orders history has 'summary' object", 'summary' in data)
+    summary = data.get('summary', {})
+    test("summary has gtt_count", 'gtt_count' in summary)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Test 14: Sync All Endpoint
+    # ──────────────────────────────────────────────────────────────────
+    print("\n── Test 14: Sync All Endpoint ──")
+
+    resp = client.post('/api/v2/sync/all',
+                       data=json.dumps({}),
+                       content_type='application/json')
+    test("POST /sync/all returns 400 (no Kite auth) or 200",
+         resp.status_code in (200, 400),
+         f"Status: {resp.status_code}")
+    data = resp.get_json()
+    if resp.status_code == 400:
+        test("sync/all error mentions Kite", 'kite' in (data.get('error', '') or '').lower() or 'connected' in (data.get('error', '') or '').lower())
+
+    # ──────────────────────────────────────────────────────────────────
+    # Test 15: Database Schema Check (cache tables)
+    # ──────────────────────────────────────────────────────────────────
+    print("\n── Test 15: Database Schema Verification ──")
+
+    from models.database import get_database
+    db_inst = get_database()
+    conn = db_inst.get_connection()
+
+    # Check kite_orders_cache has user_id column
+    row = conn.execute("""
+        SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = 'kite_orders_cache' AND COLUMN_NAME = 'user_id'
+    """).fetchone()
+    test("kite_orders_cache has user_id column", row['cnt'] > 0)
+
+    # Check kite_orders_cache has tradingsymbol column
+    row = conn.execute("""
+        SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = 'kite_orders_cache' AND COLUMN_NAME = 'tradingsymbol'
+    """).fetchone()
+    test("kite_orders_cache has tradingsymbol column", row['cnt'] > 0)
+
+    # Check kite_gtt_cache table exists
+    row = conn.execute("""
+        SELECT OBJECT_ID('kite_gtt_cache', 'U') AS obj_id
+    """).fetchone()
+    test("kite_gtt_cache table exists", row['obj_id'] is not None)
+
+    # Check kite_positions_cache has user_id
+    row = conn.execute("""
+        SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = 'kite_positions_cache' AND COLUMN_NAME = 'user_id'
+    """).fetchone()
+    test("kite_positions_cache has user_id column", row['cnt'] > 0)
+
+    # Check kite_holdings_cache has user_id
+    row = conn.execute("""
+        SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = 'kite_holdings_cache' AND COLUMN_NAME = 'user_id'
+    """).fetchone()
+    test("kite_holdings_cache has user_id column", row['cnt'] > 0)
+
+    conn.close()
+
+    # ──────────────────────────────────────────────────────────────────
+    # Test 16: Trade Bill Create + Update (v1 API)
+    # ──────────────────────────────────────────────────────────────────
+    print("\n── Test 16: Trade Bill Create + Update ──")
+
+    bill_data = {
+        'ticker': 'RELIANCE',
+        'current_market_price': 2500.0,
+        'entry_price': 2450.0,
+        'stop_loss': 2400.0,
+        'target_price': 2600.0,
+        'quantity': 10,
+        'risk_per_share': 50.0,
+        'position_size': 24500.0,
+        'risk_percent': 2.0,
+        'risk_amount_currency': 500.0,
+        'reward_amount_currency': 1500.0,
+        'risk_reward_ratio': 3.0,
+        'break_even': 2450.0,
+        'is_filled': True,
+        'stop_entered': False,
+        'target_entered': False,
+        'journal_entered': False,
+        'comments': 'Test trade bill',
+        'atr': 45.5,
+        'candle_pattern': 'Bullish Engulfing',
+        'candle_1_conviction': 'Strong',
+        'candle_2_conviction': 'Weak'
+    }
+
+    resp = client.post('/api/trade-bills', json=bill_data)
+    test("POST /trade-bills returns 201", resp.status_code == 201)
+    data = resp.get_json()
+    test("create trade bill returns success", data.get('success') == True)
+    test("create trade bill returns id", data.get('id') is not None and data.get('id') > 0)
+    bill_id = data.get('id')
+
+    if bill_id:
+        # Update the bill
+        update_data = {
+            'ticker': 'RELIANCE',
+            'entry_price': 2460.0,
+            'stop_loss': 2410.0,
+            'is_filled': True,
+            'stop_entered': True,
+            'comments': 'Updated test bill'
+        }
+        resp = client.put(f'/api/trade-bills/{bill_id}', json=update_data)
+        test("PUT /trade-bills returns 200", resp.status_code == 200)
+        data = resp.get_json()
+        test("update trade bill returns success", data.get('success') == True)
+
+        # Get the bill to verify atr/candle columns saved
+        resp = client.get(f'/api/trade-bills/{bill_id}')
+        test("GET /trade-bills/{id} returns 200", resp.status_code == 200)
+        bill = resp.get_json()
+        test("trade bill has atr field", bill.get('atr') is not None)
+        test("trade bill has candle_pattern field", bill.get('candle_pattern') == 'Bullish Engulfing')
+
+        # Create journal from bill
+        resp = client.post(f'/api/v2/trade-journal/from-bill/{bill_id}')
+        test("POST /trade-journal/from-bill returns 201", resp.status_code == 201)
+        jdata = resp.get_json()
+        test("from-bill returns success", jdata.get('success') == True)
+        test("from-bill returns journal id", jdata.get('id') is not None)
+
+        # Cleanup
+        if jdata.get('id'):
+            client.delete(f'/api/v2/trade-journal/{jdata["id"]}')
+        client.delete(f'/api/trade-bills/{bill_id}')
+
+    # ──────────────────────────────────────────────────────────────────
+    # Test 17: Order Cancel/Modify Endpoints Exist
+    # ──────────────────────────────────────────────────────────────────
+    print("\n── Test 17: Order Cancel/Modify Endpoints ──")
+
+    # These will return 400/404 since no real Kite auth, but should NOT return 500/405
+    resp = client.delete('/api/v2/kite/orders/fake-order-id')
+    test("DELETE /kite/orders/{id} returns 400 (not 405/500)", resp.status_code in [200, 400, 404])
+
+    resp = client.put('/api/v2/kite/orders/fake-order-id',
+                      json={'quantity': 10, 'price': 100.0})
+    test("PUT /kite/orders/{id} returns 400 (not 405/500)", resp.status_code in [200, 400, 404])
+
+    resp = client.delete('/api/v2/kite/gtt/99999')
+    test("DELETE /kite/gtt/{id} returns 400 (not 405/500)", resp.status_code in [200, 400, 404])
+
+    # ──────────────────────────────────────────────────────────────────
+    # Test 18: Instruments Search (Local DB Only)
+    # ──────────────────────────────────────────────────────────────────
+    print("\n── Test 18: Instruments Search (Local Only) ──")
+
+    resp = client.get('/api/v2/instruments/search?q=RELIANCE&limit=5')
+    test("instruments/search returns 200", resp.status_code == 200)
+    data = resp.get_json()
+    # Should return array or message about loading from Settings
+    is_valid = isinstance(data, list) or (isinstance(data, dict) and 'message' in data)
+    test("instruments/search returns array or load message", is_valid)
+
+    # ──────────────────────────────────────────────────────────────────
     # Cleanup: Remove test data from watchlist
     # ──────────────────────────────────────────────────────────────────
     print("\n── Cleanup ──")

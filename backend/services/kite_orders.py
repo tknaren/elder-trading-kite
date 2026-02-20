@@ -360,27 +360,38 @@ def place_gtt_oco(
 
 
 def get_gtt_orders() -> Dict:
-    """Get all GTT orders"""
+    """Get all GTT orders from Kite"""
     client = get_client()
-    if not client.check_auth():
+    if not client.kite or not client.access_token:
         return {'success': False, 'error': 'Not authenticated', 'gtts': []}
 
     try:
+        client._rate_limit()
         gtts = client.kite.get_gtts()
 
         formatted = []
         for gtt in gtts:
+            condition = gtt.get('condition', {})
+            orders_list = gtt.get('orders', [])
+            first_order = orders_list[0] if orders_list else {}
+            trigger_values = condition.get('trigger_values', [])
+
             formatted.append({
                 'trigger_id': gtt.get('id'),
-                'symbol': gtt.get('tradingsymbol'),
-                'exchange': gtt.get('exchange'),
-                'trigger_type': gtt.get('trigger_type'),  # single or two-leg
-                'trigger_values': gtt.get('condition', {}).get('trigger_values', []),
+                'symbol': condition.get('tradingsymbol', gtt.get('tradingsymbol', '')),
+                'tradingsymbol': condition.get('tradingsymbol', gtt.get('tradingsymbol', '')),
+                'exchange': condition.get('exchange', gtt.get('exchange', 'NSE')),
+                'trigger_type': gtt.get('type', 'single'),
+                'trigger_values': trigger_values,
+                'trigger_price': trigger_values[0] if trigger_values else 0,
+                'quantity': first_order.get('quantity', 0),
+                'limit_price': first_order.get('price', 0),
+                'transaction_type': first_order.get('transaction_type', ''),
                 'status': gtt.get('status'),
-                'created_at': gtt.get('created_at'),
-                'updated_at': gtt.get('updated_at'),
-                'expires_at': gtt.get('expires_at'),
-                'orders': gtt.get('orders', [])
+                'created_at': str(gtt.get('created_at', '')),
+                'updated_at': str(gtt.get('updated_at', '')),
+                'expires_at': str(gtt.get('expires_at', '')),
+                'orders': orders_list
             })
 
         return {

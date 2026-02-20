@@ -7,21 +7,24 @@
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        body { background: #0a0f1a; font-family: 'Inter', sans-serif; }
+        body { background: #0a0f1a; font-family: 'Inter', sans-serif; font-size: 14px; }
         .font-mono { font-family: 'JetBrains Mono', monospace; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .animate-spin { animation: spin 1s linear infinite; }
+        /* Consistent table base sizing */
+        table th, table td { font-size: inherit; }
+        input, select, textarea { font-size: inherit; }
     </style>
 </head>
 <body class="bg-[#0a0f1a] text-gray-100 min-h-screen">
     <div class="flex">
         <!-- Sidebar -->
-        <aside class="w-56 bg-[#111827] border-r border-gray-700 min-h-screen fixed">
-            <div class="p-4 border-b border-gray-700">
+        <aside class="w-56 bg-[#111827] border-r border-gray-700 h-screen fixed flex flex-col">
+            <div class="p-4 border-b border-gray-700 flex-shrink-0">
                 <h1 class="font-bold text-lg flex items-center gap-2">📈 Elder Trading</h1>
                 <p class="text-xs text-gray-500">Triple Screen v2.0</p>
             </div>
-            <nav class="p-2" id="nav"></nav>
+            <nav class="p-2 overflow-y-auto flex-1" id="nav"></nav>
         </aside>
 
         <!-- Main -->
@@ -34,7 +37,7 @@
                     <button onclick="switchTab('market-engine')" class="relative text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 cursor-pointer" title="Engine Notifications">
                         🔔 <span id="notification-badge" class="hidden absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center"></span>
                     </button>
-                    <span class="text-xs text-gray-500">🇮🇳 NIFTY 100</span>
+                    <span class="text-xs text-gray-500">🇮🇳 NSE</span>
                 </div>
                 <!-- Hidden market field for backward compatibility -->
                 <input type="hidden" id="market" value="IN">
@@ -95,28 +98,82 @@
         return (await fetch(API+url, opts)).json();
     }
 
+    // Sound alert using Web Audio API
+    function playAlertSound(type='info') {
+        try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            gain.gain.value = 0.15;
+
+            if (type === 'success') {
+                osc.frequency.value = 880; // High A - pleasant
+                osc.type = 'sine';
+                gain.gain.setValueAtTime(0.15, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+                osc.start(ctx.currentTime);
+                osc.stop(ctx.currentTime + 0.3);
+            } else if (type === 'error') {
+                osc.frequency.value = 220; // Low A - alert
+                osc.type = 'square';
+                gain.gain.setValueAtTime(0.12, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+                osc.start(ctx.currentTime);
+                osc.stop(ctx.currentTime + 0.5);
+            } else if (type === 'alert') {
+                // Triple beep for alerts
+                for (let i = 0; i < 3; i++) {
+                    const o = ctx.createOscillator();
+                    const g = ctx.createGain();
+                    o.connect(g);
+                    g.connect(ctx.destination);
+                    o.frequency.value = 1200;
+                    o.type = 'sine';
+                    g.gain.setValueAtTime(0.2, ctx.currentTime + i * 0.2);
+                    g.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + i * 0.2 + 0.12);
+                    o.start(ctx.currentTime + i * 0.2);
+                    o.stop(ctx.currentTime + i * 0.2 + 0.12);
+                }
+            } else {
+                osc.frequency.value = 660; // E - neutral
+                osc.type = 'sine';
+                gain.gain.setValueAtTime(0.1, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
+                osc.start(ctx.currentTime);
+                osc.stop(ctx.currentTime + 0.2);
+            }
+        } catch(e) { /* Audio not supported */ }
+    }
+
     function toast(msg, type='info') {
         const el = document.createElement('div');
-        el.className = `px-4 py-2 rounded-lg mb-2 ${type==='success'?'bg-green-600':type==='error'?'bg-red-600':'bg-blue-600'}`;
+        el.className = `px-4 py-2 rounded-lg mb-2 ${type==='success'?'bg-green-600':type==='error'?'bg-red-600':type==='alert'?'bg-yellow-600':'bg-blue-600'}`;
         el.textContent = msg;
         document.getElementById('toast').appendChild(el);
-        setTimeout(() => el.remove(), 3000);
+        setTimeout(() => el.remove(), type === 'alert' ? 6000 : 3000);
+        // Play sound for important notifications
+        if (type === 'error' || type === 'alert' || type === 'success') {
+            playAlertSound(type);
+        }
     }
 
     // Export trades to CSV
     async function exportTrades() {
         try {
-            const response = await api('GET', '/trade-log');
-            const trades = response.trades || [];
+            const resp = await fetch('/api/v2/trade-journal');
+            const data = await resp.json();
+            const trades = data.journals || [];
             if (trades.length === 0) {
                 toast('No trades to export', 'error');
                 return;
             }
-            
-            const headers = ['Date', 'Symbol', 'Strategy', 'Direction', 'Entry', 'Shares', 'Stop Loss', 'Take Profit', 'Exit Date', 'Exit Price', 'Gross P&L', 'Net P&L', 'Mistake', 'Notes'];
+
+            const headers = ['Date', 'Ticker', 'Strategy', 'Direction', 'Avg Entry', 'Total Shares', 'Stop Loss', 'Target', 'Status', 'Gain/Loss', 'G/L %', 'Grade', 'Mistake', 'Comments'];
             const rows = trades.map(t => [
-                t.entry_date, t.symbol, t.strategy, t.direction, t.entry_price, t.shares,
-                t.stop_loss, t.take_profit, t.exit_date, t.exit_price, t.gross_pnl, t.net_pnl, t.mistake, t.notes
+                t.journal_date, t.ticker, t.strategy, t.direction, t.avg_entry || t.entry_price, t.total_shares || t.quantity,
+                t.stop_loss, t.target_price, t.status, t.gain_loss_amount, t.gain_loss_percent, t.trade_grade, t.mistake, t.open_trade_comments
             ]);
             
             const csv = [headers.join(','), ...rows.map(r => r.map(v => `"${v || ''}"`).join(','))].join('\n');
@@ -137,24 +194,46 @@
         await loadIndicatorFilters();
     });
 
+    // Track which nav sections are expanded (default: all collapsed except active section)
+    let navExpanded = {};
+
+    function toggleNavSection(section) {
+        navExpanded[section] = !navExpanded[section];
+        renderNav();
+    }
+
     function renderNav() {
+        // Auto-expand the section containing the current tab
+        tabs.forEach(t => {
+            if (t.section && t.items) {
+                const hasActive = t.items.some(item => item.id === currentTab);
+                if (hasActive && navExpanded[t.section] === undefined) {
+                    navExpanded[t.section] = true;
+                }
+            }
+        });
+
         const navHtml = tabs.map(t => {
             if (t.section) {
-                // Render section with collapsible items
+                const isExpanded = navExpanded[t.section] || false;
+                const hasActive = t.items.some(item => item.id === currentTab);
+                const arrow = isExpanded ? '▾' : '▸';
                 return `
-                    <div class="mb-3">
-                        <div class="text-xs text-gray-500 uppercase font-semibold px-3 py-2">${t.section}</div>
-                        ${t.items.map(item => `
-                            <button onclick="switchTab('${item.id}')" class="w-full text-left px-3 py-2 rounded-lg mb-1 flex items-center gap-2 ${currentTab===item.id?'bg-blue-600/30 text-blue-400':'text-gray-400 hover:bg-gray-700/50'}">
+                    <div class="mb-1">
+                        <button onclick="toggleNavSection('${t.section}')" class="w-full text-left px-3 py-1.5 flex items-center justify-between text-xs uppercase font-semibold ${hasActive ? 'text-blue-400' : 'text-gray-500'} hover:text-gray-300">
+                            <span>${t.section}</span>
+                            <span class="text-[10px]">${arrow}</span>
+                        </button>
+                        ${isExpanded ? t.items.map(item => `
+                            <button onclick="switchTab('${item.id}')" class="w-full text-left px-3 py-1.5 pl-5 rounded-lg mb-0.5 flex items-center gap-2 text-sm ${currentTab===item.id?'bg-blue-600/30 text-blue-400':'text-gray-400 hover:bg-gray-700/50'}">
                                 ${item.icon} ${item.label}
                             </button>
-                        `).join('')}
+                        `).join('') : ''}
                     </div>
                 `;
             } else {
-                // Render single tab
                 return `
-                    <button onclick="switchTab('${t.id}')" class="w-full text-left px-3 py-2 rounded-lg mb-1 flex items-center gap-2 ${currentTab===t.id?'bg-blue-600/30 text-blue-400':'text-gray-400 hover:bg-gray-700/50'}">
+                    <button onclick="switchTab('${t.id}')" class="w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 text-sm ${currentTab===t.id?'bg-blue-600/30 text-blue-400':'text-gray-400 hover:bg-gray-700/50'}">
                         ${t.icon} ${t.label}
                     </button>
                 `;
@@ -427,12 +506,13 @@
     }
 
     async function refreshWatchlistData() {
-        toast('Refreshing multi-timeframe data for all watchlist symbols...', 'info');
+        toast('Refreshing multi-timeframe data for all watchlist symbols (this may take a minute)...', 'info');
         try {
             const resp = await fetch('/api/v2/timeframe/refresh', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({})
+                body: JSON.stringify({}),
+                signal: AbortSignal.timeout(300000) // 5 min timeout for large watchlists
             });
             const data = await resp.json();
             if (data.success) {
@@ -991,8 +1071,10 @@
                     // Toast only truly new notifications (not 'info' type like "Engine Started")
                     for (const n of notifs) {
                         if (!_toastedNotifIds.has(n.id) && n.type !== 'info') {
-                            toast(n.title + ': ' + n.message,
-                                  n.type === 'error' ? 'error' : n.type === 'trade_created' ? 'success' : 'info');
+                            const toastType = n.type === 'error' ? 'error' :
+                                              n.type === 'trade_created' ? 'success' :
+                                              n.type === 'alert_triggered' ? 'alert' : 'info';
+                            toast(n.title + ': ' + n.message, toastType);
                             _toastedNotifIds.add(n.id);
                         }
                     }
@@ -1502,11 +1584,12 @@
         clearTimeout(_typeaheadTimer);
         _typeaheadTimer = setTimeout(async () => {
             try {
+                list.innerHTML = '<div class="px-3 py-2 text-gray-500 text-xs">Searching...</div>';
                 const resp = await fetch(`/api/v2/instruments/search?q=${encodeURIComponent(input)}&limit=10`);
                 const matches = await resp.json();
 
                 if (!Array.isArray(matches) || matches.length === 0) {
-                    list.innerHTML = '<div class="px-3 py-2 text-gray-500 text-xs">No matches. Load instruments from Settings first.</div>';
+                    list.innerHTML = '<div class="px-3 py-2 text-gray-500 text-xs">No matches found.</div>';
                     return;
                 }
 
@@ -1614,17 +1697,20 @@
             try {
                 const resp = await fetch(`/api/v2/live-cmp/${encodeURIComponent(symbol)}`);
                 const data = await resp.json();
-                if (data.cmp && data.source === 'live') {
+                if (data.cmp) {
                     document.getElementById('tb-cmp').value = data.cmp.toFixed(2);
                     const srcEl = document.getElementById('cmp-source');
                     if (srcEl) {
-                        srcEl.textContent = `● Live ${new Date().toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit', second:'2-digit'})}`;
-                        srcEl.className = 'text-xs mt-0.5 text-green-400';
+                        const timeStr = new Date().toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+                        if (data.source === 'live') {
+                            srcEl.textContent = `● Live ${timeStr}`;
+                            srcEl.className = 'text-xs mt-0.5 text-green-400';
+                        } else {
+                            srcEl.textContent = `● Cached ${timeStr}`;
+                            srcEl.className = 'text-xs mt-0.5 text-gray-500';
+                        }
                     }
-                } else {
-                    // Market closed, stop refreshing
-                    clearInterval(cmpRefreshInterval);
-                    cmpRefreshInterval = null;
+                    autoCalculateTradeBill();
                 }
             } catch(e) { /* silent */ }
         }, 15000);
@@ -2383,12 +2469,12 @@
                         <button onclick="saveTradeBill()" class="flex-1 py-3 bg-green-600 rounded-lg font-medium hover:bg-green-700 disabled:opacity-50" id="save-btn">💾 Save Trade Bill</button>
                     </div>
                     <div class="flex gap-2">
-                        <button onclick="fillJournalFromBill()" class="flex-1 py-3 bg-blue-600 rounded-lg font-medium hover:bg-blue-700" id="fill-journal-btn" disabled>📓 Journal</button>
-                        <button onclick="placeGttOrder()" class="flex-1 py-3 bg-orange-600 rounded-lg font-medium hover:bg-orange-700" id="gtt-btn" disabled>📊 GTT Buy</button>
-                        <button onclick="placeNrmlOrder()" class="flex-1 py-3 bg-cyan-600 rounded-lg font-medium hover:bg-cyan-700" id="nrml-btn" disabled>🔷 NRML Buy</button>
-                        <button onclick="placeOcoSellOrder()" class="flex-1 py-3 bg-red-600 rounded-lg font-medium hover:bg-red-700" id="oco-btn" disabled>🎯 OCO Split Sell</button>
+                        <button onclick="fillJournalFromBill()" class="flex-1 py-3 bg-blue-600 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed" id="fill-journal-btn" ${tb.id ? '' : 'disabled'}>📓 Journal</button>
+                        <button onclick="placeGttOrder()" class="flex-1 py-3 bg-orange-600 rounded-lg font-medium hover:bg-orange-700 disabled:opacity-40 disabled:cursor-not-allowed" id="gtt-btn" ${tb.id ? '' : 'disabled'}>📊 GTT Buy</button>
+                        <button onclick="placeNrmlOrder()" class="flex-1 py-3 bg-cyan-600 rounded-lg font-medium hover:bg-cyan-700 disabled:opacity-40 disabled:cursor-not-allowed" id="nrml-btn" ${tb.id ? '' : 'disabled'}>🔷 NRML Buy</button>
+                        <button onclick="placeOcoSellOrder()" class="flex-1 py-3 bg-red-600 rounded-lg font-medium hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed" id="oco-btn" ${tb.id ? '' : 'disabled'}>🎯 OCO Split Sell</button>
                     </div>
-                    <p class="text-xs text-gray-500 text-center">Save the Trade Bill first to enable these buttons. OCO Split = full qty SL + half qty target.</p>
+                    <p class="text-xs text-gray-500 text-center">${tb.id ? 'Buttons enabled - bill is saved.' : 'Save the Trade Bill first to enable order buttons.'} OCO Split = full qty SL + half qty target.</p>
                 </div>
             </div>
         `;
@@ -2399,6 +2485,11 @@
         setTimeout(() => {
             if (document.getElementById('tb-entry')) {
                 autoCalculateTradeBill();
+            }
+            // If editing an existing bill, set currentBillId so action buttons work
+            const tb = window.tradeBillTemplate || {};
+            if (tb.id) {
+                window.currentBillId = tb.id;
             }
             // Load portfolio context into banner
             loadPortfolioContext();
@@ -2590,6 +2681,10 @@
                 if (result.success) {
                     toast(`Trade Bill for ${ticker} updated!`, 'success');
                     window.currentBillId = tb.id;
+                } else {
+                    toast(`Error updating Trade Bill: ${result.error || 'Unknown error'}`, 'error');
+                    console.error('Update failed:', result);
+                    return;
                 }
             } else {
                 // Create new
@@ -2597,6 +2692,13 @@
                 if (result.success || result.id) {
                     toast(`Trade Bill for ${ticker} saved!`, 'success');
                     window.currentBillId = result.id;
+                    // Update tradeBillTemplate so subsequent saves do UPDATE instead of INSERT
+                    window.tradeBillTemplate = window.tradeBillTemplate || {};
+                    window.tradeBillTemplate.id = result.id;
+                } else {
+                    toast(`Error saving Trade Bill: ${result.error || 'Unknown error'}`, 'error');
+                    console.error('Create failed:', result);
+                    return;
                 }
             }
 
@@ -2613,12 +2715,56 @@
         }
     }
 
+    // ===== ORDER CONFIRMATION POPUP =====
+    function showOrderConfirmation(title, params, onConfirm) {
+        const modal = document.getElementById('modal');
+        const sym = '₹';
+        const rows = params.map(p => `
+            <tr class="border-t border-gray-700/50">
+                <td class="py-2 pr-4 text-gray-400 text-sm">${p.label}</td>
+                <td class="py-2 font-mono text-sm font-bold ${p.color || 'text-white'}">${p.value}</td>
+            </tr>
+        `).join('');
+
+        modal.innerHTML = `
+            <div class="bg-[#1f2937] rounded-xl border border-gray-600 max-w-md w-full p-6 space-y-4">
+                <h3 class="text-lg font-bold text-white">${title}</h3>
+                <table class="w-full">${rows}</table>
+                <div class="border-t border-gray-700 pt-4 flex gap-3">
+                    <button id="confirm-order-btn" class="flex-1 py-2.5 bg-green-600 rounded-lg font-medium hover:bg-green-700 text-white">✅ Confirm & Place Order</button>
+                    <button id="cancel-order-btn" class="flex-1 py-2.5 bg-gray-600 rounded-lg font-medium hover:bg-gray-700 text-white">❌ Cancel</button>
+                </div>
+            </div>
+        `;
+        modal.classList.remove('hidden');
+
+        return new Promise((resolve) => {
+            document.getElementById('confirm-order-btn').onclick = () => { modal.classList.add('hidden'); resolve(true); };
+            document.getElementById('cancel-order-btn').onclick = () => { modal.classList.add('hidden'); resolve(false); };
+        });
+    }
+
     // Fill Journal from saved Trade Bill
     async function fillJournalFromBill() {
         if (!window.currentBillId) {
             toast('Please save the Trade Bill first', 'error');
             return;
         }
+
+        const ticker = document.getElementById('tb-ticker').value;
+        const entry = document.getElementById('tb-entry').value;
+        const sl = document.getElementById('tb-sl').value;
+        const target = document.getElementById('tb-target').value;
+
+        const confirmed = await showOrderConfirmation('📓 Create Trade Journal', [
+            { label: 'Action', value: 'Create Journal Entry', color: 'text-blue-400' },
+            { label: 'Symbol', value: ticker, color: 'text-blue-400' },
+            { label: 'Entry Price', value: `₹${entry}` },
+            { label: 'Stop Loss', value: `₹${sl}`, color: 'text-red-400' },
+            { label: 'Target', value: `₹${target}`, color: 'text-green-400' },
+            { label: 'Source', value: `Trade Bill #${window.currentBillId}` }
+        ]);
+        if (!confirmed) return;
 
         try {
             const result = await fetch(`/api/v2/trade-journal/from-bill/${window.currentBillId}`, {
@@ -2649,15 +2795,26 @@
         const entry = parseFloat(document.getElementById('tb-entry').value);
         const qty = parseInt(document.getElementById('tb-qty').value);
         const ticker = document.getElementById('tb-ticker').value;
+        const cmp = parseFloat(document.getElementById('tb-cmp').value) || 0;
 
         if (!entry || !qty || !ticker) {
             toast('Missing entry price, quantity or ticker', 'error');
             return;
         }
 
-        if (!confirm(`Place GTT BUY order for ${qty} shares of ${ticker} at ₹${entry}?`)) {
-            return;
-        }
+        const totalValue = (entry * qty).toLocaleString();
+        const confirmed = await showOrderConfirmation('📊 Place GTT Buy Order', [
+            { label: 'Order Type', value: 'GTT (Good Till Triggered)', color: 'text-orange-400' },
+            { label: 'Symbol', value: ticker, color: 'text-blue-400' },
+            { label: 'Transaction', value: 'BUY', color: 'text-green-400' },
+            { label: 'Trigger Price', value: `₹${entry.toFixed(2)}` },
+            { label: 'Limit Price', value: `₹${entry.toFixed(2)}` },
+            { label: 'Quantity', value: `${qty} shares` },
+            { label: 'Total Value', value: `₹${totalValue}`, color: 'text-yellow-400' },
+            { label: 'Current CMP', value: cmp ? `₹${cmp.toFixed(2)}` : 'N/A' },
+            { label: 'Product', value: 'CNC (Delivery)' }
+        ]);
+        if (!confirmed) return;
 
         try {
             const result = await fetch('/api/v2/kite/gtt', {
@@ -2669,13 +2826,13 @@
                     trigger_price: entry,
                     quantity: qty,
                     order_type: 'LIMIT',
-                    price: entry
+                    limit_price: entry
                 })
             });
             const data = await result.json();
 
             if (data.success) {
-                toast(`GTT Order placed! ID: ${data.trigger_id}`, 'success');
+                toast(`GTT Order placed! Trigger ID: ${data.trigger_id}`, 'success');
             } else {
                 toast(data.error || 'Failed to place GTT order', 'error');
             }
@@ -2696,6 +2853,7 @@
         const qty = parseInt(document.getElementById('tb-qty').value);
         const ticker = document.getElementById('tb-ticker').value;
         const halfQty = Math.floor(qty / 2);
+        const slPrice = Math.round(sl * 0.99 * 100) / 100;
 
         if (!sl || !target || !qty || !ticker) {
             toast('Missing stop loss, target, quantity or ticker', 'error');
@@ -2707,9 +2865,18 @@
             return;
         }
 
-        if (!confirm(`Place OCO Split SELL for ${ticker}?\n\n🔴 SL GTT: ${qty} shares at ₹${sl}\n🟢 Target GTT: ${halfQty} shares at ₹${target}`)) {
-            return;
-        }
+        const confirmed = await showOrderConfirmation('🎯 Place OCO Split Sell Orders', [
+            { label: 'Order Type', value: 'OCO Split (2 GTT Orders)', color: 'text-red-400' },
+            { label: 'Symbol', value: ticker, color: 'text-blue-400' },
+            { label: 'Transaction', value: 'SELL', color: 'text-red-400' },
+            { label: '🔴 SL Trigger', value: `₹${sl.toFixed(2)}`, color: 'text-red-400' },
+            { label: '🔴 SL Limit', value: `₹${slPrice.toFixed(2)}`, color: 'text-red-400' },
+            { label: '🔴 SL Quantity', value: `${qty} shares (full)`, color: 'text-red-400' },
+            { label: '🟢 Target Trigger', value: `₹${target.toFixed(2)}`, color: 'text-green-400' },
+            { label: '🟢 Target Limit', value: `₹${target.toFixed(2)}`, color: 'text-green-400' },
+            { label: '🟢 Target Quantity', value: `${halfQty} shares (half)`, color: 'text-green-400' }
+        ]);
+        if (!confirmed) return;
 
         try {
             const result = await fetch('/api/v2/kite/gtt/oco-split', {
@@ -2719,7 +2886,7 @@
                     symbol: ticker,
                     quantity: qty,
                     stop_loss_trigger: sl,
-                    stop_loss_price: Math.round(sl * 0.99 * 100) / 100,
+                    stop_loss_price: slPrice,
                     target_trigger: target,
                     target_price: target
                 })
@@ -2729,7 +2896,7 @@
             if (data.success) {
                 toast(`OCO Split placed! SL: ${qty} shares, Target: ${halfQty} shares`, 'success');
             } else {
-                toast(data.sl_gtt?.error || data.target_gtt?.error || 'Failed', 'error');
+                toast(data.sl_gtt?.error || data.target_gtt?.error || 'Failed to place OCO orders', 'error');
             }
         } catch(e) {
             toast('Error: ' + e.message, 'error');
@@ -2746,15 +2913,26 @@
         const entry = parseFloat(document.getElementById('tb-entry').value);
         const qty = parseInt(document.getElementById('tb-qty').value);
         const ticker = document.getElementById('tb-ticker').value;
+        const cmp = parseFloat(document.getElementById('tb-cmp').value) || 0;
 
         if (!entry || !qty || !ticker) {
             toast('Missing entry price, quantity or ticker', 'error');
             return;
         }
 
-        if (!confirm(`Place NRML BUY order for ${qty} shares of ${ticker} at ₹${entry}?`)) {
-            return;
-        }
+        const totalValue = (entry * qty).toLocaleString();
+        const confirmed = await showOrderConfirmation('🔷 Place NRML Buy Order', [
+            { label: 'Order Type', value: 'NRML (Normal/Delivery)', color: 'text-cyan-400' },
+            { label: 'Symbol', value: ticker, color: 'text-blue-400' },
+            { label: 'Transaction', value: 'BUY', color: 'text-green-400' },
+            { label: 'Price', value: `₹${entry.toFixed(2)}` },
+            { label: 'Quantity', value: `${qty} shares` },
+            { label: 'Total Value', value: `₹${totalValue}`, color: 'text-yellow-400' },
+            { label: 'Current CMP', value: cmp ? `₹${cmp.toFixed(2)}` : 'N/A' },
+            { label: 'Product', value: 'CNC (Delivery)' },
+            { label: 'Order Type', value: 'LIMIT' }
+        ]);
+        if (!confirmed) return;
 
         try {
             const result = await fetch('/api/v2/kite/orders/nrml', {
@@ -2771,7 +2949,7 @@
             const data = await result.json();
 
             if (data.success) {
-                toast(`NRML Order placed! ID: ${data.order_id}`, 'success');
+                toast(`NRML Order placed! Order ID: ${data.order_id}`, 'success');
             } else {
                 toast(data.error || 'Failed to place order', 'error');
             }
@@ -3709,7 +3887,7 @@
                 <!-- Trade Records Table -->
                 <div class="bg-[#111827] rounded-xl border border-gray-700 overflow-hidden">
                     <div class="overflow-x-auto">
-                        <table class="w-full text-xs">
+                        <table class="w-full text-sm">
                             <thead class="bg-[#1f2937]">
                                 <tr>
                                     <th class="p-2 text-left text-gray-400">Date</th>
@@ -3791,7 +3969,7 @@
                 <!-- Trade Setup -->
                 <div class="bg-[#111827] rounded-xl p-4 border border-gray-700">
                     <h4 class="text-sm font-bold text-gray-400 border-b border-gray-600 pb-2 mb-3">Trade Setup</h4>
-                    <div class="grid grid-cols-8 gap-3 text-xs">
+                    <div class="grid grid-cols-8 gap-3 text-sm">
                         <div><label class="text-gray-500">Ticker</label><input id="tl-ticker" value="${j.ticker||''}" placeholder="RELIANCE" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
                         <div><label class="text-gray-500">Date</label><input type="date" id="tl-date" value="${j.journal_date||new Date().toISOString().split('T')[0]}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded"></div>
                         <div><label class="text-gray-500">Direction</label><select id="tl-direction" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded">${directions.map(d => `<option ${j.direction===d?'selected':''}>${d}</option>`).join('')}</select></div>
@@ -3807,7 +3985,7 @@
                 <div class="bg-[#111827] rounded-xl p-4 border border-blue-500/30">
                     <div class="flex justify-between items-center mb-3">
                         <h4 class="font-bold text-blue-400">Entries</h4>
-                        <div class="flex gap-2 items-center text-xs">
+                        <div class="flex gap-2 items-center text-sm">
                             <label class="text-gray-500">Entry Tactic</label>
                             <select id="tl-entry-tactic" class="px-2 py-1 bg-[#1f2937] border border-gray-600 rounded">${entryTactics.map(t => `<option ${j.entry_tactic===t?'selected':''}>${t}</option>`).join('')}</select>
                             <label class="text-gray-500 ml-2">Reason</label>
@@ -3815,7 +3993,7 @@
                         </div>
                     </div>
                     <div class="overflow-x-auto">
-                        <table class="w-full text-xs">
+                        <table class="w-full text-sm">
                             <thead class="bg-[#1f2937]">
                                 <tr>
                                     <th class="p-2 text-left text-gray-400">Entry Date</th>
@@ -3870,7 +4048,7 @@
                 <div class="bg-[#111827] rounded-xl p-4 border border-orange-500/30">
                     <div class="flex justify-between items-center mb-3">
                         <h4 class="font-bold text-orange-400">Exits</h4>
-                        <div class="flex gap-2 items-center text-xs">
+                        <div class="flex gap-2 items-center text-sm">
                             <label class="text-gray-500">Exit Tactic</label>
                             <select id="tl-exit-tactic" class="px-2 py-1 bg-[#1f2937] border border-gray-600 rounded">${exitTactics.map(t => `<option ${j.exit_tactic===t?'selected':''}>${t}</option>`).join('')}</select>
                             <label class="text-gray-500 ml-2">Reason</label>
@@ -3878,7 +4056,7 @@
                         </div>
                     </div>
                     <div class="overflow-x-auto">
-                        <table class="w-full text-xs">
+                        <table class="w-full text-sm">
                             <thead class="bg-[#1f2937]">
                                 <tr>
                                     <th class="p-2 text-left text-gray-400">Exit Date</th>
@@ -3932,7 +4110,7 @@
                 <!-- Results Section -->
                 <div class="bg-[#111827] rounded-xl p-4 border border-purple-500/30">
                     <h4 class="font-bold text-purple-400 mb-3">Results</h4>
-                    <div class="grid grid-cols-6 gap-3 text-xs">
+                    <div class="grid grid-cols-6 gap-3 text-sm">
                         <div><label class="text-gray-500">First Entry Date</label><input value="${j.first_entry_date?.split('T')[0]||''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
                         <div><label class="text-gray-500">Total Shares</label><input value="${j.total_shares||''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
                         <div><label class="text-gray-500">Avg Entry</label><input value="${j.avg_entry ? sym + j.avg_entry.toFixed(2) : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
@@ -3993,12 +4171,14 @@
     }
 
     async function saveTradeLogDetail() {
+        const slVal = parseFloat(document.getElementById('tl-sl').value) || null;
         const data = {
             ticker: document.getElementById('tl-ticker').value,
             journal_date: document.getElementById('tl-date').value,
             direction: document.getElementById('tl-direction').value,
             strategy: document.getElementById('tl-strategy').value,
-            stop_loss: parseFloat(document.getElementById('tl-sl').value) || null,
+            stop_loss: slVal,
+            initial_stop_loss: slVal,  // Set initial SL on creation (backend uses it only for new trades)
             target_price: parseFloat(document.getElementById('tl-target').value) || null,
             entry_tactic: document.getElementById('tl-entry-tactic').value,
             entry_reason: document.getElementById('tl-entry-reason').value,
@@ -4350,11 +4530,12 @@
             return `<div class="text-center py-20"><p class="text-red-400">Error: ${e.message}</p><p class="text-gray-500 mt-2">Sync orders from Settings first.</p></div>`;
         }
 
-        function orderRow(o) {
+        function orderRow(o, showActions=false) {
             const isBuy = o.transaction_type === 'BUY';
             const statusColor = (o.status||'').includes('COMPLETE') ? 'text-green-400' :
                 (o.status||'').includes('OPEN') || (o.status||'').includes('PENDING') ? 'text-blue-400' :
                 (o.status||'').includes('CANCEL') ? 'text-gray-400' : 'text-red-400';
+            const orderJson = JSON.stringify(o).replace(/'/g, "\\'").replace(/"/g, '&quot;');
             return `
                 <tr class="border-t border-gray-700/50 hover:bg-[#1f2937]/50">
                     <td class="p-2 font-mono text-xs">${o.placed_at ? o.placed_at.split('T')[0] : '-'}</td>
@@ -4366,6 +4547,10 @@
                     <td class="p-2 text-right font-mono">${o.price ? sym + parseFloat(o.price).toFixed(2) : '-'}</td>
                     <td class="p-2 text-right font-mono">${o.average_price ? sym + parseFloat(o.average_price).toFixed(2) : '-'}</td>
                     <td class="p-2 text-center"><span class="px-2 py-0.5 rounded text-xs ${statusColor}">${o.status || '-'}</span></td>
+                    ${showActions ? `<td class="p-2 text-center whitespace-nowrap">
+                        <button onclick='modifyRegularOrder("${o.order_id}", ${orderJson})' class="px-1.5 py-0.5 text-xs bg-blue-600/30 text-blue-400 rounded hover:bg-blue-600/50 mr-1" title="Modify">✏️</button>
+                        <button onclick='cancelRegularOrder("${o.order_id}")' class="px-1.5 py-0.5 text-xs bg-red-600/30 text-red-400 rounded hover:bg-red-600/50" title="Cancel">✕</button>
+                    </td>` : ''}
                 </tr>`;
         }
 
@@ -4408,7 +4593,8 @@
                         <th class="p-2 text-right text-gray-400">Qty</th><th class="p-2 text-right text-gray-400">Filled</th>
                         <th class="p-2 text-right text-gray-400">Price</th><th class="p-2 text-right text-gray-400">Avg</th>
                         <th class="p-2 text-center text-gray-400">Status</th>
-                    </tr></thead><tbody>${data.pending.map(orderRow).join('')}</tbody></table>
+                        <th class="p-2 text-center text-gray-400">Actions</th>
+                    </tr></thead><tbody>${data.pending.map(o => orderRow(o, true)).join('')}</tbody></table>
                 </div>` : ''}
 
                 <!-- Executed Orders -->
@@ -4428,20 +4614,48 @@
                 ${data.gtt_orders.length > 0 ? `
                 <div class="bg-[#111827] rounded-xl border border-orange-500/30 overflow-hidden">
                     <div class="px-4 py-2 bg-orange-500/10 border-b border-orange-500/30"><h3 class="font-bold text-orange-400">🟠 GTT Orders (${data.gtt_orders.length})</h3></div>
-                    <div class="p-4 space-y-2">
-                        ${data.gtt_orders.map(g => `
-                            <div class="flex items-center justify-between bg-[#1f2937] p-3 rounded-lg">
-                                <div>
-                                    <span class="font-mono font-bold text-blue-400">${g.tradingsymbol || g.symbol || '-'}</span>
-                                    <span class="text-xs text-gray-500 ml-2">${g.trigger_type || 'single'}</span>
-                                </div>
-                                <div class="text-xs text-gray-400">
-                                    Qty: ${g.quantity || '-'} | Trigger: ${sym}${g.trigger_price || g.trigger_values?.[0] || '-'}
-                                </div>
-                                <span class="px-2 py-0.5 rounded text-xs bg-orange-500/20 text-orange-400">${g.status || 'ACTIVE'}</span>
-                            </div>
-                        `).join('')}
-                    </div>
+                    <table class="w-full text-xs"><thead class="bg-[#1f2937]"><tr>
+                        <th class="p-2 text-left text-gray-400">Symbol</th>
+                        <th class="p-2 text-center text-gray-400">Type</th>
+                        <th class="p-2 text-center text-gray-400">Side</th>
+                        <th class="p-2 text-right text-gray-400">Qty</th>
+                        <th class="p-2 text-right text-gray-400">Trigger</th>
+                        <th class="p-2 text-right text-gray-400">Limit</th>
+                        <th class="p-2 text-right text-gray-400">SL/Target</th>
+                        <th class="p-2 text-center text-gray-400">Status</th>
+                        <th class="p-2 text-center text-gray-400">Actions</th>
+                    </tr></thead><tbody>
+                    ${data.gtt_orders.map(g => {
+                        const isBuy = (g.transaction_type || '').toUpperCase() === 'BUY';
+                        const triggerVals = g.trigger_values || [];
+                        const orders = g.orders || [];
+                        const isTwoLeg = (g.trigger_type || '').toLowerCase() === 'two-leg' || triggerVals.length > 1;
+
+                        // For two-leg: first order is SL, second is target (or vice versa)
+                        let legInfo = '';
+                        if (isTwoLeg && orders.length >= 2) {
+                            const leg1 = orders[0];
+                            const leg2 = orders[1];
+                            legInfo = '<span class="text-red-400">SL: ' + sym + (triggerVals[0] || '-') + '</span> / <span class="text-green-400">T: ' + sym + (triggerVals[1] || '-') + '</span>';
+                        } else if (triggerVals.length > 1) {
+                            legInfo = '<span class="text-red-400">SL: ' + sym + (triggerVals[0] || '-') + '</span> / <span class="text-green-400">T: ' + sym + (triggerVals[1] || '-') + '</span>';
+                        } else {
+                            legInfo = '-';
+                        }
+
+                        return '<tr class="border-t border-gray-700/50 hover:bg-[#1f2937]/50">' +
+                            '<td class="p-2 font-mono font-bold text-blue-400">' + (g.tradingsymbol || g.symbol || '-') + '</td>' +
+                            '<td class="p-2 text-center"><span class="px-1.5 py-0.5 rounded text-xs ' + (isTwoLeg ? 'bg-purple-500/20 text-purple-400' : 'bg-orange-500/20 text-orange-400') + '">' + (g.trigger_type || 'single') + '</span></td>' +
+                            '<td class="p-2 text-center"><span class="' + (isBuy ? 'text-green-400' : 'text-red-400') + '">' + (g.transaction_type || '-') + '</span></td>' +
+                            '<td class="p-2 text-right font-mono">' + (g.quantity || '-') + '</td>' +
+                            '<td class="p-2 text-right font-mono">' + sym + (g.trigger_price || triggerVals[0] || '-') + '</td>' +
+                            '<td class="p-2 text-right font-mono">' + (g.limit_price ? sym + g.limit_price : '-') + '</td>' +
+                            '<td class="p-2 text-right font-mono">' + legInfo + '</td>' +
+                            '<td class="p-2 text-center"><span class="px-2 py-0.5 rounded text-xs bg-orange-500/20 text-orange-400">' + (g.status || 'ACTIVE') + '</span></td>' +
+                            '<td class="p-2 text-center"><button onclick="cancelGttOrder(' + (g.trigger_id || 0) + ')" class="px-2 py-1 text-xs bg-red-600/30 text-red-400 rounded hover:bg-red-600/50" title="Cancel GTT">✕</button></td>' +
+                            '</tr>';
+                    }).join('')}
+                    </tbody></table>
                 </div>` : ''}
 
                 <!-- Other/Cancelled Orders -->
@@ -4476,6 +4690,88 @@
                 await render();
             } else {
                 toast(data.error || 'Sync failed', 'error');
+            }
+        } catch(e) { toast('Error: ' + e.message, 'error'); }
+    }
+
+    async function cancelRegularOrder(orderId) {
+        const confirmed = await showOrderConfirmation('Cancel Order', [
+            { label: 'Action', value: 'CANCEL ORDER', color: 'text-red-400' },
+            { label: 'Order ID', value: orderId }
+        ]);
+        if (!confirmed) return;
+        try {
+            const resp = await fetch(`/api/v2/kite/orders/${orderId}`, { method: 'DELETE' });
+            const data = await resp.json();
+            if (data.success) {
+                toast('Order cancelled!', 'success');
+                await render();
+            } else {
+                toast(data.error || 'Cancel failed', 'error');
+            }
+        } catch(e) { toast('Error: ' + e.message, 'error'); }
+    }
+
+    async function modifyRegularOrder(orderId, currentOrder) {
+        const modal = document.getElementById('modal');
+        const sym = '₹';
+        modal.innerHTML = `
+            <div class="bg-[#1f2937] rounded-xl border border-gray-600 max-w-md w-full p-6 space-y-4">
+                <h3 class="text-lg font-bold text-white">Modify Order: ${currentOrder.tradingsymbol}</h3>
+                <div class="space-y-3">
+                    <div><label class="text-sm text-gray-400">Quantity</label>
+                        <input id="mod-qty" type="number" value="${currentOrder.quantity || ''}" class="w-full mt-1 px-3 py-2 bg-[#111827] border border-gray-600 rounded-lg font-mono"></div>
+                    <div><label class="text-sm text-gray-400">Price (${sym})</label>
+                        <input id="mod-price" type="number" step="0.05" value="${currentOrder.price || ''}" class="w-full mt-1 px-3 py-2 bg-[#111827] border border-gray-600 rounded-lg font-mono"></div>
+                    <div><label class="text-sm text-gray-400">Trigger Price (${sym})</label>
+                        <input id="mod-trigger" type="number" step="0.05" value="${currentOrder.trigger_price || ''}" class="w-full mt-1 px-3 py-2 bg-[#111827] border border-gray-600 rounded-lg font-mono"></div>
+                </div>
+                <div class="border-t border-gray-700 pt-4 flex gap-3">
+                    <button id="mod-confirm-btn" class="flex-1 py-2.5 bg-blue-600 rounded-lg font-medium hover:bg-blue-700 text-white">Save Changes</button>
+                    <button id="mod-cancel-btn" class="flex-1 py-2.5 bg-gray-600 rounded-lg font-medium hover:bg-gray-700 text-white">Cancel</button>
+                </div>
+            </div>
+        `;
+        modal.classList.remove('hidden');
+
+        document.getElementById('mod-confirm-btn').onclick = async () => {
+            modal.classList.add('hidden');
+            const qty = parseInt(document.getElementById('mod-qty').value) || null;
+            const price = parseFloat(document.getElementById('mod-price').value) || null;
+            const trigger = parseFloat(document.getElementById('mod-trigger').value) || null;
+            try {
+                const resp = await fetch(`/api/v2/kite/orders/${orderId}`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ quantity: qty, price: price, trigger_price: trigger })
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    toast('Order modified!', 'success');
+                    await render();
+                } else {
+                    toast(data.error || 'Modify failed', 'error');
+                }
+            } catch(e) { toast('Error: ' + e.message, 'error'); }
+        };
+        document.getElementById('mod-cancel-btn').onclick = () => modal.classList.add('hidden');
+    }
+
+    async function cancelGttOrder(triggerId) {
+        if (!triggerId) return;
+        const confirmed = await showOrderConfirmation('Cancel GTT Order', [
+            { label: 'Action', value: 'CANCEL GTT', color: 'text-red-400' },
+            { label: 'Trigger ID', value: String(triggerId) }
+        ]);
+        if (!confirmed) return;
+        try {
+            const resp = await fetch(`/api/v2/kite/gtt/${triggerId}`, { method: 'DELETE' });
+            const data = await resp.json();
+            if (data.success) {
+                toast('GTT order cancelled!', 'success');
+                await render();
+            } else {
+                toast(data.error || 'Cancel GTT failed', 'error');
             }
         } catch(e) { toast('Error: ' + e.message, 'error'); }
     }
@@ -5296,7 +5592,7 @@
                     <h3 class="font-bold text-green-400 flex items-center gap-2">
                         <span>📊</span> Data Management
                     </h3>
-                    <p class="text-sm text-gray-500">Load NIFTY 100 historical data and pre-calculate all indicators. Run this once daily after market close.</p>
+                    <p class="text-sm text-gray-500">Load 2-year historical data for NSE 500 stocks and pre-calculate all indicators. Run this once daily after market close (takes ~10-15 mins).</p>
 
                     <div id="data-status" class="bg-[#1f2937] p-4 rounded-lg space-y-2">
                         <div class="flex justify-between items-center">
@@ -5318,10 +5614,13 @@
 
                     <div class="flex gap-2">
                         <button id="load-data-btn" onclick="loadMarketData()" class="flex-1 py-3 bg-green-600 rounded-lg font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed">
-                            📥 Load Market Data
+                            📥 Load NSE 500 Data
+                        </button>
+                        <button onclick="loadMarketData(true)" class="py-3 px-4 bg-yellow-600 rounded-lg font-medium hover:bg-yellow-700 disabled:opacity-50 disabled:cursor-not-allowed">
+                            🔄 Force Refresh
                         </button>
                         <button id="load-instruments-btn" onclick="loadNifty500Instruments()" class="flex-1 py-3 bg-blue-600 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
-                            📋 Load NIFTY 500 Instruments
+                            📋 Load Instruments
                         </button>
                     </div>
 
@@ -5372,7 +5671,7 @@
                         </div>
                         <div class="bg-[#1f2937] p-3 rounded-lg">
                             <p class="text-gray-500">Market</p>
-                            <p class="font-mono text-white">NSE (NIFTY 100)</p>
+                            <p class="font-mono text-white">NSE 500</p>
                         </div>
                         <div class="bg-[#1f2937] p-3 rounded-lg">
                             <p class="text-gray-500">Currency</p>
@@ -5429,7 +5728,7 @@
         }
     }
 
-    async function loadMarketData() {
+    async function loadMarketData(forceRefresh = false) {
         const btn = document.getElementById('load-data-btn');
         const progress = document.getElementById('load-progress');
         const progressText = document.getElementById('load-progress-text');
@@ -5440,19 +5739,22 @@
         progressText.textContent = 'Connecting to Kite...';
 
         try {
+            progressText.textContent = 'Loading NSE 500 historical data (this may take 10-15 minutes)...';
             const resp = await fetch('/api/v2/data/load', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'}
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ force: forceRefresh, limit: 500 }),
+                signal: AbortSignal.timeout(900000) // 15 min timeout
             });
             const result = await resp.json();
 
             if (result.success) {
                 if (result.skipped) {
-                    toast('Data already loaded for today!', 'info');
+                    toast('Data already loaded for today! Use Force Refresh to reload.', 'info');
                 } else {
-                    toast(`Loaded ${result.symbols_loaded} symbols successfully!`, 'success');
+                    toast(`Loaded ${result.symbols_loaded} / 500 NSE symbols!`, 'success');
                     if (result.symbols_failed && result.symbols_failed.length > 0) {
-                        console.warn('Failed symbols:', result.symbols_failed);
+                        console.warn('Failed symbols:', result.symbols_failed.length);
                     }
                 }
                 await loadDataStatus();
@@ -5460,7 +5762,11 @@
                 toast(result.error || 'Failed to load data', 'error');
             }
         } catch(e) {
-            toast('Error: ' + e.message, 'error');
+            if (e.name === 'TimeoutError') {
+                toast('Load timed out after 15 minutes. Try loading fewer symbols.', 'error');
+            } else {
+                toast('Error: ' + e.message, 'error');
+            }
         } finally {
             btn.disabled = false;
             btn.textContent = '📥 Load Market Data';

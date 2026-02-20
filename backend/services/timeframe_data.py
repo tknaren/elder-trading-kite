@@ -296,6 +296,9 @@ def store_ohlcv_batch(symbol: str, timeframe: str, df: pd.DataFrame):
     try:
         for idx, row in df.iterrows():
             candle_time = str(idx)
+            # Strip timezone info for DATETIME2 compatibility
+            if '+' in candle_time:
+                candle_time = candle_time.split('+')[0].strip()
             conn.execute('''
                 MERGE intraday_ohlcv AS target
                 USING (SELECT ? AS symbol, ? AS timeframe, ? AS candle_time) AS source
@@ -338,6 +341,10 @@ def store_indicators_latest(symbol: str, timeframe: str, indicators: Dict):
     conn = db.get_connection()
 
     candle_time = indicators.get('candle_time', str(datetime.now()))
+    # Ensure candle_time is a clean string for DATETIME2 (strip timezone info)
+    candle_time_str = str(candle_time)
+    if '+' in candle_time_str:
+        candle_time_str = candle_time_str.split('+')[0].strip()
 
     try:
         conn.execute('''
@@ -367,7 +374,7 @@ def store_indicators_latest(symbol: str, timeframe: str, indicators: Dict):
                         ?, ?, ?,
                         ?, ?, ?);
         ''', (
-            symbol, timeframe, candle_time,
+            symbol, timeframe, candle_time_str,
             # UPDATE values
             indicators.get('ema_13'), indicators.get('ema_22'), indicators.get('ema_50'),
             indicators.get('macd_line'), indicators.get('macd_signal'), indicators.get('macd_histogram'),
@@ -375,7 +382,7 @@ def store_indicators_latest(symbol: str, timeframe: str, indicators: Dict):
             indicators.get('stochastic'), indicators.get('stoch_d'), indicators.get('impulse_color'),
             indicators.get('kc_upper'), indicators.get('kc_middle'), indicators.get('kc_lower'),
             # INSERT values
-            symbol, timeframe, candle_time,
+            symbol, timeframe, candle_time_str,
             indicators.get('ema_13'), indicators.get('ema_22'), indicators.get('ema_50'),
             indicators.get('macd_line'), indicators.get('macd_signal'), indicators.get('macd_histogram'),
             indicators.get('rsi'), indicators.get('atr'), indicators.get('force_index'),
@@ -421,6 +428,9 @@ def refresh_symbol_timeframes(symbol: str) -> Dict:
             ind_15 = calculate_indicators_for_timeframe(df_15)
             if ind_15:
                 store_indicators_latest(bare_symbol, '15min', ind_15)
+                print(f"  {bare_symbol} 15min indicators: RSI={ind_15.get('rsi')}, Impulse={ind_15.get('impulse_color')}")
+            else:
+                print(f"  {bare_symbol} 15min: {len(df_15)} candles but indicator calc returned None")
             result['15min'] = True
             print(f"  {bare_symbol} 15min: {len(df_15)} candles")
 
@@ -432,6 +442,9 @@ def refresh_symbol_timeframes(symbol: str) -> Dict:
                 ind_75 = calculate_indicators_for_timeframe(df_75)
                 if ind_75:
                     store_indicators_latest(bare_symbol, '75min', ind_75)
+                    print(f"  {bare_symbol} 75min indicators: RSI={ind_75.get('rsi')}, Impulse={ind_75.get('impulse_color')}")
+                else:
+                    print(f"  {bare_symbol} 75min: {len(df_75)} candles but indicator calc returned None")
                 result['75min'] = True
                 print(f"  {bare_symbol} 75min: {len(df_75)} candles")
 
@@ -442,6 +455,9 @@ def refresh_symbol_timeframes(symbol: str) -> Dict:
             ind_day = calculate_indicators_for_timeframe(df_day)
             if ind_day:
                 store_indicators_latest(bare_symbol, 'day', ind_day)
+                print(f"  {bare_symbol} day indicators: RSI={ind_day.get('rsi')}, Impulse={ind_day.get('impulse_color')}, ATR={ind_day.get('atr')}")
+            else:
+                print(f"  {bare_symbol} day: {len(df_day)} candles but indicator calc returned None")
             result['day'] = True
             print(f"  {bare_symbol} day: {len(df_day)} candles")
 

@@ -765,8 +765,9 @@ class Database:
             IF OBJECT_ID('kite_orders_cache', 'U') IS NULL
             CREATE TABLE kite_orders_cache (
                 id INT IDENTITY(1,1) PRIMARY KEY,
+                user_id INT NOT NULL DEFAULT 1,
                 order_id NVARCHAR(100) NOT NULL,
-                symbol NVARCHAR(100) NOT NULL,
+                tradingsymbol NVARCHAR(100) NOT NULL,
                 exchange NVARCHAR(20) DEFAULT 'NSE',
                 transaction_type NVARCHAR(20),
                 order_type NVARCHAR(20),
@@ -779,9 +780,9 @@ class Database:
                 product NVARCHAR(20),
                 status NVARCHAR(50),
                 tag NVARCHAR(50),
-                order_timestamp DATETIME2,
-                exchange_timestamp DATETIME2,
-                synced_at DATETIME2 DEFAULT GETDATE()
+                placed_at NVARCHAR(100),
+                order_data NVARCHAR(MAX),
+                cached_at DATETIME2 DEFAULT GETDATE()
             )
         """)
 
@@ -790,16 +791,18 @@ class Database:
             IF OBJECT_ID('kite_positions_cache', 'U') IS NULL
             CREATE TABLE kite_positions_cache (
                 id INT IDENTITY(1,1) PRIMARY KEY,
-                symbol NVARCHAR(100) NOT NULL,
+                user_id INT NOT NULL DEFAULT 1,
+                tradingsymbol NVARCHAR(100) NOT NULL,
                 exchange NVARCHAR(20) DEFAULT 'NSE',
+                product NVARCHAR(20),
                 quantity INT,
                 average_price FLOAT,
                 last_price FLOAT,
                 pnl FLOAT,
-                product NVARCHAR(20),
-                day_change FLOAT,
-                day_change_percentage FLOAT,
-                synced_at DATETIME2 DEFAULT GETDATE()
+                buy_value FLOAT,
+                sell_value FLOAT,
+                position_data NVARCHAR(MAX),
+                cached_at DATETIME2 DEFAULT GETDATE()
             )
         """)
 
@@ -808,7 +811,8 @@ class Database:
             IF OBJECT_ID('kite_holdings_cache', 'U') IS NULL
             CREATE TABLE kite_holdings_cache (
                 id INT IDENTITY(1,1) PRIMARY KEY,
-                symbol NVARCHAR(100) NOT NULL,
+                user_id INT NOT NULL DEFAULT 1,
+                tradingsymbol NVARCHAR(100) NOT NULL,
                 exchange NVARCHAR(20) DEFAULT 'NSE',
                 isin NVARCHAR(50),
                 quantity INT,
@@ -817,7 +821,32 @@ class Database:
                 pnl FLOAT,
                 day_change FLOAT,
                 day_change_percentage FLOAT,
-                synced_at DATETIME2 DEFAULT GETDATE()
+                holding_data NVARCHAR(MAX),
+                cached_at DATETIME2 DEFAULT GETDATE()
+            )
+        """)
+
+        # Kite GTT orders cache
+        conn.execute("""
+            IF OBJECT_ID('kite_gtt_cache', 'U') IS NULL
+            CREATE TABLE kite_gtt_cache (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                user_id INT NOT NULL DEFAULT 1,
+                trigger_id INT NOT NULL,
+                tradingsymbol NVARCHAR(100) NOT NULL,
+                exchange NVARCHAR(20) DEFAULT 'NSE',
+                trigger_type NVARCHAR(20),
+                status NVARCHAR(50),
+                trigger_values NVARCHAR(500),
+                quantity INT,
+                trigger_price FLOAT,
+                limit_price FLOAT,
+                transaction_type NVARCHAR(20),
+                created_at NVARCHAR(100),
+                updated_at NVARCHAR(100),
+                expires_at NVARCHAR(100),
+                gtt_data NVARCHAR(MAX),
+                cached_at DATETIME2 DEFAULT GETDATE()
             )
         """)
 
@@ -826,18 +855,16 @@ class Database:
             IF OBJECT_ID('holdings_snapshot', 'U') IS NULL
             CREATE TABLE holdings_snapshot (
                 id INT IDENTITY(1,1) PRIMARY KEY,
+                user_id INT NOT NULL DEFAULT 1,
+                tradingsymbol NVARCHAR(100) NOT NULL,
                 snapshot_date DATE NOT NULL,
-                symbol NVARCHAR(100) NOT NULL,
-                exchange NVARCHAR(20) DEFAULT 'NSE',
                 quantity INT,
-                avg_price FLOAT,
+                average_price FLOAT,
                 last_price FLOAT,
-                investment FLOAT,
-                current_value FLOAT,
                 pnl FLOAT,
-                pnl_percent FLOAT,
-                created_at DATETIME2 DEFAULT GETDATE(),
-                CONSTRAINT UQ_holdings_snap UNIQUE(snapshot_date, symbol)
+                day_change FLOAT,
+                day_change_percentage FLOAT,
+                updated_at DATETIME2 DEFAULT GETDATE()
             )
         """)
 
@@ -1371,10 +1398,31 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
 
-        data['updated_at'] = datetime.now().isoformat()
+        # Valid columns in trade_bills table
+        valid_columns = {
+            'ticker', 'current_market_price', 'entry_price', 'stop_loss', 'target_price',
+            'quantity', 'upper_channel', 'lower_channel', 'target_pips', 'stop_loss_pips',
+            'max_qty_for_risk', 'other_charges', 'max_risk', 'risk_per_share', 'position_size',
+            'risk_percent', 'channel_height', 'potential_gain', 'target_1_1_c', 'target_1_2_b',
+            'target_1_3_a', 'risk_amount_currency', 'reward_amount_currency', 'risk_reward_ratio',
+            'break_even', 'trailing_stop', 'is_filled', 'stop_entered', 'target_entered',
+            'journal_entered', 'comments', 'status', 'order_id', 'signal_strength', 'grade',
+            'symbol', 'market', 'direction', 'risk_amount', 'position_value',
+            'atr', 'candle_pattern', 'candle_1_conviction', 'candle_2_conviction', 'updated_at'
+        }
+        bit_columns = {'is_filled', 'stop_entered', 'target_entered', 'journal_entered'}
 
-        set_clause = ', '.join([f'{k} = ?' for k in data.keys()])
-        values = tuple(data.values())
+        filtered_data = {}
+        for k, v in data.items():
+            if k in valid_columns:
+                if k in bit_columns:
+                    filtered_data[k] = 1 if v else 0
+                else:
+                    filtered_data[k] = v
+        filtered_data['updated_at'] = datetime.now().isoformat()
+
+        set_clause = ', '.join([f'{k} = ?' for k in filtered_data.keys()])
+        values = tuple(filtered_data.values())
 
         cursor.execute(f"""
             UPDATE trade_bills

@@ -8,7 +8,9 @@
       "Bash(where:*)",
       "Bash(pip install:*)",
       "Bash(python test_fixes.py:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(grep:*)",
+      "Bash(python3:*)"
     ]
   }
 }
