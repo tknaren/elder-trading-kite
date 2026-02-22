@@ -459,6 +459,126 @@ def scan_single_rsi_macd(symbol):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# GSS (GREEN SUPERTREND STRATEGY) SCREENER ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@screener_routes.route('/gss/stocks', methods=['GET'])
+def get_gss_stocks():
+    """
+    Get list of available stocks for GSS screening (NSE 500)
+    """
+    from services.gss_screener import get_nse500_stock_list
+    stocks = get_nse500_stock_list()
+    return jsonify({
+        'market': 'IN',
+        'stocks': stocks,
+        'count': len(stocks)
+    })
+
+
+@screener_routes.route('/gss/run', methods=['POST'])
+def run_gss_screener_endpoint():
+    """
+    Run GSS (Green SuperTrend Strategy) screener
+
+    Request body:
+    {
+        "symbols": "all" or ["NSE:RELIANCE", ...],
+        "direction": "long" or "short",
+        "market": "IN"
+    }
+
+    Long conditions: RSI(20)>50, Stoch %K>%D, Low<ST, Close>ST, ST GREEN, ST<EMA20
+    Short conditions: RSI(20)<50, Stoch %K<%D, High>ST, Close<ST, ST RED, ST>EMA20
+
+    Returns signals with indicator values, candle patterns, and max buying/selling price
+    """
+    data = request.get_json() or {}
+
+    symbols = data.get('symbols', [])
+    direction = data.get('direction', 'long')
+    market = data.get('market', 'IN')
+
+    from services.gss_screener import run_gss_screener, get_nse500_stock_list
+
+    # Validate direction
+    if direction not in ['long', 'short']:
+        direction = 'long'
+
+    # Handle "all" or empty symbols
+    if not symbols or symbols == 'all' or (isinstance(symbols, list) and 'all' in symbols):
+        symbols = get_nse500_stock_list()
+
+    try:
+        # Fetch historical data (uses cache -> DB -> Kite API)
+        hist_data = fetch_historical_data(symbols, lookback_days=365)
+
+        if not hist_data:
+            return jsonify({
+                'error': 'Could not fetch historical data for any symbols. Ensure data is loaded via Settings > Load Data.',
+                'symbols_requested': len(symbols)
+            }), 500
+
+        # Run screener
+        result = run_gss_screener(
+            symbols=list(hist_data.keys()),
+            hist_data=hist_data,
+            direction=direction
+        )
+
+        return jsonify(result)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
+
+
+@screener_routes.route('/gss/single/<symbol>', methods=['GET'])
+def scan_single_gss(symbol):
+    """
+    Scan a single stock for GSS strategy conditions
+
+    Query params:
+        - direction: "long" or "short" (default: "long")
+    """
+    direction = request.args.get('direction', 'long')
+    if direction not in ['long', 'short']:
+        direction = 'long'
+
+    from services.gss_screener import scan_stock_gss
+
+    try:
+        # Fetch historical data
+        full_symbol = symbol.upper() if ':' in symbol else f'NSE:{symbol.upper()}'
+        hist_data = fetch_historical_data([full_symbol], lookback_days=365)
+
+        if not hist_data or full_symbol not in hist_data:
+            return jsonify({
+                'error': f'Could not fetch historical data for {symbol}',
+                'symbol': full_symbol
+            }), 404
+
+        hist = hist_data[full_symbol]
+        signal = scan_stock_gss(full_symbol, hist, direction)
+
+        if signal is None:
+            return jsonify({
+                'error': f'Insufficient data for {symbol} (need 110+ daily bars)',
+                'symbol': full_symbol
+            }), 400
+
+        return jsonify({
+            'symbol': full_symbol,
+            'direction': direction,
+            'signal': signal
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # COMBINED SCREENER INFO
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -504,6 +624,35 @@ def get_screener_info():
                     'run': 'POST /api/v2/screener/rsi-macd/run',
                     'single': 'GET /api/v2/screener/rsi-macd/single/<symbol>',
                     'stocks': 'GET /api/v2/screener/rsi-macd/stocks'
+                }
+            },
+            {
+                'id': 'gss',
+                'name': 'GSS - Green SuperTrend Strategy',
+                'description': 'Scans NSE 500 for Long/Short setups using SuperTrend + RSI + Stochastic + EMA',
+                'filters': {
+                    'long': [
+                        'RSI(20) > 50',
+                        'Stochastic(55,34,21) %K > %D',
+                        'Day Low < SuperTrend(10,2)',
+                        'Close > SuperTrend(10,2)',
+                        'SuperTrend GREEN before & EOD',
+                        'SuperTrend < EMA(20)'
+                    ],
+                    'short': [
+                        'RSI(20) < 50',
+                        'Stochastic(55,34,21) %K < %D',
+                        'Day High > SuperTrend(10,2)',
+                        'Close < SuperTrend(10,2)',
+                        'SuperTrend RED before & EOD',
+                        'SuperTrend > EMA(20)'
+                    ]
+                },
+                'indicators': ['RSI(20)', 'Stochastic(55,34,21)', 'EMA(20)', 'SuperTrend(10,2)', 'ATR'],
+                'endpoints': {
+                    'run': 'POST /api/v2/screener/gss/run',
+                    'single': 'GET /api/v2/screener/gss/single/<symbol>',
+                    'stocks': 'GET /api/v2/screener/gss/stocks'
                 }
             }
         ],

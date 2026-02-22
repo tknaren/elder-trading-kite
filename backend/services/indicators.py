@@ -195,11 +195,99 @@ def calculate_atr(highs: pd.Series, lows: pd.Series, closes: pd.Series, period: 
     return atr
 
 
-def calculate_keltner_channel(highs: pd.Series, lows: pd.Series, closes: pd.Series, 
+def calculate_supertrend(highs: pd.Series, lows: pd.Series, closes: pd.Series,
+                          period: int = 10, multiplier: float = 2.0) -> dict:
+    """
+    Calculate SuperTrend indicator
+
+    SuperTrend uses ATR to determine trend direction.
+    - GREEN (uptrend): Price above SuperTrend line → use Lower Band as support
+    - RED (downtrend): Price below SuperTrend line → use Upper Band as resistance
+
+    Args:
+        highs: High prices
+        lows: Low prices
+        closes: Closing prices
+        period: ATR period (default 10)
+        multiplier: ATR multiplier (default 2.0)
+
+    Returns:
+        Dictionary with supertrend, direction (1=GREEN, -1=RED), upper_band, lower_band, atr
+    """
+    atr = calculate_atr(highs, lows, closes, period)
+    hl2 = (highs + lows) / 2
+
+    # Basic bands
+    basic_upper = hl2 + (multiplier * atr)
+    basic_lower = hl2 - (multiplier * atr)
+
+    # Initialize final bands and output
+    n = len(closes)
+    final_upper = np.full(n, np.nan)
+    final_lower = np.full(n, np.nan)
+    supertrend = np.full(n, np.nan)
+    direction = np.full(n, 0, dtype=int)
+
+    # Find first valid index (where ATR is not NaN)
+    first_valid = atr.first_valid_index()
+    if first_valid is None:
+        return {
+            'supertrend': pd.Series(supertrend, index=closes.index),
+            'direction': pd.Series(direction, index=closes.index),
+            'upper_band': pd.Series(final_upper, index=closes.index),
+            'lower_band': pd.Series(final_lower, index=closes.index),
+            'atr': atr
+        }
+
+    start = closes.index.get_loc(first_valid)
+    final_upper[start] = basic_upper.iloc[start]
+    final_lower[start] = basic_lower.iloc[start]
+    supertrend[start] = basic_upper.iloc[start]
+    direction[start] = -1  # Start with downtrend assumption
+
+    for i in range(start + 1, n):
+        # Final Upper Band: only tighten (lower) if in downtrend
+        if basic_upper.iloc[i] < final_upper[i - 1] or closes.iloc[i - 1] > final_upper[i - 1]:
+            final_upper[i] = basic_upper.iloc[i]
+        else:
+            final_upper[i] = final_upper[i - 1]
+
+        # Final Lower Band: only tighten (raise) if in uptrend
+        if basic_lower.iloc[i] > final_lower[i - 1] or closes.iloc[i - 1] < final_lower[i - 1]:
+            final_lower[i] = basic_lower.iloc[i]
+        else:
+            final_lower[i] = final_lower[i - 1]
+
+        # Determine direction and SuperTrend value
+        if supertrend[i - 1] == final_upper[i - 1]:  # Was in downtrend (RED)
+            if closes.iloc[i] > final_upper[i]:
+                supertrend[i] = final_lower[i]
+                direction[i] = 1   # Switch to GREEN/uptrend
+            else:
+                supertrend[i] = final_upper[i]
+                direction[i] = -1  # Stay RED/downtrend
+        else:  # Was in uptrend (GREEN)
+            if closes.iloc[i] < final_lower[i]:
+                supertrend[i] = final_upper[i]
+                direction[i] = -1  # Switch to RED/downtrend
+            else:
+                supertrend[i] = final_lower[i]
+                direction[i] = 1   # Stay GREEN/uptrend
+
+    return {
+        'supertrend': pd.Series(supertrend, index=closes.index),
+        'direction': pd.Series(direction, index=closes.index),     # 1=GREEN, -1=RED
+        'upper_band': pd.Series(final_upper, index=closes.index),
+        'lower_band': pd.Series(final_lower, index=closes.index),
+        'atr': atr
+    }
+
+
+def calculate_keltner_channel(highs: pd.Series, lows: pd.Series, closes: pd.Series,
                                ema_period: int = 20, atr_period: int = 10, multiplier: float = 1.0) -> dict:
     """
     Calculate Keltner Channel (KC)
-    
+
     KC(20,10,1) = 20-period EMA ± (1 × ATR(10))
     
     Elder's Key Points:

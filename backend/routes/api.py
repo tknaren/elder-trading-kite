@@ -969,7 +969,8 @@ def update_account_info():
         'account_name', 'market', 'trading_capital', 'risk_per_trade',
         'max_monthly_drawdown', 'target_rr', 'max_open_positions',
         'currency', 'broker', 'kite_api_key', 'kite_api_secret',
-        'kite_access_token', 'kite_token_expiry', 'last_data_refresh'
+        'kite_access_token', 'kite_token_expiry', 'last_data_refresh',
+        'risk_per_day', 'max_trades_per_day', 'risk_per_week'
     ]
 
     # Filter data to only include allowed fields

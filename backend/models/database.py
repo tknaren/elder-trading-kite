@@ -47,6 +47,12 @@ class DictRow:
     def __repr__(self):
         return repr(dict(self))
 
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
 
 class DictCursor:
     """Wraps pyodbc cursor to return DictRow objects"""
@@ -173,6 +179,20 @@ class Database:
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         """)
+
+        # Trade Settings columns (added for risk management rules)
+        for col, sql_type in [
+            ('risk_per_day', 'FLOAT DEFAULT 2.0'),
+            ('max_trades_per_day', 'INT DEFAULT 3'),
+            ('risk_per_week', 'FLOAT DEFAULT 5.0'),
+        ]:
+            try:
+                conn.execute(f"""
+                    IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('account_settings') AND name = '{col}')
+                        ALTER TABLE account_settings ADD {col} {sql_type}
+                """)
+            except Exception:
+                pass
 
         # Strategies
         conn.execute("""

@@ -71,14 +71,14 @@
             {id:'screener', icon:'🔍', label:'Screener'},
             {id:'backtest', icon:'📊', label:'Signal Scanner'},
             {id:'candlestick-screener', icon:'🕯️', label:'Candlestick'},
-            {id:'rsi-macd-screener', icon:'📈', label:'RSI+MACD'}
+            {id:'rsi-macd-screener', icon:'📈', label:'RSI+MACD'},
+            {id:'gss-screener', icon:'🎯', label:'GSS'}
         ]},
         {section: 'Trade Bill', items: [
             {id:'trade-bill', icon:'💼', label:'Trade Bill'},
             {id:'trade-bills', icon:'📋', label:'Trade Bills'}
         ]},
         {section: 'Trade Journal', items: [
-            {id:'trade-journal', icon:'📓', label:'Trade Journal'},
             {id:'trade-log', icon:'📝', label:'Trade Log'},
             {id:'trade-summary', icon:'📊', label:'Trade Summary'}
         ]},
@@ -333,14 +333,14 @@
         else if(currentTab==='backtest') c.innerHTML = await backtestView();
         else if(currentTab==='candlestick-screener') c.innerHTML = candlestickScreenerView();
         else if(currentTab==='rsi-macd-screener') c.innerHTML = rsiMacdScreenerView();
+        else if(currentTab==='gss-screener') c.innerHTML = gssScreenerView();
         else if(currentTab==='trading-watchlist') c.innerHTML = await tradingWatchlistView();
         else if(currentTab==='alert-manager') c.innerHTML = await alertManagerView();
         else if(currentTab==='market-engine') c.innerHTML = await marketEngineView();
         else if(currentTab==='trade-bill') { c.innerHTML = tradeBillView(); triggerTradeBillCalc(); }
         else if(currentTab==='trade-bills') c.innerHTML = await tradeBillsView();
-        else if(currentTab==='trade-journal') c.innerHTML = await tradeJournalView();
         else if(currentTab==='journal-dashboard') c.innerHTML = await journalDashboardView();
-        else if(currentTab==='trade-log') c.innerHTML = await tradeLogView();
+        else if(currentTab==='trade-log') { c.innerHTML = await tradeLogView(); fetchNotionalPnL(); }
         else if(currentTab==='trade-summary') c.innerHTML = await tradeSummaryView();
         else if(currentTab==='orders') c.innerHTML = await ordersView();
         else if(currentTab==='positions-holdings') c.innerHTML = await positionsHoldingsView();
@@ -2403,6 +2403,177 @@
         }
     }
 
+    // ========== GSS (GREEN SUPERTREND STRATEGY) SCREENER ==========
+    let gssLongResults = [];
+    let gssShortResults = [];
+    let gssLoading = false;
+    let gssDirection = 'long';
+
+    function gssScreenerView() {
+        const results = gssDirection === 'long' ? gssLongResults : gssShortResults;
+        const dirLabel = gssDirection === 'long' ? 'LONG' : 'SHORT';
+        const patternDesc = gssDirection === 'long'
+            ? 'Hammer, Pin Bar, Bullish Engulfing'
+            : 'Inv-Hammer, Shooting Star, Bearish Engulfing';
+        const priceLabel = gssDirection === 'long' ? 'Max Buying Price' : 'Max Selling Price';
+        const priceKey = gssDirection === 'long' ? 'max_buying_price' : 'max_selling_price';
+        const matched = results.filter(r => r.all_conditions_met);
+
+        const conditionsHtml = gssDirection === 'long' ? `
+            <div class="grid grid-cols-3 gap-2 mt-2 text-xs">
+                <div>✅ RSI(20) &gt; 50</div>
+                <div>✅ Stochastic %K &gt; %D</div>
+                <div>✅ Day Low &lt; SuperTrend</div>
+                <div>✅ Close &gt; SuperTrend</div>
+                <div>✅ SuperTrend GREEN before &amp; EOD</div>
+                <div>✅ SuperTrend &lt; EMA(20)</div>
+            </div>
+        ` : `
+            <div class="grid grid-cols-3 gap-2 mt-2 text-xs">
+                <div>✅ RSI(20) &lt; 50</div>
+                <div>✅ Stochastic %K &lt; %D</div>
+                <div>✅ Day High &gt; SuperTrend</div>
+                <div>✅ Close &lt; SuperTrend</div>
+                <div>✅ SuperTrend RED before &amp; EOD</div>
+                <div>✅ SuperTrend &gt; EMA(20)</div>
+            </div>
+        `;
+
+        const resultsHtml = results.length > 0 ? `
+            <div class="bg-[#111827] rounded-xl border border-gray-700 overflow-hidden mt-4">
+                <div class="p-3 border-b border-gray-700 flex justify-between items-center">
+                    <h3 class="font-semibold text-sm">
+                        🎯 GSS ${dirLabel}: <span class="text-green-400">${matched.length} signals</span>
+                        <span class="text-gray-500 ml-2">(${results.length} stocks scanned)</span>
+                    </h3>
+                    <div class="text-xs text-gray-500">
+                        Nifty 500 | EMA 20 | EMA 50
+                    </div>
+                </div>
+                <div class="overflow-x-auto max-h-[600px]">
+                    <table class="w-full text-sm">
+                        <thead class="bg-gray-800 sticky top-0 z-10">
+                            <tr>
+                                <th class="px-2 py-2 text-left text-gray-400 text-xs">Ticker</th>
+                                <th class="px-2 py-2 text-right text-gray-400 text-xs">CMP</th>
+                                <th class="px-2 py-2 text-left text-gray-400 text-xs">Candle Pattern</th>
+                                <th class="px-2 py-2 text-right text-gray-400 text-xs">RSI(20)</th>
+                                <th class="px-2 py-2 text-right text-gray-400 text-xs">%K / %D</th>
+                                <th class="px-2 py-2 text-right text-gray-400 text-xs">EMA(20)</th>
+                                <th class="px-2 py-2 text-right text-gray-400 text-xs">SuperTrend</th>
+                                <th class="px-2 py-2 text-right text-gray-400 text-xs">Prev ATR</th>
+                                <th class="px-2 py-2 text-right text-gray-400 text-xs">ATR×0.5</th>
+                                <th class="px-2 py-2 text-right text-gray-400 text-xs">${priceLabel}</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-700">
+                            ${matched.map(s => `
+                                <tr class="hover:bg-gray-700/50 ${gssDirection === 'long' ? 'bg-green-900/10' : 'bg-red-900/10'}">
+                                    <td class="px-2 py-2 font-medium text-blue-400 font-mono">${(s.symbol || '').replace('NSE:','')}</td>
+                                    <td class="px-2 py-2 text-right font-mono">₹${s.close}</td>
+                                    <td class="px-2 py-2">
+                                        ${(s.candle_pattern || []).map(p =>
+                                            '<span class="px-1.5 py-0.5 text-xs rounded ' +
+                                            (gssDirection === 'long' ? 'bg-green-600/30 text-green-400' : 'bg-red-600/30 text-red-400') +
+                                            ' mr-1">' + p + '</span>'
+                                        ).join('') || '<span class="text-gray-600">-</span>'}
+                                    </td>
+                                    <td class="px-2 py-2 text-right font-mono ${gssDirection === 'long' ? (s.rsi > 50 ? 'text-green-400' : 'text-red-400') : (s.rsi < 50 ? 'text-green-400' : 'text-red-400')}">${s.rsi != null ? s.rsi.toFixed(1) : '-'}</td>
+                                    <td class="px-2 py-2 text-right font-mono text-xs">${s.stoch_k != null ? s.stoch_k.toFixed(1) : '-'} / ${s.stoch_d != null ? s.stoch_d.toFixed(1) : '-'}</td>
+                                    <td class="px-2 py-2 text-right font-mono">${s.ema_20 != null ? '₹' + s.ema_20.toFixed(2) : '-'}</td>
+                                    <td class="px-2 py-2 text-right font-mono ${s.st_direction === 'GREEN' ? 'text-green-400' : 'text-red-400'}">${s.supertrend != null ? '₹' + s.supertrend.toFixed(2) : '-'}</td>
+                                    <td class="px-2 py-2 text-right font-mono">${s.prev_atr != null ? s.prev_atr.toFixed(2) : '-'}</td>
+                                    <td class="px-2 py-2 text-right font-mono">${s.prev_atr_half != null ? s.prev_atr_half.toFixed(2) : '-'}</td>
+                                    <td class="px-2 py-2 text-right font-mono font-bold text-yellow-400">${s[priceKey] != null ? '₹' + s[priceKey].toFixed(2) : '-'}</td>
+                                </tr>
+                            `).join('')}
+                            ${matched.length === 0 ? '<tr><td colspan="10" class="px-4 py-8 text-center text-gray-500">No stocks match all GSS ' + dirLabel + ' conditions today.</td></tr>' : ''}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        ` : `
+            <div class="bg-[#111827] rounded-xl border border-gray-700 p-8 text-center text-gray-500 mt-4">
+                Click "Scan Nifty 500" to run the GSS ${dirLabel} screener
+            </div>
+        `;
+
+        return `
+            <div class="space-y-4">
+                <div class="flex justify-between items-center">
+                    <h2 class="text-2xl font-bold">🎯 GSS - Green SuperTrend Strategy</h2>
+                </div>
+
+                <div class="bg-purple-500/10 border border-purple-500/30 rounded-xl p-4 text-sm">
+                    <strong>GSS ${dirLabel} Strategy:</strong> SuperTrend(10,2) + RSI(20) + Stochastic(55,34,21) + EMA(20)<br>
+                    <strong>Patterns:</strong> ${patternDesc}<br>
+                    <strong>Universe:</strong> Nifty 500 stocks (Daily timeframe)
+                    ${conditionsHtml}
+                </div>
+
+                <div class="bg-[#111827] rounded-xl border border-gray-700 p-4">
+                    <div class="flex gap-4 items-center flex-wrap">
+                        <div class="flex rounded-lg overflow-hidden border border-gray-600">
+                            <button onclick="gssDirection='long'; render();"
+                                class="px-5 py-2 text-sm font-medium transition-colors ${gssDirection === 'long' ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}">
+                                📈 Long
+                            </button>
+                            <button onclick="gssDirection='short'; render();"
+                                class="px-5 py-2 text-sm font-medium transition-colors ${gssDirection === 'short' ? 'bg-red-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}">
+                                📉 Short
+                            </button>
+                        </div>
+                        <button onclick="runGssScreener()"
+                            class="px-6 py-2 bg-purple-600 rounded-lg hover:bg-purple-500 font-medium transition-colors ${gssLoading ? 'opacity-50 cursor-wait' : ''}"
+                            ${gssLoading ? 'disabled' : ''}>
+                            ${gssLoading ? '⏳ Scanning Nifty 500...' : '🔍 Scan Nifty 500'}
+                        </button>
+                        ${results.length > 0 ? '<span class="text-xs text-gray-500">Last scan: ' + matched.length + ' matched / ' + results.length + ' scanned</span>' : ''}
+                    </div>
+                </div>
+
+                ${resultsHtml}
+            </div>
+        `;
+    }
+
+    async function runGssScreener() {
+        gssLoading = true;
+        render();
+
+        try {
+            const res = await fetch('/api/v2/screener/gss/run', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    symbols: 'all',
+                    direction: gssDirection,
+                    market: 'IN'
+                })
+            });
+
+            const data = await res.json();
+
+            if (data.error) {
+                toast('GSS Error: ' + data.error, 'error');
+            } else {
+                const signals = data.signals || [];
+                if (gssDirection === 'long') {
+                    gssLongResults = signals;
+                } else {
+                    gssShortResults = signals;
+                }
+                const matched = signals.filter(s => s.all_conditions_met).length;
+                toast('GSS ' + gssDirection.toUpperCase() + ': ' + matched + ' signals from ' + signals.length + ' stocks', 'success');
+            }
+        } catch (err) {
+            toast('Error running GSS screener: ' + err.message, 'error');
+        } finally {
+            gssLoading = false;
+            render();
+        }
+    }
+
     // ========== TRADE BILL ==========
     function tradeBillView() {
         const tb = window.tradeBillTemplate || {};
@@ -3977,7 +4148,46 @@
         const openTrades = journals.filter(j => j.status === 'open');
         const closedTrades = journals.filter(j => j.status === 'closed');
 
-        return `
+        // ── Info Tile Calculations ──
+        const s = settings[0] || {trading_capital: 500000, risk_per_trade: 2, max_monthly_drawdown: 10};
+        const capital = s.trading_capital || 500000;
+
+        // Position Size: SUM(avg_entry × remaining_qty) for open trades
+        const positionSize = openTrades.reduce((sum, t) => {
+            const entry = t.avg_entry || t.entry_price || 0;
+            const qty = t.remaining_qty || 0;
+            return sum + (entry * qty);
+        }, 0);
+
+        // Money at Risk: SUM((entry - SL) × remaining_qty) for open trades (direction-aware)
+        const moneyAtRisk = openTrades.reduce((sum, t) => {
+            const entry = t.avg_entry || t.entry_price || 0;
+            const sl = t.stop_loss || 0;
+            const qty = t.remaining_qty || 0;
+            if (sl <= 0 || entry <= 0 || qty <= 0) return sum;
+            const risk = t.direction === 'Short' ? (sl - entry) * qty : (entry - sl) * qty;
+            return sum + Math.max(0, risk);
+        }, 0);
+
+        // Total Risk%: moneyAtRisk / capital × 100
+        const totalRiskPct = capital > 0 ? (moneyAtRisk / capital * 100) : 0;
+
+        // Realized P&L from closed trades
+        const realizedPnL = closedTrades.reduce((sum, t) => sum + (t.gain_loss_amount || 0), 0);
+
+        // Partial realized P&L from open trades (exited portions)
+        const partialRealizedPnL = openTrades.reduce((sum, t) => {
+            if (t.exits && t.exits.length > 0 && t.gain_loss_amount) return sum + t.gain_loss_amount;
+            return sum;
+        }, 0);
+
+        // Account Balance: capital + all realized P&L
+        const accountBalance = capital + realizedPnL + partialRealizedPnL;
+
+        // Risk Limit: capital × max_monthly_drawdown / 100
+        const riskLimit = capital * (s.max_monthly_drawdown || 10) / 100;
+
+        const html = `
             <div class="space-y-6">
                 <div class="flex justify-between items-center">
                     <h2 class="text-2xl font-bold">Trade Log</h2>
@@ -4009,6 +4219,38 @@
                     <div class="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-center">
                         <div class="text-lg font-bold text-red-400">${closedTrades.filter(t => (t.gain_loss_amount||0) < 0).length}</div>
                         <div class="text-xs text-gray-400">Losers</div>
+                    </div>
+                </div>
+
+                <!-- Portfolio Info Tiles -->
+                <div class="grid grid-cols-7 gap-3">
+                    <div class="bg-purple-500/10 border border-purple-500/30 rounded-lg p-3 text-center">
+                        <div id="tile-overall-pnl" class="text-lg font-bold text-purple-400">Loading...</div>
+                        <div class="text-xs text-gray-400">Overall P&L</div>
+                    </div>
+                    <div class="bg-cyan-500/10 border border-cyan-500/30 rounded-lg p-3 text-center">
+                        <div class="text-lg font-bold text-cyan-400">${sym}${positionSize.toLocaleString(undefined, {maximumFractionDigits: 0})}</div>
+                        <div class="text-xs text-gray-400">Position Size</div>
+                    </div>
+                    <div class="bg-orange-500/10 border border-orange-500/30 rounded-lg p-3 text-center">
+                        <div class="text-lg font-bold ${totalRiskPct > (s.risk_per_day || 2) ? 'text-red-400' : 'text-orange-400'}">${totalRiskPct.toFixed(2)}%</div>
+                        <div class="text-xs text-gray-400">Total Risk%</div>
+                    </div>
+                    <div class="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-center">
+                        <div class="text-lg font-bold text-red-400">${sym}${moneyAtRisk.toLocaleString(undefined, {maximumFractionDigits: 0})}</div>
+                        <div class="text-xs text-gray-400">Money at Risk</div>
+                    </div>
+                    <div class="bg-indigo-500/10 border border-indigo-500/30 rounded-lg p-3 text-center">
+                        <div class="text-lg font-bold text-indigo-400">${sym}${capital.toLocaleString()}</div>
+                        <div class="text-xs text-gray-400">Starting Balance</div>
+                    </div>
+                    <div class="bg-teal-500/10 border border-teal-500/30 rounded-lg p-3 text-center">
+                        <div class="text-lg font-bold ${accountBalance >= capital ? 'text-teal-400' : 'text-red-400'}">${sym}${accountBalance.toLocaleString(undefined, {maximumFractionDigits: 0})}</div>
+                        <div class="text-xs text-gray-400">Account Balance</div>
+                    </div>
+                    <div class="bg-pink-500/10 border border-pink-500/30 rounded-lg p-3 text-center">
+                        <div class="text-lg font-bold text-pink-400">${sym}${riskLimit.toLocaleString(undefined, {maximumFractionDigits: 0})}</div>
+                        <div class="text-xs text-gray-400">Risk Limit</div>
                     </div>
                 </div>
 
@@ -4047,14 +4289,14 @@
                                             <td class="p-2 text-center"><span class="${j.direction === 'Long' ? 'text-green-400' : 'text-red-400'}">${j.direction === 'Long' ? '▲ Long' : '▼ Short'}</span></td>
                                             <td class="p-2 text-right font-mono">${entryCnt}</td>
                                             <td class="p-2 text-right font-mono">${exitCnt}</td>
-                                            <td class="p-2 text-right font-mono">${j.total_shares || j.quantity || '-'}</td>
-                                            <td class="p-2 text-right font-mono ${(j.remaining_qty||0) > 0 ? 'text-yellow-400' : ''}">${j.remaining_qty ?? '-'}</td>
-                                            <td class="p-2 text-right font-mono">${j.avg_entry ? sym + j.avg_entry.toFixed(2) : (j.entry_price ? sym + j.entry_price.toFixed(2) : '-')}</td>
-                                            <td class="p-2 text-right font-mono">${j.avg_exit ? sym + j.avg_exit.toFixed(2) : '-'}</td>
+                                            <td class="p-2 text-right font-mono">${j.total_shares != null ? j.total_shares : (j.quantity != null ? j.quantity : '-')}</td>
+                                            <td class="p-2 text-right font-mono ${(j.remaining_qty||0) > 0 ? 'text-yellow-400' : ''}">${j.remaining_qty != null ? j.remaining_qty : '-'}</td>
+                                            <td class="p-2 text-right font-mono">${j.avg_entry != null && j.avg_entry > 0 ? sym + j.avg_entry.toFixed(2) : (j.entry_price ? sym + j.entry_price.toFixed(2) : '-')}</td>
+                                            <td class="p-2 text-right font-mono">${j.avg_exit != null && j.avg_exit > 0 ? sym + j.avg_exit.toFixed(2) : '-'}</td>
                                             <td class="p-2 text-right font-mono text-red-400">${j.stop_loss ? sym + j.stop_loss.toFixed(2) : '-'}</td>
                                             <td class="p-2 text-right font-mono text-green-400">${j.target_price ? sym + j.target_price.toFixed(2) : '-'}</td>
-                                            <td class="p-2 text-right font-mono ${(j.gain_loss_amount||0) >= 0 ? 'text-green-400' : 'text-red-400'}">${j.gain_loss_amount ? sym + j.gain_loss_amount.toFixed(2) : '-'}</td>
-                                            <td class="p-2 text-right font-mono ${(j.gain_loss_percent||0) >= 0 ? 'text-green-400' : 'text-red-400'}">${j.gain_loss_percent ? j.gain_loss_percent.toFixed(2) + '%' : '-'}</td>
+                                            <td class="p-2 text-right font-mono ${(j.gain_loss_amount||0) >= 0 ? 'text-green-400' : 'text-red-400'}">${j.gain_loss_amount != null ? sym + j.gain_loss_amount.toFixed(2) : '-'}</td>
+                                            <td class="p-2 text-right font-mono ${(j.gain_loss_percent||0) >= 0 ? 'text-green-400' : 'text-red-400'}">${j.gain_loss_percent != null ? j.gain_loss_percent.toFixed(2) + '%' : '-'}</td>
                                             <td class="p-2 text-center"><span class="px-2 py-0.5 rounded text-xs ${j.status==='closed' ? ((j.gain_loss_amount||0)>0 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400') : 'bg-blue-500/20 text-blue-400'}">${j.status === 'closed' ? 'CLOSED' : 'OPEN'}</span></td>
                                             <td class="p-2 text-center"><span class="px-2 py-0.5 rounded ${j.trade_grade==='A'?'bg-green-500/20 text-green-400':j.trade_grade==='B'?'bg-blue-500/20 text-blue-400':'bg-gray-500/20 text-gray-400'}">${j.trade_grade||'-'}</span></td>
                                             <td class="p-2 text-center">
@@ -4070,6 +4312,68 @@
                 </div>
             </div>
         `;
+
+        // Trigger async P&L tile update after DOM renders
+        setTimeout(() => updateNotionalPnlTile(openTrades, closedTrades, sym), 100);
+
+        return html;
+    }
+
+    async function updateNotionalPnlTile(openTrades, closedTrades, sym) {
+        const tile = document.getElementById('tile-overall-pnl');
+        if (!tile) return;
+
+        // Realized P&L from all closed trades
+        const realizedPnL = closedTrades.reduce((sum, t) => sum + (t.gain_loss_amount || 0), 0);
+
+        // Partial realized P&L from open trades with exits
+        const partialPnL = openTrades.reduce((sum, t) => {
+            if (t.exits && t.exits.length > 0 && t.gain_loss_amount) return sum + t.gain_loss_amount;
+            return sum;
+        }, 0);
+
+        // If no open trades with remaining qty, skip batch CMP
+        const tradesWithPositions = openTrades.filter(t => (t.remaining_qty || 0) > 0);
+        if (tradesWithPositions.length === 0) {
+            const totalPnL = realizedPnL + partialPnL;
+            tile.textContent = sym + totalPnL.toLocaleString(undefined, {maximumFractionDigits: 0});
+            tile.className = `text-lg font-bold ${totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}`;
+            return;
+        }
+
+        // Fetch batch CMP for open positions
+        const tickers = [...new Set(tradesWithPositions.map(t => t.ticker))];
+        let prices = {};
+        try {
+            const resp = await fetch(`/api/v2/live-cmp/batch?symbols=${tickers.join(',')}`);
+            const data = await resp.json();
+            prices = data.prices || {};
+        } catch (e) {
+            console.log('Could not fetch batch CMP:', e);
+            tile.textContent = sym + (realizedPnL + partialPnL).toLocaleString(undefined, {maximumFractionDigits: 0});
+            tile.className = `text-lg font-bold ${(realizedPnL + partialPnL) >= 0 ? 'text-green-400' : 'text-red-400'}`;
+            return;
+        }
+
+        // Compute unrealized P&L using live CMP
+        let unrealizedPnL = 0;
+        tradesWithPositions.forEach(t => {
+            const entry = t.avg_entry || t.entry_price || 0;
+            const qty = t.remaining_qty || 0;
+            const priceData = prices[t.ticker];
+            const cmp = priceData ? priceData.cmp : 0;
+            if (cmp > 0 && entry > 0 && qty > 0) {
+                if (t.direction === 'Short') {
+                    unrealizedPnL += (entry - cmp) * qty;
+                } else {
+                    unrealizedPnL += (cmp - entry) * qty;
+                }
+            }
+        });
+
+        const totalPnL = realizedPnL + partialPnL + unrealizedPnL;
+        tile.textContent = sym + totalPnL.toLocaleString(undefined, {maximumFractionDigits: 0});
+        tile.className = `text-lg font-bold ${totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}`;
     }
 
     function renderTradeLogDetail(j, strategies, mistakes, sym) {
@@ -4104,7 +4408,7 @@
                     <h4 class="text-sm font-bold text-gray-400 border-b border-gray-600 pb-2 mb-3">Trade Setup</h4>
                     <div class="grid grid-cols-8 gap-3 text-sm">
                         <div><label class="text-gray-500">Ticker</label><input id="tl-ticker" value="${j.ticker||''}" placeholder="RELIANCE" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
-                        <div><label class="text-gray-500">Date</label><input type="date" id="tl-date" value="${j.journal_date||new Date().toISOString().split('T')[0]}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded"></div>
+                        <div><label class="text-gray-500">Date</label><input type="date" id="tl-date" value="${(j.journal_date ? String(j.journal_date).split('T')[0] : '') || new Date().toISOString().split('T')[0]}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded"></div>
                         <div><label class="text-gray-500">Direction</label><select id="tl-direction" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded">${directions.map(d => `<option ${j.direction===d?'selected':''}>${d}</option>`).join('')}</select></div>
                         <div><label class="text-gray-500">Strategy</label><select id="tl-strategy" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded">${strategies.map(s => `<option ${j.strategy===s?'selected':''}>${s}</option>`).join('')}</select></div>
                         <div><label class="text-gray-500">Stop Loss</label><input type="number" id="tl-sl" value="${j.stop_loss||''}" step="0.01" class="w-full px-2 py-1.5 bg-red-900/30 border border-red-600 rounded font-mono"></div>
@@ -4242,21 +4546,52 @@
 
                 <!-- Results Section -->
                 <div class="bg-[#111827] rounded-xl p-4 border border-purple-500/30">
-                    <h4 class="font-bold text-purple-400 mb-3">Results</h4>
-                    <div class="grid grid-cols-6 gap-3 text-sm">
-                        <div><label class="text-gray-500">First Entry Date</label><input value="${j.first_entry_date?.split('T')[0]||''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
-                        <div><label class="text-gray-500">Total Shares</label><input value="${j.total_shares||''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
-                        <div><label class="text-gray-500">Avg Entry</label><input value="${j.avg_entry ? sym + j.avg_entry.toFixed(2) : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
-                        <div><label class="text-gray-500">Gain/Loss %</label><input value="${j.gain_loss_percent ? j.gain_loss_percent.toFixed(2)+'%' : ''}" class="w-full px-2 py-1.5 ${(j.gain_loss_percent||0)>=0?'bg-green-900/20':'bg-red-900/20'} border border-gray-600 rounded font-mono" readonly></div>
-                        <div><label class="text-gray-500">High During Trade</label><input value="${j.high_during_trade ? sym + j.high_during_trade.toFixed(2) : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
-                        <div><label class="text-gray-500">Max Drawdown</label><input id="tl-maxdd" value="${j.max_drawdown ? sym + j.max_drawdown.toFixed(2) : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                    <div class="flex justify-between items-center mb-3">
+                        <h4 class="font-bold text-purple-400">Results</h4>
+                        ${j.id ? `<button onclick="recalculateTradeLog(${j.id})" class="px-3 py-1 bg-purple-600 rounded hover:bg-purple-700 text-xs">🔄 Recalculate</button>` : ''}
+                    </div>
 
-                        <div><label class="text-gray-500">Last Exit Date</label><input value="${j.last_exit_date?.split('T')[0]||''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                    <!-- Trade Overview -->
+                    <div class="grid grid-cols-6 gap-3 text-sm mb-3">
+                        <div><label class="text-gray-500">First Entry Date</label><input value="${j.first_entry_date?.split('T')[0]||''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Total Shares</label><input value="${j.total_shares != null ? j.total_shares : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Avg Entry</label><input value="${j.avg_entry != null && j.avg_entry > 0 ? sym + j.avg_entry.toFixed(2) : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">High During Trade</label><input value="${j.high_during_trade != null ? sym + j.high_during_trade.toFixed(2) : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
+                        <div><label class="text-gray-500">Low During Trade</label><input value="${j.low_during_trade != null ? sym + j.low_during_trade.toFixed(2) : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
                         <div><label class="text-gray-500">Trade Grade</label><select id="tl-grade" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded">${grades.map(g => `<option ${j.trade_grade===g?'selected':''}>${g}</option>`).join('')}</select></div>
-                        <div><label class="text-gray-500">Avg Exit</label><input value="${j.avg_exit ? sym + j.avg_exit.toFixed(2) : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
-                        <div><label class="text-gray-500">Gain/Loss ${sym}</label><input value="${j.gain_loss_amount ? sym + j.gain_loss_amount.toFixed(2) : ''}" class="w-full px-2 py-1.5 ${(j.gain_loss_amount||0)>=0?'bg-green-900/20':'bg-red-900/20'} border border-gray-600 rounded font-mono" readonly></div>
-                        <div><label class="text-gray-500">Low During Trade</label><input value="${j.low_during_trade ? sym + j.low_during_trade.toFixed(2) : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
-                        <div><label class="text-gray-500">% Captured</label><input id="tl-captured" value="${j.percent_captured ? j.percent_captured.toFixed(1)+'%' : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
+                    </div>
+
+                    <!-- Booked P&L (from exited shares) + Open Position side by side -->
+                    <div class="grid grid-cols-2 gap-3 mt-3">
+                        <!-- Booked P&L -->
+                        <div class="bg-[#0d1117] rounded-lg p-3 border ${(j.gain_loss_amount||0)>=0?'border-green-500/30':'border-red-500/30'}">
+                            <h5 class="text-xs font-bold ${(j.gain_loss_amount||0)>=0?'text-green-400':'text-red-400'} mb-2">Booked P&L (Exited: ${j.exited_qty || ((j.total_shares||0) - (j.remaining_qty||0))} shares)</h5>
+                            <div class="grid grid-cols-3 gap-2 text-sm">
+                                <div><label class="text-gray-500 text-xs">Avg Exit</label><input value="${j.avg_exit != null && j.avg_exit > 0 ? sym + j.avg_exit.toFixed(2) : '-'}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono text-xs" readonly></div>
+                                <div><label class="text-gray-500 text-xs">Realized P&L</label><input value="${j.gain_loss_amount != null ? sym + j.gain_loss_amount.toFixed(2) : '-'}" class="w-full px-2 py-1 ${(j.gain_loss_amount||0)>=0?'bg-green-900/20':'bg-red-900/20'} border border-gray-600 rounded font-mono text-xs" readonly></div>
+                                <div><label class="text-gray-500 text-xs">Realized %</label><input value="${j.gain_loss_percent != null ? j.gain_loss_percent.toFixed(2)+'%' : '-'}" class="w-full px-2 py-1 ${(j.gain_loss_percent||0)>=0?'bg-green-900/20':'bg-red-900/20'} border border-gray-600 rounded font-mono text-xs" readonly></div>
+                            </div>
+                            <div class="grid grid-cols-3 gap-2 text-sm mt-2">
+                                <div><label class="text-gray-500 text-xs">Last Exit Date</label><input value="${j.last_exit_date?.split('T')[0]||'-'}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono text-xs" readonly></div>
+                                <div><label class="text-gray-500 text-xs">Max Drawdown</label><input id="tl-maxdd" value="${j.max_drawdown ? sym + j.max_drawdown.toFixed(2) : ''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono text-xs"></div>
+                                <div><label class="text-gray-500 text-xs">% Captured</label><input id="tl-captured" value="${j.percent_captured ? j.percent_captured.toFixed(1)+'%' : ''}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono text-xs"></div>
+                            </div>
+                        </div>
+
+                        <!-- Open Position (Remaining) -->
+                        <div class="bg-[#0d1117] rounded-lg p-3 border border-yellow-500/30">
+                            <h5 class="text-xs font-bold text-yellow-400 mb-2">Open Position (Remaining: ${j.remaining_qty || 0} shares)</h5>
+                            <div class="grid grid-cols-3 gap-2 text-sm">
+                                <div><label class="text-gray-500 text-xs">Remaining Qty</label><input value="${j.remaining_qty || 0}" class="w-full px-2 py-1 bg-[#1f2937] border border-yellow-600/50 rounded font-mono text-xs ${(j.remaining_qty||0) > 0 ? 'text-yellow-400' : ''}" readonly></div>
+                                <div><label class="text-gray-500 text-xs">CMP</label><input id="tl-cmp-display" value="..." class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono text-xs" readonly></div>
+                                <div><label class="text-gray-500 text-xs">Notional P&L</label><input id="tl-notional-pnl" value="..." class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono text-xs" readonly></div>
+                            </div>
+                            <div class="grid grid-cols-3 gap-2 text-sm mt-2">
+                                <div><label class="text-gray-500 text-xs">Avg Entry</label><input value="${j.avg_entry != null && j.avg_entry > 0 ? sym + j.avg_entry.toFixed(2) : '-'}" class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono text-xs" readonly></div>
+                                <div><label class="text-gray-500 text-xs">Notional %</label><input id="tl-notional-pct" value="..." class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono text-xs" readonly></div>
+                                <div><label class="text-gray-500 text-xs">Total P&L</label><input id="tl-total-pnl" value="..." class="w-full px-2 py-1 bg-[#1f2937] border border-gray-600 rounded font-mono text-xs font-bold" readonly></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -4309,6 +4644,65 @@
                 </div>
             </div>
         `;
+    }
+
+    async function fetchNotionalPnL() {
+        // Fetch CMP and compute notional P&L for remaining position in TradeLog detail
+        if (!currentTradeLog || !currentTradeLog.ticker || !currentTradeLog.remaining_qty) return;
+        const remaining = currentTradeLog.remaining_qty || 0;
+        const avgEntry = currentTradeLog.avg_entry || 0;
+        const direction = currentTradeLog.direction || 'Long';
+        const realizedPnL = currentTradeLog.gain_loss_amount || 0;
+        const sym = '₹';
+
+        if (remaining <= 0 || avgEntry <= 0) {
+            // Trade fully closed — show zeroes
+            const cmpEl = document.getElementById('tl-cmp-display');
+            const notionalEl = document.getElementById('tl-notional-pnl');
+            const notionalPctEl = document.getElementById('tl-notional-pct');
+            const totalEl = document.getElementById('tl-total-pnl');
+            if (cmpEl) cmpEl.value = '-';
+            if (notionalEl) notionalEl.value = '-';
+            if (notionalPctEl) notionalPctEl.value = '-';
+            if (totalEl) { totalEl.value = realizedPnL ? sym + realizedPnL.toFixed(2) : '-'; totalEl.className = totalEl.className.replace(/text-\w+-400/g, '') + (realizedPnL >= 0 ? ' text-green-400' : ' text-red-400'); }
+            return;
+        }
+
+        try {
+            const resp = await fetch(`/api/v2/live-cmp/${encodeURIComponent(currentTradeLog.ticker)}`);
+            const data = await resp.json();
+            const cmp = data.price || data.cmp || 0;
+
+            const cmpEl = document.getElementById('tl-cmp-display');
+            const notionalEl = document.getElementById('tl-notional-pnl');
+            const notionalPctEl = document.getElementById('tl-notional-pct');
+            const totalEl = document.getElementById('tl-total-pnl');
+
+            if (!cmpEl) return; // Not in detail view
+
+            cmpEl.value = cmp ? sym + cmp.toFixed(2) : '-';
+
+            if (cmp && avgEntry) {
+                const notionalPnL = direction === 'Short'
+                    ? (avgEntry - cmp) * remaining
+                    : (cmp - avgEntry) * remaining;
+                const notionalPct = (notionalPnL / (avgEntry * remaining)) * 100;
+                const totalPnL = realizedPnL + notionalPnL;
+
+                notionalEl.value = sym + notionalPnL.toFixed(2);
+                notionalEl.className = notionalEl.className.replace(/bg-\w+-900\/20/g, '') + (notionalPnL >= 0 ? ' bg-green-900/20' : ' bg-red-900/20');
+
+                notionalPctEl.value = notionalPct.toFixed(2) + '%';
+                notionalPctEl.className = notionalPctEl.className.replace(/bg-\w+-900\/20/g, '') + (notionalPct >= 0 ? ' bg-green-900/20' : ' bg-red-900/20');
+
+                totalEl.value = sym + totalPnL.toFixed(2);
+                totalEl.className = totalEl.className.replace(/bg-\w+-900\/20/g, '') + (totalPnL >= 0 ? ' bg-green-900/20 text-green-400' : ' bg-red-900/20 text-red-400');
+            }
+        } catch(e) {
+            // CMP not available — show placeholder
+            const cmpEl = document.getElementById('tl-cmp-display');
+            if (cmpEl) cmpEl.value = 'N/A';
+        }
     }
 
     function newTradeLog() {
@@ -4492,6 +4886,21 @@
             toast('Trade deleted', 'success');
             await render();
         } catch(e) { toast('Error: ' + e.message, 'error'); }
+    }
+
+    async function recalculateTradeLog(journalId) {
+        try {
+            const resp = await fetch(`/api/v2/trade-journal/${journalId}/recalculate`, {method: 'POST'});
+            const res = await resp.json();
+            if (res.success) {
+                toast('Recalculated successfully!', 'success');
+                await render();
+            } else {
+                toast(res.error || 'Recalculation failed', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        }
     }
 
     // ========== TRADE SUMMARY ==========
@@ -5748,6 +6157,16 @@
                         <div><label class="text-sm text-gray-400">Target R:R</label><input type="number" id="s-rr" value="${s.target_rr}" step="0.5" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                     </div>
 
+                    <!-- Trade Limits -->
+                    <h4 class="font-semibold text-gray-400 text-sm mt-4 pt-4 border-t border-gray-700">🛡️ Trade Limits (Rule Enforcement)</h4>
+                    <p class="text-xs text-gray-500 mb-2">Orders will be hard-blocked if any limit is exceeded.</p>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div><label class="text-sm text-gray-400">Max Risk % per Day</label><input type="number" id="s-risk-per-day" value="${s.risk_per_day || 2}" step="0.5" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Max Trades per Day</label><input type="number" id="s-max-trades-day" value="${s.max_trades_per_day || 3}" step="1" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Max Risk % per Week</label><input type="number" id="s-risk-per-week" value="${s.risk_per_week || 5}" step="0.5" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Max Open Positions</label><input type="number" id="s-max-positions" value="${s.max_open_positions || 5}" step="1" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                    </div>
+
                     <button onclick="saveSettings()" class="w-full py-3 bg-blue-600 rounded-lg font-medium hover:bg-blue-700">💾 Save Trading Settings</button>
                 </div>
 
@@ -6075,7 +6494,12 @@
             max_monthly_drawdown: parseFloat(document.getElementById('s-dd').value),
             target_rr: parseFloat(document.getElementById('s-rr').value),
             currency: 'INR',  // Always INR for NSE
-            market: 'IN'  // Always IN for NSE
+            market: 'IN',  // Always IN for NSE
+            // Trade Limits
+            risk_per_day: parseFloat(document.getElementById('s-risk-per-day').value),
+            max_trades_per_day: parseInt(document.getElementById('s-max-trades-day').value),
+            risk_per_week: parseFloat(document.getElementById('s-risk-per-week').value),
+            max_open_positions: parseInt(document.getElementById('s-max-positions').value)
         };
         try {
             await api('PUT', '/account/info', data);

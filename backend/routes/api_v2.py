@@ -9,6 +9,9 @@ Symbol Format: NSE:SYMBOL (e.g., NSE:RELIANCE, NSE:TCS)
 from flask import Blueprint, request, jsonify, g
 from datetime import datetime, timedelta
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 from models.database import get_database
 from services.screener_v2 import (
@@ -781,6 +784,14 @@ def create_gtt():
     """
     data = request.get_json()
 
+    # Enforce trade rules for BUY (entry) orders only
+    if data.get('transaction_type', TRANSACTION_BUY) == TRANSACTION_BUY:
+        db = get_db()
+        user_id = get_user_id()
+        rule_check = _check_trade_rules(db, user_id)
+        if not rule_check['allowed']:
+            return jsonify({'success': False, 'error': rule_check['reason']}), 400
+
     quantity = int(data.get('quantity', 0))
     if quantity <= 0:
         return jsonify({'success': False, 'error': 'Quantity must be a positive integer'}), 400
@@ -976,6 +987,15 @@ def place_nrml_order():
     }
     """
     data = request.get_json()
+
+    # Enforce trade rules for BUY (entry) orders only
+    if data.get('transaction_type', TRANSACTION_BUY) == TRANSACTION_BUY:
+        db = get_db()
+        user_id = get_user_id()
+        rule_check = _check_trade_rules(db, user_id)
+        if not rule_check['allowed']:
+            return jsonify({'success': False, 'error': rule_check['reason']}), 400
+
     quantity = int(data.get('quantity', 0))
     if quantity <= 0:
         return jsonify({'success': False, 'error': 'Quantity must be positive'}), 400
@@ -1189,6 +1209,11 @@ def place_order_from_bill(bill_id):
     db = get_db()
     user_id = get_user_id()
 
+    # Enforce trade rules (always a BUY from trade bill)
+    rule_check = _check_trade_rules(db, user_id)
+    if not rule_check['allowed']:
+        return jsonify({'success': False, 'error': rule_check['reason']}), 400
+
     # Get trade bill
     bill = db.execute('''
         SELECT * FROM trade_bills WHERE id = ? AND user_id = ?
@@ -1331,6 +1356,9 @@ def get_trade_journals():
     result = []
     for j in journals:
         journal = dict(j)
+        # Ensure journal_date is ISO format string (YYYY-MM-DD) for HTML date inputs
+        if journal.get('journal_date') and hasattr(journal['journal_date'], 'isoformat'):
+            journal['journal_date'] = journal['journal_date'].isoformat()
         # Get entries
         entries = db.execute('''
             SELECT * FROM trade_entries WHERE journal_id = ? ORDER BY entry_datetime
@@ -1363,6 +1391,10 @@ def get_trade_journal(journal_id):
 
     result = dict(journal)
 
+    # Ensure journal_date is ISO format string (YYYY-MM-DD) for HTML date inputs
+    if result.get('journal_date') and hasattr(result['journal_date'], 'isoformat'):
+        result['journal_date'] = result['journal_date'].isoformat()
+
     # Get entries
     entries = db.execute('''
         SELECT * FROM trade_entries WHERE journal_id = ? ORDER BY entry_datetime
@@ -1374,6 +1406,13 @@ def get_trade_journal(journal_id):
         SELECT * FROM trade_exits WHERE journal_id = ? ORDER BY exit_datetime
     ''', (journal_id,)).fetchall()
     result['exits'] = [dict(e) for e in exits]
+
+    # Compute notional P&L for remaining position (unrealized, not stored)
+    remaining = result.get('remaining_qty') or 0
+    avg_entry = result.get('avg_entry') or 0
+    direction = result.get('direction', 'Long')
+    exited_qty = (result.get('total_shares') or 0) - remaining
+    result['exited_qty'] = exited_qty
 
     return jsonify(result)
 
@@ -1453,37 +1492,38 @@ def update_trade_journal(journal_id):
     if not journal:
         return jsonify({'error': 'Journal not found'}), 404
 
+    # Only update user-editable fields. NEVER overwrite calculated fields
+    # (remaining_qty, total_shares, avg_entry, avg_exit, first_entry_date,
+    #  last_exit_date, high_during_trade, low_during_trade, gain_loss_amount,
+    #  gain_loss_percent, status) — those are set by _recalculate_journal_totals()
     db.execute('''
         UPDATE trade_journal_v2 SET
-            ticker = ?, cmp = ?, direction = ?, status = ?, journal_date = ?,
-            remaining_qty = ?, order_type = ?, mental_state = ?,
+            ticker = ?, cmp = ?, direction = ?, journal_date = ?,
+            order_type = ?, mental_state = ?,
             entry_price = ?, quantity = ?, target_price = ?, stop_loss = ?,
+            initial_stop_loss = COALESCE(initial_stop_loss, ?),
             rr_ratio = ?, potential_loss = ?, trailing_stop = ?, new_target = ?,
             potential_gain = ?, target_a = ?, target_b = ?, target_c = ?,
             entry_tactic = ?, entry_reason = ?, exit_tactic = ?, exit_reason = ?,
-            first_entry_date = ?, last_exit_date = ?, total_shares = ?,
-            avg_entry = ?, avg_exit = ?, trade_grade = ?,
-            gain_loss_percent = ?, gain_loss_amount = ?,
-            high_during_trade = ?, low_during_trade = ?,
+            trade_grade = ?,
             max_drawdown = ?, percent_captured = ?,
             open_trade_comments = ?, followup_analysis = ?,
             strategy = ?, mistake = ?,
             tv_link_entry = ?, tv_link_exit = ?, tv_link_result = ?,
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
+        WHERE id = ? AND user_id = ?
     ''', (
         data.get('ticker'),
         data.get('cmp'),
         data.get('direction'),
-        data.get('status'),
         data.get('journal_date'),
-        data.get('remaining_qty'),
         data.get('order_type'),
         data.get('mental_state'),
         data.get('entry_price'),
         data.get('quantity'),
         data.get('target_price'),
         data.get('stop_loss'),
+        data.get('initial_stop_loss') or data.get('stop_loss'),
         data.get('rr_ratio'),
         data.get('potential_loss'),
         data.get('trailing_stop'),
@@ -1496,16 +1536,7 @@ def update_trade_journal(journal_id):
         data.get('entry_reason'),
         data.get('exit_tactic'),
         data.get('exit_reason'),
-        data.get('first_entry_date'),
-        data.get('last_exit_date'),
-        data.get('total_shares'),
-        data.get('avg_entry'),
-        data.get('avg_exit'),
         data.get('trade_grade'),
-        data.get('gain_loss_percent'),
-        data.get('gain_loss_amount'),
-        data.get('high_during_trade'),
-        data.get('low_during_trade'),
         data.get('max_drawdown'),
         data.get('percent_captured'),
         data.get('open_trade_comments'),
@@ -1515,9 +1546,16 @@ def update_trade_journal(journal_id):
         data.get('tv_link_entry'),
         data.get('tv_link_exit'),
         data.get('tv_link_result'),
-        journal_id
+        journal_id,
+        user_id
     ))
     db.commit()
+
+    # Recalculate totals (direction may have changed, affecting P&L sign)
+    try:
+        _recalculate_journal_totals(db, journal_id)
+    except Exception as e:
+        logger.error(f"Recalculation failed after updating journal {journal_id}: {e}")
 
     return jsonify({'success': True})
 
@@ -1586,9 +1624,13 @@ def add_trade_entry(journal_id):
     entry_id = int(row[0])
 
     # Update journal totals
-    _recalculate_journal_totals(db, journal_id)
+    try:
+        metrics = _recalculate_journal_totals(db, journal_id)
+    except Exception as e:
+        logger.error(f"Recalculation failed after adding entry {entry_id}: {e}")
+        metrics = {}
 
-    return jsonify({'success': True, 'id': entry_id}), 201
+    return jsonify({'success': True, 'id': entry_id, 'metrics': metrics}), 201
 
 
 @api_v2.route('/trade-journal/<int:journal_id>/exit', methods=['POST'])
@@ -1632,9 +1674,13 @@ def add_trade_exit(journal_id):
     exit_id = int(row[0])
 
     # Update journal totals
-    _recalculate_journal_totals(db, journal_id)
+    try:
+        metrics = _recalculate_journal_totals(db, journal_id)
+    except Exception as e:
+        logger.error(f"Recalculation failed after adding exit {exit_id}: {e}")
+        metrics = {}
 
-    return jsonify({'success': True, 'id': exit_id}), 201
+    return jsonify({'success': True, 'id': exit_id, 'metrics': metrics}), 201
 
 
 @api_v2.route('/trade-journal/entry/<int:entry_id>', methods=['DELETE'])
@@ -1658,7 +1704,10 @@ def delete_trade_entry(entry_id):
     db.commit()
 
     # Recalculate totals
-    _recalculate_journal_totals(db, journal_id)
+    try:
+        _recalculate_journal_totals(db, journal_id)
+    except Exception as e:
+        logger.error(f"Recalculation failed after deleting entry {entry_id}: {e}")
 
     return jsonify({'success': True})
 
@@ -1684,9 +1733,34 @@ def delete_trade_exit(exit_id):
     db.commit()
 
     # Recalculate totals
-    _recalculate_journal_totals(db, journal_id)
+    try:
+        _recalculate_journal_totals(db, journal_id)
+    except Exception as e:
+        logger.error(f"Recalculation failed after deleting exit {exit_id}: {e}")
 
     return jsonify({'success': True})
+
+
+@api_v2.route('/trade-journal/<int:journal_id>/recalculate', methods=['POST'])
+def recalculate_trade_journal(journal_id):
+    """Force recalculation of journal totals from entries/exits"""
+    db = get_db()
+    user_id = get_user_id()
+
+    # Verify ownership
+    journal = db.execute('''
+        SELECT id FROM trade_journal_v2 WHERE id = ? AND user_id = ?
+    ''', (journal_id, user_id)).fetchone()
+
+    if not journal:
+        return jsonify({'error': 'Journal not found'}), 404
+
+    try:
+        metrics = _recalculate_journal_totals(db, journal_id)
+        return jsonify({'success': True, 'metrics': metrics})
+    except Exception as e:
+        logger.error(f"Manual recalculation failed for journal {journal_id}: {e}", exc_info=True)
+        return jsonify({'error': f'Recalculation failed: {str(e)}'}), 500
 
 
 @api_v2.route('/trade-journal/<int:journal_id>/trailing-stop', methods=['PUT'])
@@ -1797,75 +1871,212 @@ def create_journal_from_bill(bill_id):
     return jsonify({'success': True, 'id': journal_id}), 201
 
 
+def _check_trade_rules(db, user_id):
+    """
+    Check all trade rules before allowing a new BUY order.
+    Returns {'allowed': True} or {'allowed': False, 'reason': '...'}.
+    Hard block — no override.
+    """
+    account = db.execute('''
+        SELECT trading_capital, max_open_positions, risk_per_day,
+               max_trades_per_day, risk_per_week
+        FROM account_settings WHERE user_id = ?
+    ''', (user_id,)).fetchone()
+
+    if not account:
+        return {'allowed': True}  # No settings configured = no rules
+
+    trading_capital = account['trading_capital'] or 500000
+    max_positions = account['max_open_positions'] or 5
+    risk_per_day_pct = account.get('risk_per_day') or 2.0
+    max_trades_day = account.get('max_trades_per_day') or 3
+    risk_per_week_pct = account.get('risk_per_week') or 5.0
+
+    today = datetime.now().strftime('%Y-%m-%d')
+
+    # Rule 1: Open positions < max_open_positions
+    open_count = db.execute('''
+        SELECT COUNT(*) AS cnt FROM trade_journal_v2
+        WHERE user_id = ? AND status = 'open' AND remaining_qty > 0
+    ''', (user_id,)).fetchone()
+    open_count = open_count['cnt'] if open_count else 0
+
+    if open_count >= max_positions:
+        return {
+            'allowed': False,
+            'reason': f'Maximum concurrent open positions ({max_positions}) reached. Currently have {open_count} open trades.'
+        }
+
+    # Rule 2: Trades opened today < max_trades_per_day
+    today_trades = db.execute('''
+        SELECT COUNT(*) AS cnt FROM trade_journal_v2
+        WHERE user_id = ? AND CONVERT(DATE, journal_date) = ?
+    ''', (user_id, today)).fetchone()
+    today_trades = today_trades['cnt'] if today_trades else 0
+
+    if today_trades >= max_trades_day:
+        return {
+            'allowed': False,
+            'reason': f'Maximum trades per day ({max_trades_day}) reached. Already opened {today_trades} trades today.'
+        }
+
+    # Rule 3: Total risk today < risk_per_day % of capital
+    max_daily_risk = trading_capital * risk_per_day_pct / 100
+    today_risk_row = db.execute('''
+        SELECT COALESCE(SUM(
+            CASE WHEN direction = 'Short'
+                 THEN (COALESCE(stop_loss, 0) - COALESCE(avg_entry, entry_price, 0)) * COALESCE(remaining_qty, 0)
+                 ELSE (COALESCE(avg_entry, entry_price, 0) - COALESCE(stop_loss, 0)) * COALESCE(remaining_qty, 0)
+            END
+        ), 0) AS risk
+        FROM trade_journal_v2
+        WHERE user_id = ? AND CONVERT(DATE, journal_date) = ?
+              AND status = 'open' AND COALESCE(remaining_qty, 0) > 0
+              AND COALESCE(stop_loss, 0) > 0
+    ''', (user_id, today)).fetchone()
+    today_risk = today_risk_row['risk'] if today_risk_row else 0
+
+    if today_risk >= max_daily_risk:
+        return {
+            'allowed': False,
+            'reason': f'Daily risk limit reached. Max: \u20b9{max_daily_risk:,.0f} ({risk_per_day_pct}%), Current: \u20b9{today_risk:,.0f}.'
+        }
+
+    # Rule 4: Total risk this week < risk_per_week % of capital
+    max_weekly_risk = trading_capital * risk_per_week_pct / 100
+    now = datetime.now()
+    week_start = (now - timedelta(days=now.weekday())).strftime('%Y-%m-%d')
+    week_risk_row = db.execute('''
+        SELECT COALESCE(SUM(
+            CASE WHEN direction = 'Short'
+                 THEN (COALESCE(stop_loss, 0) - COALESCE(avg_entry, entry_price, 0)) * COALESCE(remaining_qty, 0)
+                 ELSE (COALESCE(avg_entry, entry_price, 0) - COALESCE(stop_loss, 0)) * COALESCE(remaining_qty, 0)
+            END
+        ), 0) AS risk
+        FROM trade_journal_v2
+        WHERE user_id = ? AND CONVERT(DATE, journal_date) >= ?
+              AND status = 'open' AND COALESCE(remaining_qty, 0) > 0
+              AND COALESCE(stop_loss, 0) > 0
+    ''', (user_id, week_start)).fetchone()
+    week_risk = week_risk_row['risk'] if week_risk_row else 0
+
+    if week_risk >= max_weekly_risk:
+        return {
+            'allowed': False,
+            'reason': f'Weekly risk limit reached. Max: \u20b9{max_weekly_risk:,.0f} ({risk_per_week_pct}%), Current: \u20b9{week_risk:,.0f}.'
+        }
+
+    return {'allowed': True}
+
+
 def _recalculate_journal_totals(db, journal_id):
-    """Recalculate journal aggregate fields from entries/exits"""
-    # Get all entries
-    entries = db.execute('''
-        SELECT * FROM trade_entries WHERE journal_id = ? ORDER BY entry_datetime
-    ''', (journal_id,)).fetchall()
+    """Recalculate journal aggregate fields from entries/exits.
+    Returns a dict of computed metrics for callers to use."""
+    try:
+        logger.info(f"Recalculating journal {journal_id}...")
 
-    # Get all exits
-    exits = db.execute('''
-        SELECT * FROM trade_exits WHERE journal_id = ? ORDER BY exit_datetime
-    ''', (journal_id,)).fetchall()
+        # Get direction from journal for P&L calculation
+        journal = db.execute('''
+            SELECT direction FROM trade_journal_v2 WHERE id = ?
+        ''', (journal_id,)).fetchone()
+        direction = journal['direction'] if journal else 'Long'
 
-    # Calculate totals
-    total_entry_shares = sum(e['quantity'] or 0 for e in entries)
-    total_exit_shares = sum(e['quantity'] or 0 for e in exits)
-    remaining_qty = total_entry_shares - total_exit_shares
+        # Get all entries
+        entries = db.execute('''
+            SELECT * FROM trade_entries WHERE journal_id = ? ORDER BY entry_datetime
+        ''', (journal_id,)).fetchall()
 
-    # Weighted average entry
-    total_entry_value = sum(
-        (e['filled_price'] or e['order_price'] or 0) * (e['quantity'] or 0) for e in entries)
-    avg_entry = total_entry_value / total_entry_shares if total_entry_shares > 0 else 0
+        # Get all exits
+        exits = db.execute('''
+            SELECT * FROM trade_exits WHERE journal_id = ? ORDER BY exit_datetime
+        ''', (journal_id,)).fetchall()
 
-    # Weighted average exit
-    total_exit_value = sum(
-        (e['filled_price'] or e['order_price'] or 0) * (e['quantity'] or 0) for e in exits)
-    avg_exit = total_exit_value / total_exit_shares if total_exit_shares > 0 else 0
+        logger.debug(f"Journal {journal_id}: {len(entries)} entries, {len(exits)} exits, direction={direction}")
 
-    # First entry and last exit dates
-    first_entry = entries[0]['entry_datetime'] if entries else None
-    last_exit = exits[-1]['exit_datetime'] if exits else None
+        # Calculate totals
+        total_entry_shares = sum(e['quantity'] or 0 for e in entries)
+        total_exit_shares = sum(e['quantity'] or 0 for e in exits)
+        remaining_qty = total_entry_shares - total_exit_shares
 
-    # High/Low during trade
-    all_highs = [e['day_high'] for e in entries if e['day_high']
-                 ] + [e['day_high'] for e in exits if e['day_high']]
-    all_lows = [e['day_low'] for e in entries if e['day_low']] + \
-        [e['day_low'] for e in exits if e['day_low']]
-    high_during = max(all_highs) if all_highs else None
-    low_during = min(all_lows) if all_lows else None
+        # Weighted average entry
+        total_entry_value = sum(
+            (e['filled_price'] or e['order_price'] or 0) * (e['quantity'] or 0) for e in entries)
+        avg_entry = total_entry_value / total_entry_shares if total_entry_shares > 0 else 0
 
-    # Gain/Loss calculation (for closed portion)
-    gain_loss_amount = 0
-    if total_exit_shares > 0 and avg_exit > 0 and avg_entry > 0:
-        gain_loss_amount = (avg_exit - avg_entry) * total_exit_shares
-        # Subtract commissions
-        total_commission = sum((e['commission'] or 0)
-                               for e in entries) + sum((e['commission'] or 0) for e in exits)
-        gain_loss_amount -= total_commission
+        # Weighted average exit
+        total_exit_value = sum(
+            (e['filled_price'] or e['order_price'] or 0) * (e['quantity'] or 0) for e in exits)
+        avg_exit = total_exit_value / total_exit_shares if total_exit_shares > 0 else 0
 
-    gain_loss_percent = (gain_loss_amount / (avg_entry * total_exit_shares)
-                         * 100) if (avg_entry and total_exit_shares) else 0
+        # First entry and last exit dates
+        first_entry = entries[0]['entry_datetime'] if entries else None
+        last_exit = exits[-1]['exit_datetime'] if exits else None
 
-    # Status
-    status = 'closed' if remaining_qty == 0 and total_entry_shares > 0 else 'open'
+        # High/Low during trade
+        all_highs = [e['day_high'] for e in entries if e['day_high']
+                     ] + [e['day_high'] for e in exits if e['day_high']]
+        all_lows = [e['day_low'] for e in entries if e['day_low']] + \
+            [e['day_low'] for e in exits if e['day_low']]
+        high_during = max(all_highs) if all_highs else None
+        low_during = min(all_lows) if all_lows else None
 
-    # Update journal
-    db.execute('''
-        UPDATE trade_journal_v2 SET
-            remaining_qty = ?, total_shares = ?, avg_entry = ?, avg_exit = ?,
-            first_entry_date = ?, last_exit_date = ?,
-            high_during_trade = ?, low_during_trade = ?,
-            gain_loss_amount = ?, gain_loss_percent = ?,
-            status = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-    ''', (
-        remaining_qty, total_entry_shares, avg_entry, avg_exit,
-        first_entry, last_exit, high_during, low_during,
-        gain_loss_amount, gain_loss_percent, status, journal_id
-    ))
-    db.commit()
+        # Gain/Loss calculation (realized P&L for exited/closed portion only)
+        # Direction-aware: Long = (exit - entry), Short = (entry - exit)
+        gain_loss_amount = 0
+        if total_exit_shares > 0 and avg_exit > 0 and avg_entry > 0:
+            if direction == 'Short':
+                gain_loss_amount = (avg_entry - avg_exit) * total_exit_shares
+            else:
+                gain_loss_amount = (avg_exit - avg_entry) * total_exit_shares
+            # Subtract commissions
+            total_commission = sum((e['commission'] or 0)
+                                   for e in entries) + sum((e['commission'] or 0) for e in exits)
+            gain_loss_amount -= total_commission
+
+        gain_loss_percent = (gain_loss_amount / (avg_entry * total_exit_shares)
+                             * 100) if (avg_entry and total_exit_shares) else 0
+
+        # Status
+        status = 'closed' if remaining_qty == 0 and total_entry_shares > 0 else 'open'
+
+        logger.info(f"Journal {journal_id} computed: total_shares={total_entry_shares}, "
+                     f"remaining={remaining_qty}, avg_entry={avg_entry:.2f}, avg_exit={avg_exit:.2f}, "
+                     f"gain_loss={gain_loss_amount:.2f}, gain_loss_pct={gain_loss_percent:.2f}, status={status}")
+
+        # Update journal (only calculated fields — never overwrite user-editable fields)
+        db.execute('''
+            UPDATE trade_journal_v2 SET
+                remaining_qty = ?, total_shares = ?, avg_entry = ?, avg_exit = ?,
+                first_entry_date = ?, last_exit_date = ?,
+                high_during_trade = ?, low_during_trade = ?,
+                gain_loss_amount = ?, gain_loss_percent = ?,
+                status = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        ''', (
+            remaining_qty, total_entry_shares, avg_entry, avg_exit,
+            first_entry, last_exit, high_during, low_during,
+            gain_loss_amount, gain_loss_percent, status, journal_id
+        ))
+        db.commit()
+
+        logger.info(f"Journal {journal_id} recalculated and committed successfully")
+
+        return {
+            'remaining_qty': remaining_qty,
+            'total_shares': total_entry_shares,
+            'avg_entry': avg_entry,
+            'avg_exit': avg_exit,
+            'first_entry_date': str(first_entry) if first_entry else None,
+            'last_exit_date': str(last_exit) if last_exit else None,
+            'high_during_trade': high_during,
+            'low_during_trade': low_during,
+            'gain_loss_amount': gain_loss_amount,
+            'gain_loss_percent': gain_loss_percent,
+            'status': status
+        }
+    except Exception as e:
+        logger.error(f"Failed to recalculate journal {journal_id}: {e}", exc_info=True)
+        raise
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3032,6 +3243,61 @@ def get_live_cmp(symbol):
         })
 
     return jsonify({'error': f'No data for {symbol}'}), 404
+
+
+@api_v2.route('/live-cmp/batch', methods=['GET'])
+def get_live_cmp_batch():
+    """
+    Get live CMP for multiple symbols at once.
+    Query: ?symbols=RELIANCE,TCS,INFY
+    Kite LTP API supports batch queries natively.
+    """
+    symbols_param = request.args.get('symbols', '')
+    if not symbols_param:
+        return jsonify({'error': 'symbols parameter required'}), 400
+
+    symbols = [s.strip() for s in symbols_param.split(',') if s.strip()]
+    if not symbols:
+        return jsonify({'error': 'No valid symbols provided'}), 400
+
+    full_symbols = [s if ':' in s else f'NSE:{s}' for s in symbols]
+    result = {}
+
+    # Try Kite first for live prices (batch)
+    try:
+        client = get_client()
+        if client and client.kite and client.access_token:
+            client._rate_limit()
+            ltp_data = client.kite.ltp(full_symbols)
+            for full_sym in full_symbols:
+                bare = full_sym.replace('NSE:', '')
+                if full_sym in ltp_data:
+                    result[bare] = {
+                        'cmp': ltp_data[full_sym]['last_price'],
+                        'source': 'live'
+                    }
+    except Exception as e:
+        logger.debug(f"Batch CMP live error: {e}")
+
+    # Fallback for any missing symbols — use cached close
+    db = get_db()
+    for full_sym in full_symbols:
+        bare = full_sym.replace('NSE:', '')
+        if bare not in result:
+            row = db.execute('''
+                SELECT TOP 1 [close], date FROM stock_historical_data
+                WHERE symbol = ? ORDER BY date DESC
+            ''', (full_sym,)).fetchone()
+            if row:
+                result[bare] = {
+                    'cmp': row['close'],
+                    'source': 'cache'
+                }
+
+    return jsonify({
+        'prices': result,
+        'timestamp': datetime.now().isoformat()
+    })
 
 
 @api_v2.route('/stock-atr/<symbol>', methods=['GET'])

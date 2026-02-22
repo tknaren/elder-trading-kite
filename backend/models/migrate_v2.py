@@ -58,6 +58,10 @@ def migrate_database(connection_string: str = None):
         ('trade_journal_v2', 'tv_link_entry', 'NVARCHAR(500)'),
         ('trade_journal_v2', 'tv_link_exit', 'NVARCHAR(500)'),
         ('trade_journal_v2', 'tv_link_result', 'NVARCHAR(500)'),
+        # Trade Settings / Risk Management
+        ('account_settings', 'risk_per_day', 'FLOAT DEFAULT 2.0'),
+        ('account_settings', 'max_trades_per_day', 'INT DEFAULT 3'),
+        ('account_settings', 'risk_per_week', 'FLOAT DEFAULT 5.0'),
     ]
 
     for table, column, sql_type in column_migrations:
