@@ -810,9 +810,9 @@ def create_trade_from_bill(trade_bill: Dict) -> Dict:
             'symbol': symbol,
             'quantity': quantity,
             'stop_loss_trigger': stop_loss,
-            'stop_loss_price': stop_loss * 0.99,  # Slightly below trigger
+            'stop_loss_price': stop_loss,
             'target_trigger': target,
-            'target_price': target * 0.99  # Slightly below target for better fill
+            'target_price': target
         },
         'trade_bill_id': trade_bill.get('id'),
         'symbol': symbol

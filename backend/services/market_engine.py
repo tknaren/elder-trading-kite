@@ -371,25 +371,46 @@ def _execute_alert_trade(app, user_id: int, trigger: Dict, ltp_map: Dict) -> Dic
 
             conn.commit()
 
-            # Place GTT Buy Order
+            # Place NRML Limit Buy Order (CNC delivery)
             try:
-                from services.kite_orders import place_gtt_order
-                gtt_result = place_gtt_order(
-                    symbol=symbol,
+                from services.kite_orders import place_order
+                nrml_result = place_order(
+                    symbol=symbol.replace('NSE:', ''),
                     transaction_type='BUY',
                     quantity=qty,
-                    trigger_price=ltp,
-                    limit_price=round(ltp * 1.005, 2),  # 0.5% above trigger
-                    trade_bill_id=trade_bill_id
+                    price=ltp,
+                    order_type='LIMIT',
+                    product='CNC'
                 )
-                if gtt_result and gtt_result.get('trigger_id'):
-                    result['gtt_id'] = str(gtt_result['trigger_id'])
-                    print(f"  GTT Buy placed: {result['gtt_id']}")
+                if nrml_result and nrml_result.get('order_id'):
+                    result['order_id'] = str(nrml_result['order_id'])
+                    print(f"  NRML Buy placed: {result['order_id']}")
                 else:
-                    result['gtt_error'] = 'GTT placement returned no trigger_id'
+                    result['order_error'] = 'NRML order returned no order_id'
             except Exception as e:
-                result['gtt_error'] = str(e)
-                print(f"  GTT placement failed: {e}")
+                result['order_error'] = str(e)
+                print(f"  NRML order failed: {e}")
+
+            # Place GTT OCO Sell (SL + Target) in parallel
+            if sl and target:
+                try:
+                    from services.kite_orders import place_gtt_oco
+                    oco_result = place_gtt_oco(
+                        symbol=symbol,
+                        quantity=qty,
+                        stop_loss_trigger=sl,
+                        stop_loss_price=sl,
+                        target_trigger=target,
+                        target_price=target
+                    )
+                    if oco_result and oco_result.get('trigger_id'):
+                        result['gtt_oco_id'] = str(oco_result['trigger_id'])
+                        print(f"  GTT OCO placed: {result['gtt_oco_id']}")
+                    else:
+                        result['gtt_oco_error'] = 'OCO placement returned no trigger_id'
+                except Exception as e:
+                    result['gtt_oco_error'] = str(e)
+                    print(f"  GTT OCO placement failed: {e}")
 
         except Exception as e:
             conn.rollback()

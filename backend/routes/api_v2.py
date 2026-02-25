@@ -103,7 +103,7 @@ def load_market_data():
         force: bool - Force refresh even if loaded today
         limit: int - Max instruments to load (default 500)
     """
-    from services.screener_v2 import calculate_all_indicators, analyze_weekly_trend, NIFTY_100
+    from services.screener_v2 import calculate_all_indicators, analyze_weekly_trend
     from services.kite_client import get_client, clear_session_cache
 
     client = get_client()
@@ -187,22 +187,11 @@ def load_market_data():
                 'error': f'Failed to load instruments from Kite: {str(e)}'
             }), 500
 
-    # Step 2: Build NSE 500 symbol list
-    # Priority order: NIFTY 100 first, then remaining instruments up to 500
-    max_symbols = int(req_data.get('limit', 500))
-    all_cached = set(r['tradingsymbol'] for r in cached_instruments)
+    # Step 2: Build Nifty 500 symbol list from official constituents
+    from services.gss_screener import NIFTY_500
 
-    # Start with NIFTY 100 (known liquid stocks)
-    nifty_100_bare = [s.replace('NSE:', '') for s in NIFTY_100]
-    priority_symbols = [s for s in nifty_100_bare if s in all_cached]
-
-    # Add remaining cached instruments up to the limit
-    remaining = sorted(all_cached - set(priority_symbols))
-    symbol_list_bare = priority_symbols + remaining[:max(0, max_symbols - len(priority_symbols))]
-
-    # Build NSE:SYMBOL format
-    symbol_list = [f"NSE:{s}" for s in symbol_list_bare]
-    print(f"📊 Loading market data for {len(symbol_list)} NSE instruments (limit: {max_symbols})")
+    symbol_list = list(NIFTY_500)  # All official Nifty 500 symbols in NSE:SYMBOL format
+    print(f"📊 Loading market data for {len(symbol_list)} Nifty 500 instruments")
 
     symbols_loaded = 0
     symbols_failed = []
@@ -1583,6 +1572,34 @@ def delete_trade_journal(journal_id):
     return jsonify({'success': True})
 
 
+def _auto_fill_day_range(db, ticker, datetime_str, day_high, day_low):
+    """Auto-fill day_high/day_low from OHLCV data if not provided"""
+    if (day_high and float(day_high) > 0) and (day_low and float(day_low) > 0):
+        return day_high, day_low
+    if not ticker or not datetime_str:
+        return day_high, day_low
+    try:
+        symbol = ticker.replace('NSE:', '').strip().upper()
+        date_str = str(datetime_str).split('T')[0]
+        row = db.execute('''
+            SELECT TOP 1 high, low FROM intraday_ohlcv
+            WHERE symbol = ? AND timeframe = 'day' AND CAST(candle_time AS DATE) = ?
+            ORDER BY candle_time DESC
+        ''', (symbol, date_str)).fetchone()
+        if row and row['high']:
+            return row['high'], row['low']
+        # Fallback: aggregate from 15min candles
+        agg = db.execute('''
+            SELECT MAX(high) AS high, MIN(low) AS low FROM intraday_ohlcv
+            WHERE symbol = ? AND timeframe = '15min' AND CAST(candle_time AS DATE) = ?
+        ''', (symbol, date_str)).fetchone()
+        if agg and agg['high']:
+            return agg['high'], agg['low']
+    except Exception as e:
+        logger.debug(f"Auto-fill day range failed: {e}")
+    return day_high, day_low
+
+
 @api_v2.route('/trade-journal/<int:journal_id>/entry', methods=['POST'])
 def add_trade_entry(journal_id):
     """Add an entry record to a journal"""
@@ -1592,11 +1609,17 @@ def add_trade_entry(journal_id):
 
     # Verify ownership
     journal = db.execute('''
-        SELECT id FROM trade_journal_v2 WHERE id = ? AND user_id = ?
+        SELECT id, ticker FROM trade_journal_v2 WHERE id = ? AND user_id = ?
     ''', (journal_id, user_id)).fetchone()
 
     if not journal:
         return jsonify({'error': 'Journal not found'}), 404
+
+    # Auto-fill day_high/day_low from OHLCV if not provided
+    day_high, day_low = _auto_fill_day_range(
+        db, journal['ticker'], data.get('entry_datetime'),
+        data.get('day_high'), data.get('day_low')
+    )
 
     row = db.execute('''
         INSERT INTO trade_entries (
@@ -1614,8 +1637,8 @@ def add_trade_entry(journal_id):
         data.get('slippage'),
         data.get('commission'),
         data.get('position_size'),
-        data.get('day_high'),
-        data.get('day_low'),
+        day_high,
+        day_low,
         data.get('grade'),
         data.get('notes')
     )).fetchone()
@@ -1642,11 +1665,17 @@ def add_trade_exit(journal_id):
 
     # Verify ownership
     journal = db.execute('''
-        SELECT id FROM trade_journal_v2 WHERE id = ? AND user_id = ?
+        SELECT id, ticker FROM trade_journal_v2 WHERE id = ? AND user_id = ?
     ''', (journal_id, user_id)).fetchone()
 
     if not journal:
         return jsonify({'error': 'Journal not found'}), 404
+
+    # Auto-fill day_high/day_low from OHLCV if not provided
+    exit_day_high, exit_day_low = _auto_fill_day_range(
+        db, journal['ticker'], data.get('exit_datetime'),
+        data.get('day_high'), data.get('day_low')
+    )
 
     row = db.execute('''
         INSERT INTO trade_exits (
@@ -1664,8 +1693,8 @@ def add_trade_exit(journal_id):
         data.get('slippage'),
         data.get('commission'),
         data.get('position_size'),
-        data.get('day_high'),
-        data.get('day_low'),
+        exit_day_high,
+        exit_day_low,
         data.get('grade'),
         data.get('notes')
     )).fetchone()
@@ -1873,13 +1902,18 @@ def create_journal_from_bill(bill_id):
 
 def _check_trade_rules(db, user_id):
     """
-    Check all trade rules before allowing a new BUY order.
+    Check trade rules before allowing a new BUY order.
     Returns {'allowed': True} or {'allowed': False, 'reason': '...'}.
-    Hard block — no override.
+
+    Rules:
+    1. Open positions < max_open_positions
+    2. Total risk across ALL open positions < max_monthly_drawdown % of capital
+       Risk = (AvgEntry - EffectiveSL) x RemainingQty  (direction-aware)
+       EffectiveSL = COALESCE(trailing_stop, stop_loss)
+       When trailing_stop > avg_entry (Long), risk goes negative (profit locked)
     """
     account = db.execute('''
-        SELECT trading_capital, max_open_positions, risk_per_day,
-               max_trades_per_day, risk_per_week
+        SELECT trading_capital, max_open_positions, max_monthly_drawdown
         FROM account_settings WHERE user_id = ?
     ''', (user_id,)).fetchone()
 
@@ -1888,11 +1922,7 @@ def _check_trade_rules(db, user_id):
 
     trading_capital = account['trading_capital'] or 500000
     max_positions = account['max_open_positions'] or 5
-    risk_per_day_pct = account.get('risk_per_day') or 2.0
-    max_trades_day = account.get('max_trades_per_day') or 3
-    risk_per_week_pct = account.get('risk_per_week') or 5.0
-
-    today = datetime.now().strftime('%Y-%m-%d')
+    max_total_risk_pct = account.get('max_monthly_drawdown') or 6.0
 
     # Rule 1: Open positions < max_open_positions
     open_count = db.execute('''
@@ -1907,63 +1937,27 @@ def _check_trade_rules(db, user_id):
             'reason': f'Maximum concurrent open positions ({max_positions}) reached. Currently have {open_count} open trades.'
         }
 
-    # Rule 2: Trades opened today < max_trades_per_day
-    today_trades = db.execute('''
-        SELECT COUNT(*) AS cnt FROM trade_journal_v2
-        WHERE user_id = ? AND CONVERT(DATE, journal_date) = ?
-    ''', (user_id, today)).fetchone()
-    today_trades = today_trades['cnt'] if today_trades else 0
-
-    if today_trades >= max_trades_day:
-        return {
-            'allowed': False,
-            'reason': f'Maximum trades per day ({max_trades_day}) reached. Already opened {today_trades} trades today.'
-        }
-
-    # Rule 3: Total risk today < risk_per_day % of capital
-    max_daily_risk = trading_capital * risk_per_day_pct / 100
-    today_risk_row = db.execute('''
+    # Rule 2: Total risk across ALL open positions < max_monthly_drawdown % of capital
+    max_total_risk = trading_capital * max_total_risk_pct / 100
+    total_risk_row = db.execute('''
         SELECT COALESCE(SUM(
             CASE WHEN direction = 'Short'
-                 THEN (COALESCE(stop_loss, 0) - COALESCE(avg_entry, entry_price, 0)) * COALESCE(remaining_qty, 0)
-                 ELSE (COALESCE(avg_entry, entry_price, 0) - COALESCE(stop_loss, 0)) * COALESCE(remaining_qty, 0)
+                 THEN (COALESCE(trailing_stop, stop_loss, 0) - COALESCE(avg_entry, entry_price, 0)) * COALESCE(remaining_qty, 0)
+                 ELSE (COALESCE(avg_entry, entry_price, 0) - COALESCE(trailing_stop, stop_loss, 0)) * COALESCE(remaining_qty, 0)
             END
         ), 0) AS risk
         FROM trade_journal_v2
-        WHERE user_id = ? AND CONVERT(DATE, journal_date) = ?
-              AND status = 'open' AND COALESCE(remaining_qty, 0) > 0
+        WHERE user_id = ? AND status = 'open'
+              AND COALESCE(remaining_qty, 0) > 0
               AND COALESCE(stop_loss, 0) > 0
-    ''', (user_id, today)).fetchone()
-    today_risk = today_risk_row['risk'] if today_risk_row else 0
+    ''', (user_id,)).fetchone()
+    total_risk = total_risk_row['risk'] if total_risk_row else 0
 
-    if today_risk >= max_daily_risk:
+    if total_risk >= max_total_risk:
+        risk_pct = (total_risk / trading_capital * 100) if trading_capital > 0 else 0
         return {
             'allowed': False,
-            'reason': f'Daily risk limit reached. Max: \u20b9{max_daily_risk:,.0f} ({risk_per_day_pct}%), Current: \u20b9{today_risk:,.0f}.'
-        }
-
-    # Rule 4: Total risk this week < risk_per_week % of capital
-    max_weekly_risk = trading_capital * risk_per_week_pct / 100
-    now = datetime.now()
-    week_start = (now - timedelta(days=now.weekday())).strftime('%Y-%m-%d')
-    week_risk_row = db.execute('''
-        SELECT COALESCE(SUM(
-            CASE WHEN direction = 'Short'
-                 THEN (COALESCE(stop_loss, 0) - COALESCE(avg_entry, entry_price, 0)) * COALESCE(remaining_qty, 0)
-                 ELSE (COALESCE(avg_entry, entry_price, 0) - COALESCE(stop_loss, 0)) * COALESCE(remaining_qty, 0)
-            END
-        ), 0) AS risk
-        FROM trade_journal_v2
-        WHERE user_id = ? AND CONVERT(DATE, journal_date) >= ?
-              AND status = 'open' AND COALESCE(remaining_qty, 0) > 0
-              AND COALESCE(stop_loss, 0) > 0
-    ''', (user_id, week_start)).fetchone()
-    week_risk = week_risk_row['risk'] if week_risk_row else 0
-
-    if week_risk >= max_weekly_risk:
-        return {
-            'allowed': False,
-            'reason': f'Weekly risk limit reached. Max: \u20b9{max_weekly_risk:,.0f} ({risk_per_week_pct}%), Current: \u20b9{week_risk:,.0f}.'
+            'reason': f'Total risk limit reached. Max: \u20b9{max_total_risk:,.0f} ({max_total_risk_pct}% of capital), Current: \u20b9{total_risk:,.0f} ({risk_pct:.2f}%).'
         }
 
     return {'allowed': True}
@@ -3637,6 +3631,35 @@ def get_trading_watchlist():
                 ORDER BY candle_time DESC
             ''', (sym,)).fetchone()
             row['ltp'] = latest['close'] if latest else None
+
+        # Detect daily candle patterns (last 5 candles needed for 3-candle patterns)
+        try:
+            candles = db.execute('''
+                SELECT TOP 5 [open], high, low, [close], candle_time
+                FROM intraday_ohlcv
+                WHERE symbol = ? AND timeframe = 'day'
+                ORDER BY candle_time DESC
+            ''', (sym,)).fetchall()
+            if candles and len(candles) >= 2:
+                import pandas as pd
+                from services.candlestick_patterns import scan_patterns
+                cdf = pd.DataFrame([dict(c) for c in reversed(candles)])
+                cdf.columns = [c.lower() for c in cdf.columns]
+                patterns = scan_patterns(cdf)
+                # Get the most recent pattern (last candle)
+                if patterns:
+                    latest = patterns[-1]
+                    row['day_pattern'] = latest.get('pattern', '')
+                    row['day_pattern_type'] = latest.get('type', '')  # bullish/bearish
+                else:
+                    row['day_pattern'] = None
+                    row['day_pattern_type'] = None
+            else:
+                row['day_pattern'] = None
+                row['day_pattern_type'] = None
+        except Exception as e:
+            row['day_pattern'] = None
+            row['day_pattern_type'] = None
 
         # Count active alerts for this symbol
         alert_count = db.execute('''

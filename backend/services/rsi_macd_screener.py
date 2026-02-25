@@ -13,6 +13,7 @@ Filter Conditions (All must be TRUE):
 Shows all indicator values in the results grid.
 """
 
+from services.screener_v2 import NIFTY_100
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -70,12 +71,20 @@ def calculate_stochastic(high: pd.Series, low: pd.Series, close: pd.Series,
 
 
 def calculate_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
-    """Calculate Average True Range"""
+    """Calculate ATR using Wilder's RMA — matches TradingView ATR(period)"""
     tr1 = high - low
     tr2 = abs(high - close.shift(1))
     tr3 = abs(low - close.shift(1))
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    return tr.rolling(window=period).mean()
+    result = np.full(len(tr), np.nan)
+    tv = tr.values
+    if len(tv) < period:
+        return pd.Series(result, index=tr.index)
+    result[period - 1] = float(np.mean(tv[:period]))
+    alpha = 1.0 / period
+    for i in range(period, len(tv)):
+        result[i] = result[i - 1] * (1.0 - alpha) + tv[i] * alpha
+    return pd.Series(result, index=tr.index)
 
 
 def calculate_keltner_channel(high: pd.Series, low: pd.Series, close: pd.Series,
@@ -418,7 +427,6 @@ def run_rsi_macd_screener(
 
 
 # Stock list - NIFTY 100 (NSE India)
-from services.screener_v2 import NIFTY_100
 
 
 def get_stock_list(market: str = 'IN'):
@@ -429,5 +437,6 @@ def get_stock_list(market: str = 'IN'):
         Tuple of (symbols: List[str], stock_info_map: Dict[str, Dict])
     """
     # Return NIFTY 100 symbols with empty info map (company details fetched from Kite)
-    stock_info_map = {symbol: {'Name': '', 'Market Cap': '', 'Sector': '', 'Industry': ''} for symbol in NIFTY_100}
+    stock_info_map = {symbol: {'Name': '', 'Market Cap': '',
+                               'Sector': '', 'Industry': ''} for symbol in NIFTY_100}
     return NIFTY_100, stock_info_map

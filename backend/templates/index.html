@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Elder Trading System v2</title>
+    <title>Kite Trading System v1.0</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
@@ -21,8 +21,8 @@
         <!-- Sidebar -->
         <aside class="w-56 bg-[#111827] border-r border-gray-700 h-screen fixed flex flex-col">
             <div class="p-4 border-b border-gray-700 flex-shrink-0">
-                <h1 class="font-bold text-lg flex items-center gap-2">📈 Elder Trading</h1>
-                <p class="text-xs text-gray-500">Triple Screen v2.0</p>
+                <h1 class="font-bold text-lg flex items-center gap-2">📈 Kite Trading</h1>
+                <p class="text-xs text-gray-500">System v1.0</p>
             </div>
             <nav class="p-2 overflow-y-auto flex-1" id="nav"></nav>
         </aside>
@@ -422,9 +422,8 @@
                                     <tr class="border-b border-gray-700">
                                         <th class="px-3 py-2 text-left text-gray-400" rowspan="2">Symbol</th>
                                         <th class="px-3 py-2 text-right text-gray-400" rowspan="2">LTP</th>
-                                        <th class="px-2 py-1 text-center text-blue-400 border-l border-gray-600" colspan="4">Daily</th>
+                                        <th class="px-2 py-1 text-center text-blue-400 border-l border-gray-600" colspan="5">Daily</th>
                                         <th class="px-2 py-1 text-center text-purple-400 border-l border-gray-600" colspan="4">75 Min</th>
-                                        <th class="px-2 py-1 text-center text-cyan-400 border-l border-gray-600" colspan="4">15 Min</th>
                                         <th class="px-2 py-1 text-center text-gray-400 border-l border-gray-600" rowspan="2">Alerts</th>
                                         <th class="px-2 py-1 text-center text-gray-400" rowspan="2">Actions</th>
                                     </tr>
@@ -433,14 +432,11 @@
                                         <th class="px-2 py-1 text-center text-blue-300">RSI</th>
                                         <th class="px-2 py-1 text-center text-blue-300">ATR</th>
                                         <th class="px-2 py-1 text-center text-blue-300">KC Pos</th>
+                                        <th class="px-2 py-1 text-center text-blue-300">Pattern</th>
                                         <th class="px-2 py-1 text-center text-purple-300 border-l border-gray-600">Impulse</th>
                                         <th class="px-2 py-1 text-center text-purple-300">RSI</th>
                                         <th class="px-2 py-1 text-center text-purple-300">ATR</th>
                                         <th class="px-2 py-1 text-center text-purple-300">KC Pos</th>
-                                        <th class="px-2 py-1 text-center text-cyan-300 border-l border-gray-600">Impulse</th>
-                                        <th class="px-2 py-1 text-center text-cyan-300">RSI</th>
-                                        <th class="px-2 py-1 text-center text-cyan-300">ATR</th>
-                                        <th class="px-2 py-1 text-center text-cyan-300">KC Pos</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -451,8 +447,8 @@
                                             <td class="px-3 py-2 font-mono font-semibold text-white">${sym}</td>
                                             <td class="px-3 py-2 text-right font-mono">${r.ltp ? r.ltp.toFixed(2) : '—'}</td>
                                             ${renderTfCells(r, 'day')}
+                                            <td class="px-2 py-2 text-center text-xs">${r.day_pattern ? `<span class="px-1.5 py-0.5 rounded ${r.day_pattern_type==='bullish'?'bg-green-500/20 text-green-400':'bg-red-500/20 text-red-400'}">${r.day_pattern}</span>` : '<span class="text-gray-600">—</span>'}</td>
                                             ${renderTfCells(r, '75min')}
-                                            ${renderTfCells(r, '15min')}
                                             <td class="px-2 py-2 text-center border-l border-gray-600">
                                                 ${r.active_alerts > 0 ? `<span class="text-yellow-400 font-semibold">${r.active_alerts}</span>` : '<span class="text-gray-600">0</span>'}
                                             </td>
@@ -679,6 +675,7 @@
                             <thead>
                                 <tr class="border-b border-gray-700">
                                     <th class="px-3 py-2 text-left text-gray-400">Symbol</th>
+                                    <th class="px-3 py-2 text-right text-gray-400">CMP</th>
                                     <th class="px-3 py-2 text-left text-gray-400">Alert Name</th>
                                     <th class="px-3 py-2 text-left text-gray-400">Dir</th>
                                     <th class="px-3 py-2 text-left text-gray-400">Condition</th>
@@ -698,6 +695,7 @@
                                     return `
                                     <tr class="border-b border-gray-700/50 hover:bg-gray-700/30">
                                         <td class="px-3 py-2 font-mono font-semibold">${sym}</td>
+                                        <td class="px-3 py-2 text-right font-mono text-xs" id="alert-cmp-${a.id}"><span class="text-gray-500">…</span></td>
                                         <td class="px-3 py-2 text-gray-300">${a.alert_name || '—'}</td>
                                         <td class="px-3 py-2"><span class="${a.direction==='LONG'?'text-green-400':'text-red-400'}">${a.direction}</span></td>
                                         <td class="px-3 py-2 font-mono text-xs">${a.condition_operator || '<='} ${a.condition_value || '—'}</td>
@@ -731,7 +729,34 @@
             setTimeout(() => showCreateAlertForm(prefill), 100);
         }
 
+        // Start alert CMP refresh polling (every 30s)
+        const activeAlerts = (await fetch('/api/v2/alerts').then(r=>r.json()).catch(()=>({}))).alerts || [];
+        const alertSymbols = [...new Set(activeAlerts.filter(a=>a.status==='active').map(a=>a.symbol.replace('NSE:','')))];
+        if (alertSymbols.length > 0) {
+            setTimeout(() => refreshAlertCmp(activeAlerts, alertSymbols), 500);
+        }
+
         return alertsHtml;
+    }
+
+    async function refreshAlertCmp(alerts, symbols) {
+        if (currentTab !== 'alerts') return; // Stop if user navigated away
+        try {
+            const resp = await fetch(`/api/v2/live-cmp/batch?symbols=${symbols.join(',')}`);
+            const data = await resp.json();
+            const prices = data.prices || {};
+            alerts.forEach(a => {
+                const sym = a.symbol.replace('NSE:', '');
+                const el = document.getElementById(`alert-cmp-${a.id}`);
+                if (!el) return;
+                const priceData = prices[sym] || prices[a.symbol];
+                if (priceData && priceData.cmp) {
+                    el.innerHTML = `<span class="text-white font-mono">₹${priceData.cmp.toFixed(2)}</span>`;
+                }
+            });
+        } catch(e) { /* silent */ }
+        // Schedule next refresh in 30 seconds
+        setTimeout(() => refreshAlertCmp(alerts, symbols), 30000);
     }
 
     function showCreateAlertForm(symbol) {
@@ -1197,7 +1222,7 @@
         return `
             <div class="space-y-6">
                 <div class="flex items-center justify-between">
-                    <div><h2 class="text-xl font-bold">Triple Screen Scanner</h2><p class="text-gray-500 text-sm">Weekly trend + Daily entry timing</p></div>
+                    <div><h2 class="text-xl font-bold">Kite Scanner</h2><p class="text-gray-500 text-sm">Weekly trend + Daily entry timing</p></div>
                     <div class="flex gap-2">
                         <button onclick="showIndicatorFilterModal()" class="px-3 py-2 bg-purple-600/30 border border-purple-500 rounded-lg hover:bg-purple-600/50" title="Configure Indicators" ${isLoading ? 'disabled' : ''}>⚙️ Filters</button>
                         <button id="run-scan-btn" onclick="runWeekly()" class="px-4 py-2 bg-blue-600 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed" ${isLoading ? 'disabled' : ''}>🔍 Run Weekly Scan</button>
@@ -2023,7 +2048,7 @@
     function criteriaView() {
         return `
             <div class="space-y-6">
-                <h2 class="text-xl font-bold">📊 Grading Criteria - Elder Triple Screen</h2>
+                <h2 class="text-xl font-bold">📊 Grading Criteria - Kite Trading System</h2>
                 
                 <div class="bg-[#111827] rounded-xl p-6 border border-gray-700">
                     <h3 class="font-bold text-lg text-blue-400 mb-4">Screen 1: Weekly Trend (Strategic Direction)</h3>
@@ -2621,7 +2646,7 @@
                     <div class="grid grid-cols-4 gap-4">
                         <div><label class="text-sm text-gray-400">Stop Loss (${sym})</label><input id="tb-sl" type="number" value="${tb.stop_loss||''}" step="0.05" placeholder="2400.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                         <div><label class="text-sm text-gray-400">Target (${sym})</label><input id="tb-target" type="number" value="${tb.target_price||''}" step="0.05" placeholder="2600.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
-                        <div><label class="text-sm text-gray-400">Quantity (even, whole)</label><input id="tb-qty" type="number" value="${tb.quantity||''}" step="2" min="2" placeholder="auto" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Quantity (whole)</label><input id="tb-qty" type="number" value="${tb.quantity||''}" step="1" min="1" placeholder="auto" oninput="autoCalculateTradeBill()" onchange="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                         <div><label class="text-sm text-gray-400">ATR (14)</label><input id="tb-atr" type="number" value="${tb.atr||''}" step="0.01" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
                     </div>
 
@@ -2636,6 +2661,7 @@
                 <!-- Trade Risk Section -->
                 <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
                     <h3 class="font-bold text-lg text-red-400">📉 Trade Risk</h3>
+                    <div id="tb-risk-budget-warn" class="text-xs text-yellow-400"></div>
                     <div class="grid grid-cols-3 gap-4">
                         <div><label class="text-sm text-gray-400">Max Risk (${sym})</label><input id="tb-maxrisk" type="text" value="${tb.max_risk||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
                         <div><label class="text-sm text-gray-400">Risk % <span class="text-xs text-gray-500">(from settings)</span></label><input id="tb-rp" type="number" value="${tb.risk_percent||''}" step="0.01" oninput="recalcFromRiskPercent()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
@@ -2699,8 +2725,8 @@
                         <div class="space-y-1">
                             <p><span class="text-red-400">Max Risk</span> = Capital × (Risk % ÷ 100)</p>
                             <p><span class="text-blue-400">Risk per Share</span> = Entry − Stop Loss</p>
-                            <p><span class="text-blue-400">Max Qty</span> = floor(Max Risk ÷ Risk per Share ÷ 2) × 2 (even)</p>
-                            <p><span class="text-blue-400">Position Size</span> = Quantity × Entry</p>
+                            <p><span class="text-blue-400">Max Qty</span> = floor(Remaining Risk ÷ Risk per Share) (based on portfolio remaining risk budget)</p>
+                            <p><span class="text-blue-400">Position Size</span> = Quantity × Entry Price (updates when Qty changes)</p>
                         </div>
                         <div class="space-y-1">
                             <p><span class="text-red-400">Risk</span> = (Entry − SL) × Quantity</p>
@@ -2749,16 +2775,41 @@
     async function loadPortfolioContext() {
         const el = document.getElementById('tb-portfolio-ctx');
         if (!el) return;
+        const s = settings[0] || {trading_capital: 500000, risk_per_trade: 2};
+        const capital = s.trading_capital || 500000;
+        const maxRiskPct = s.risk_per_trade || 2;
+        const sym = '₹';
         try {
-            const resp = await fetch('/api/v2/portfolio/context');
-            const data = await resp.json();
-            const s = data.summary || {};
-            const sym = '₹';
+            // Fetch open trades to compute real portfolio risk from GTT stop losses
+            const jResp = await fetch('/api/v2/trade-journal');
+            const jData = await jResp.json();
+            const openTrades = (jData.journals || []).filter(j => j.status === 'open');
+
+            // Total money at risk = sum of (entry - SL) x remaining qty for all open trades
+            const moneyAtRisk = openTrades.reduce((sum, t) => {
+                const entry = t.avg_entry || t.entry_price || 0;
+                const sl = t.stop_loss || 0;
+                const qty = t.remaining_qty || 0;
+                if (sl <= 0 || entry <= 0 || qty <= 0) return sum;
+                const risk = t.direction === 'Short' ? (sl - entry) * qty : (entry - sl) * qty;
+                return sum + Math.max(0, risk);
+            }, 0);
+
+            const usedRiskPct = capital > 0 ? (moneyAtRisk / capital * 100) : 0;
+            const remainingRiskPct = Math.max(0, maxRiskPct - usedRiskPct);
+
+            // Store globally for autoCalculateTradeBill to use
+            window._portfolioRiskPct = usedRiskPct;
+            window._portfolioRemainingRiskPct = remainingRiskPct;
+
             el.innerHTML = `
-                <div><span class="text-gray-500 text-xs">Positions:</span> <span class="font-mono text-xs text-blue-400">${s.open_positions || 0}</span></div>
-                <div><span class="text-gray-500 text-xs">Locked:</span> <span class="font-mono text-xs text-red-400">${sym}${(s.total_locked || 0).toLocaleString()}</span></div>
-                <div><span class="text-gray-500 text-xs">Used:</span> <span class="font-mono text-xs text-yellow-400">${(s.capital_used_pct || 0).toFixed(1)}%</span></div>
+                <div><span class="text-gray-500 text-xs">Open:</span> <span class="font-mono text-xs text-blue-400">${openTrades.length} trades</span></div>
+                <div><span class="text-gray-500 text-xs">Used Risk:</span> <span class="font-mono text-xs ${usedRiskPct >= maxRiskPct ? 'text-red-400 font-bold' : 'text-orange-400'}">${usedRiskPct.toFixed(2)}%</span></div>
+                <div><span class="text-gray-500 text-xs">Remaining:</span> <span class="font-mono text-xs ${remainingRiskPct <= 0 ? 'text-red-400 font-bold' : 'text-green-400'}">${remainingRiskPct.toFixed(2)}%</span></div>
+                <div><span class="text-gray-500 text-xs">Max Risk:</span> <span class="font-mono text-xs text-yellow-400">${maxRiskPct}%</span></div>
             `;
+            // Re-run trade bill calc with updated risk budget
+            if (document.getElementById('tb-entry')) autoCalculateTradeBill();
         } catch(e) {
             el.innerHTML = '<span class="text-gray-600 text-xs">Portfolio: N/A</span>';
         }
@@ -2789,11 +2840,18 @@
         const riskPerShare = Math.round((entry - sl) * 100) / 100;
         if (riskPerShare <= 0) return;
 
-        // Max Risk = Capital × (Risk% / 100)
+        // Max Risk = Capital × (Risk% / 100)  — for display only
         const maxRisk = Math.round(acSize * (riskPerTradePercent / 100));
 
-        // Max Qty = even number: floor(maxRisk / riskPerShare / 2) * 2
-        const maxQtyRisk = riskPerShare > 0 ? Math.floor(maxRisk / riskPerShare / 2) * 2 : 0;
+        // Remaining risk budget = max risk% − currently used risk% from open positions
+        const usedRiskPct = window._portfolioRiskPct || 0;
+        const remainingRiskPct = Math.max(0, riskPerTradePercent - usedRiskPct);
+        const remainingRiskBudget = Math.round(acSize * (remainingRiskPct / 100));
+
+        // Max Qty = even number based on REMAINING risk budget (not full max risk)
+        const maxQtyRisk = riskPerShare > 0 && remainingRiskBudget > 0
+            ? Math.floor(remainingRiskBudget / riskPerShare / 2) * 2
+            : 0;
 
         // Quantity (use manual if entered, otherwise maxQtyRisk) - EVEN WHOLE SHARES
         const quantity = manualQty > 0 ? manualQty : maxQtyRisk;
@@ -2830,6 +2888,20 @@
         document.getElementById('tb-rrr').value = riskRewardRatio;
         document.getElementById('tb-be').value = breakEven.toFixed(2);
         document.getElementById('tb-ts').value = trailingStop.toFixed(2);
+
+        // Show risk budget warning if applicable
+        const warnEl = document.getElementById('tb-risk-budget-warn');
+        if (warnEl) {
+            if (remainingRiskPct <= 0) {
+                warnEl.textContent = `⚠️ Risk budget exhausted (Used: ${usedRiskPct.toFixed(2)}% / Max: ${riskPerTradePercent}%) — no new position allowed`;
+                warnEl.className = 'text-xs text-red-400 mt-1';
+            } else if (usedRiskPct > 0) {
+                warnEl.textContent = `ℹ️ Portfolio risk: ${usedRiskPct.toFixed(2)}% used — remaining budget: ${remainingRiskPct.toFixed(2)}%`;
+                warnEl.className = 'text-xs text-yellow-400 mt-1';
+            } else {
+                warnEl.textContent = '';
+            }
+        }
     }
 
     // 9. Recalculate from Position Size - when user manually changes position size
@@ -3104,7 +3176,6 @@
         const qty = parseInt(document.getElementById('tb-qty').value);
         const ticker = document.getElementById('tb-ticker').value;
         const halfQty = Math.floor(qty / 2);
-        const slPrice = Math.round(sl * 0.99 * 100) / 100;
 
         if (!sl || !target || !qty || !ticker) {
             toast('Missing stop loss, target, quantity or ticker', 'error');
@@ -3116,42 +3187,85 @@
             return;
         }
 
-        const confirmed = await showOrderConfirmation('🎯 Place OCO Split Sell Orders', [
-            { label: 'Order Type', value: 'OCO Split (2 GTT Orders)', color: 'text-red-400' },
-            { label: 'Symbol', value: ticker, color: 'text-blue-400' },
-            { label: 'Transaction', value: 'SELL', color: 'text-red-400' },
-            { label: '🔴 SL Trigger', value: `₹${sl.toFixed(2)}`, color: 'text-red-400' },
-            { label: '🔴 SL Limit', value: `₹${slPrice.toFixed(2)}`, color: 'text-red-400' },
-            { label: '🔴 SL Quantity', value: `${qty} shares (full)`, color: 'text-red-400' },
-            { label: '🟢 Target Trigger', value: `₹${target.toFixed(2)}`, color: 'text-green-400' },
-            { label: '🟢 Target Limit', value: `₹${target.toFixed(2)}`, color: 'text-green-400' },
-            { label: '🟢 Target Quantity', value: `${halfQty} shares (half)`, color: 'text-green-400' }
-        ]);
-        if (!confirmed) return;
+        // Show editable modal — SL Price defaults to same as SL Trigger (user can edit before placing)
+        const modal = document.getElementById('modal');
+        modal.innerHTML = `
+            <div class="bg-[#1f2937] rounded-xl border border-gray-600 max-w-lg w-full p-6 space-y-4">
+                <h3 class="text-lg font-bold text-white">🎯 OCO Split Sell Orders</h3>
+                <p class="text-xs text-gray-400">Symbol: <span class="text-blue-400 font-mono font-bold">${ticker}</span> &nbsp;|&nbsp; Transaction: <span class="text-red-400">SELL</span></p>
+                <!-- SL Leg -->
+                <div class="bg-red-900/20 border border-red-500/30 rounded-lg p-4 space-y-3">
+                    <h4 class="text-sm font-bold text-red-400">🔴 Stop Loss GTT — ${qty} shares (full position)</h4>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="text-xs text-gray-400">SL Trigger Price (₹)</label>
+                            <input id="oco-sl-trigger" type="number" step="0.05" value="${sl.toFixed(2)}"
+                                class="w-full mt-1 px-2 py-1.5 bg-[#111827] border border-red-500/50 rounded font-mono text-sm"
+                                oninput="document.getElementById('oco-sl-price').value=this.value">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400">SL Limit Price (₹) <span class="text-gray-500 italic">– edit if needed</span></label>
+                            <input id="oco-sl-price" type="number" step="0.05" value="${sl.toFixed(2)}"
+                                class="w-full mt-1 px-2 py-1.5 bg-[#111827] border border-orange-500/50 rounded font-mono text-sm">
+                        </div>
+                    </div>
+                </div>
+                <!-- Target Leg -->
+                <div class="bg-green-900/20 border border-green-500/30 rounded-lg p-4 space-y-3">
+                    <h4 class="text-sm font-bold text-green-400">🟢 Target GTT — ${halfQty} shares (half position)</h4>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="text-xs text-gray-400">Target Trigger Price (₹)</label>
+                            <input id="oco-target-trigger" type="number" step="0.05" value="${target.toFixed(2)}"
+                                class="w-full mt-1 px-2 py-1.5 bg-[#111827] border border-green-500/50 rounded font-mono text-sm"
+                                oninput="document.getElementById('oco-target-price').value=this.value">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400">Target Limit Price (₹)</label>
+                            <input id="oco-target-price" type="number" step="0.05" value="${target.toFixed(2)}"
+                                class="w-full mt-1 px-2 py-1.5 bg-[#111827] border border-green-500/50 rounded font-mono text-sm">
+                        </div>
+                    </div>
+                </div>
+                <div class="border-t border-gray-700 pt-4 flex gap-3">
+                    <button id="oco-confirm-btn" class="flex-1 py-2.5 bg-red-600 rounded-lg font-medium hover:bg-red-700 text-white">🎯 Place OCO Orders</button>
+                    <button id="oco-cancel-btn" class="flex-1 py-2.5 bg-gray-600 rounded-lg font-medium hover:bg-gray-700 text-white">❌ Cancel</button>
+                </div>
+            </div>
+        `;
+        modal.classList.remove('hidden');
 
-        try {
-            const result = await fetch('/api/v2/kite/gtt/oco-split', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    symbol: ticker,
-                    quantity: qty,
-                    stop_loss_trigger: sl,
-                    stop_loss_price: slPrice,
-                    target_trigger: target,
-                    target_price: target
-                })
-            });
-            const data = await result.json();
-
-            if (data.success) {
-                toast(`OCO Split placed! SL: ${qty} shares, Target: ${halfQty} shares`, 'success');
-            } else {
-                toast(data.sl_gtt?.error || data.target_gtt?.error || 'Failed to place OCO orders', 'error');
-            }
-        } catch(e) {
-            toast('Error: ' + e.message, 'error');
-        }
+        return new Promise((resolve) => {
+            document.getElementById('oco-confirm-btn').onclick = async () => {
+                modal.classList.add('hidden');
+                const finalSlTrigger = parseFloat(document.getElementById('oco-sl-trigger').value);
+                const finalSlPrice = parseFloat(document.getElementById('oco-sl-price').value);
+                const finalTargetTrigger = parseFloat(document.getElementById('oco-target-trigger').value);
+                const finalTargetPrice = parseFloat(document.getElementById('oco-target-price').value);
+                try {
+                    const result = await fetch('/api/v2/kite/gtt/oco-split', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            symbol: ticker,
+                            quantity: qty,
+                            stop_loss_trigger: finalSlTrigger,
+                            stop_loss_price: finalSlPrice,
+                            target_trigger: finalTargetTrigger,
+                            target_price: finalTargetPrice
+                        })
+                    });
+                    const data = await result.json();
+                    if (data.success) {
+                        toast(`OCO Split placed! SL: ${qty} shares, Target: ${halfQty} shares`, 'success');
+                    } else {
+                        toast(data.sl_gtt?.error || data.target_gtt?.error || 'Failed to place OCO orders', 'error');
+                    }
+                } catch(e) { toast('Error: ' + e.message, 'error'); }
+                resolve();
+            };
+            document.getElementById('oco-cancel-btn').onclick = () => { modal.classList.add('hidden'); resolve(); };
+        });
     }
 
     // Place NRML Order (BUY or SELL)
@@ -3212,43 +3326,119 @@
 
     // Place Sell GTT from TradeLog for remaining position
     async function placeTradeLogSellGtt(ticker, remainingQty, targetPrice, slPrice) {
-        if (!ticker || !remainingQty || !targetPrice) {
-            toast('Missing ticker, remaining quantity, or target price', 'error');
+        if (!ticker || !remainingQty) {
+            toast('Missing ticker or remaining quantity', 'error');
+            return;
+        }
+        if (!targetPrice && !slPrice) {
+            toast('Need at least a target or stop loss price', 'error');
             return;
         }
 
-        const confirmed = await showOrderConfirmation('📊 Place Sell GTT (Remaining Position)', [
-            { label: 'Order Type', value: 'GTT SELL (Remaining 50%)', color: 'text-orange-400' },
-            { label: 'Symbol', value: ticker, color: 'text-blue-400' },
-            { label: 'Transaction', value: 'SELL', color: 'text-red-400' },
-            { label: 'Trigger (Target)', value: `₹${targetPrice.toFixed(2)}`, color: 'text-green-400' },
-            { label: 'Quantity', value: `${remainingQty} shares` },
-            { label: 'Product', value: 'CNC (Delivery)' }
-        ]);
-        if (!confirmed) return;
+        const sl = slPrice || 0;
+        const target = targetPrice || 0;
 
+        // Show editable OCO modal
+        const modal = document.getElementById('modal');
+        modal.innerHTML = `
+            <div class="bg-[#1f2937] rounded-xl border border-gray-600 max-w-lg w-full p-6 space-y-4">
+                <h3 class="text-lg font-bold text-white">📤 GTT OCO Sell — ${ticker}</h3>
+                <p class="text-xs text-gray-400">Quantity: <span class="text-yellow-400 font-mono font-bold">${remainingQty}</span> shares &nbsp;|&nbsp; Transaction: <span class="text-red-400">SELL</span></p>
+                <!-- SL Leg -->
+                <div class="bg-red-900/20 border border-red-500/30 rounded-lg p-4 space-y-3">
+                    <h4 class="text-sm font-bold text-red-400">Stop Loss Leg</h4>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="text-xs text-gray-400">SL Trigger Price</label>
+                            <input id="tl-oco-sl-trigger" type="number" step="0.05" value="${sl.toFixed(2)}"
+                                class="w-full mt-1 px-2 py-1.5 bg-[#111827] border border-red-500/50 rounded font-mono text-sm"
+                                oninput="document.getElementById('tl-oco-sl-price').value=this.value">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400">SL Limit Price <span class="text-gray-500 italic">– edit if needed</span></label>
+                            <input id="tl-oco-sl-price" type="number" step="0.05" value="${sl.toFixed(2)}"
+                                class="w-full mt-1 px-2 py-1.5 bg-[#111827] border border-orange-500/50 rounded font-mono text-sm">
+                        </div>
+                    </div>
+                </div>
+                <!-- Target Leg -->
+                <div class="bg-green-900/20 border border-green-500/30 rounded-lg p-4 space-y-3">
+                    <h4 class="text-sm font-bold text-green-400">Target Leg</h4>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="text-xs text-gray-400">Target Trigger Price</label>
+                            <input id="tl-oco-target-trigger" type="number" step="0.05" value="${target.toFixed(2)}"
+                                class="w-full mt-1 px-2 py-1.5 bg-[#111827] border border-green-500/50 rounded font-mono text-sm"
+                                oninput="document.getElementById('tl-oco-target-price').value=this.value">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400">Target Limit Price</label>
+                            <input id="tl-oco-target-price" type="number" step="0.05" value="${target.toFixed(2)}"
+                                class="w-full mt-1 px-2 py-1.5 bg-[#111827] border border-green-500/50 rounded font-mono text-sm">
+                        </div>
+                    </div>
+                </div>
+                <div class="border-t border-gray-700 pt-4 flex gap-3">
+                    <button id="tl-oco-confirm" class="flex-1 py-2.5 bg-red-600 rounded-lg font-medium hover:bg-red-700 text-white">📤 Place OCO GTT</button>
+                    <button id="tl-oco-cancel" class="flex-1 py-2.5 bg-gray-600 rounded-lg font-medium hover:bg-gray-700 text-white">Cancel</button>
+                </div>
+            </div>
+        `;
+        modal.classList.remove('hidden');
+
+        return new Promise((resolve) => {
+            document.getElementById('tl-oco-confirm').onclick = async () => {
+                modal.classList.add('hidden');
+                const finalSlTrigger = parseFloat(document.getElementById('tl-oco-sl-trigger').value);
+                const finalSlPrice = parseFloat(document.getElementById('tl-oco-sl-price').value);
+                const finalTargetTrigger = parseFloat(document.getElementById('tl-oco-target-trigger').value);
+                const finalTargetPrice = parseFloat(document.getElementById('tl-oco-target-price').value);
+                try {
+                    const result = await fetch('/api/v2/kite/gtt/oco', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            symbol: ticker,
+                            quantity: remainingQty,
+                            stop_loss_trigger: finalSlTrigger,
+                            stop_loss_price: finalSlPrice,
+                            target_trigger: finalTargetTrigger,
+                            target_price: finalTargetPrice
+                        })
+                    });
+                    const data = await result.json();
+                    if (data.success) {
+                        toast(`OCO GTT placed! Trigger ID: ${data.trigger_id}`, 'success');
+                    } else {
+                        toast(data.error || 'Failed to place OCO GTT', 'error');
+                    }
+                } catch(e) { toast('Error: ' + e.message, 'error'); }
+                resolve();
+            };
+            document.getElementById('tl-oco-cancel').onclick = () => { modal.classList.add('hidden'); resolve(); };
+        });
+    }
+
+    // Edit existing GTT order(s) for a ticker — called from TradeLog detail view
+    async function editGttForTicker(ticker) {
+        if (!ticker) return;
+        toast(`Loading GTT orders for ${ticker}...`, 'info');
         try {
-            const result = await fetch('/api/v2/kite/gtt', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    symbol: ticker,
-                    transaction_type: 'SELL',
-                    trigger_price: targetPrice,
-                    quantity: remainingQty,
-                    order_type: 'LIMIT',
-                    limit_price: targetPrice
-                })
-            });
-            const data = await result.json();
-
-            if (data.success) {
-                toast(`Sell GTT placed! Trigger ID: ${data.trigger_id}`, 'success');
-            } else {
-                toast(data.error || 'Failed to place GTT', 'error');
+            const resp = await fetch('/api/v2/kite/gtt');
+            const data = await resp.json();
+            const gtts = (data.gtts || data || []).filter(g =>
+                (g.tradingsymbol || g.symbol || '').toUpperCase() === ticker.toUpperCase()
+            );
+            if (gtts.length === 0) {
+                toast(`No active GTT orders found for ${ticker}`, 'info');
+                return;
             }
+            // Populate cache and open edit modal for first matching GTT
+            window._gttCache = window._gttCache || {};
+            gtts.forEach(g => { window._gttCache[g.trigger_id || 0] = g; });
+            await editGttOrder(gtts[0].trigger_id || 0);
         } catch(e) {
-            toast('Error: ' + e.message, 'error');
+            toast('Error loading GTTs: ' + e.message, 'error');
         }
     }
 
@@ -3284,6 +3474,7 @@
                                             <th class="text-right p-3 font-medium text-gray-400">SL</th>
                                             <th class="text-right p-3 font-medium text-gray-400">Target</th>
                                             <th class="text-right p-3 font-medium text-gray-400">Qty</th>
+                                            <th class="text-right p-3 font-medium text-gray-400">Pos Size</th>
                                             <th class="text-right p-3 font-medium text-gray-400">Risk (${sym})</th>
                                             <th class="text-right p-3 font-medium text-gray-400">R:R</th>
                                             <th class="text-center p-3 font-medium text-gray-400">Status</th>
@@ -3298,18 +3489,22 @@
                                                 <td class="p-3 text-right font-mono text-red-400">${sym}${b.stop_loss?.toFixed(2)}</td>
                                                 <td class="p-3 text-right font-mono text-green-400">${sym}${b.target_price?.toFixed(2)}</td>
                                                 <td class="p-3 text-right font-mono">${b.quantity?.toFixed(1)}</td>
+                                                <td class="p-3 text-right font-mono">${b.position_size ? sym + b.position_size.toLocaleString(undefined, {maximumFractionDigits: 0}) : '-'}</td>
                                                 <td class="p-3 text-right font-mono">${sym}${b.risk_amount_currency?.toFixed(2)}</td>
                                                 <td class="p-3 text-right font-mono ${b.risk_reward_ratio >= 2 ? 'text-green-400' : 'text-yellow-400'}">${b.risk_reward_ratio?.toFixed(2)}</td>
                                                 <td class="p-3 text-center">
                                                     <span class="px-2 py-1 rounded text-xs font-bold ${
                                                         b.is_filled ? 'bg-green-500/20 text-green-400' :
+                                                        b.status === 'closed' ? 'bg-gray-500/20 text-gray-400' :
+                                                        b.status === 'inactive' ? 'bg-yellow-500/20 text-yellow-400' :
                                                         b.status === 'active' ? 'bg-blue-500/20 text-blue-400' :
                                                         'bg-gray-500/20 text-gray-400'
-                                                    }">${b.is_filled ? '✓ Filled' : b.status || 'pending'}</span>
+                                                    }">${b.is_filled ? '✓ Filled' : (b.status || 'active').charAt(0).toUpperCase() + (b.status || 'active').slice(1)}</span>
                                                 </td>
-                                                <td class="p-3 text-center">
-                                                    <button onclick="editTradeBill(${b.id})" class="px-2 py-1 bg-gray-700 rounded text-xs hover:bg-blue-600 mr-1">Edit</button>
-                                                    <button onclick="deleteTradeBill(${b.id})" class="px-2 py-1 bg-gray-700 rounded text-xs hover:bg-red-600">Delete</button>
+                                                <td class="p-3 text-center whitespace-nowrap">
+                                                    <button onclick="editTradeBill(${b.id})" class="px-2 py-1 bg-gray-700 rounded text-xs hover:bg-blue-600 mr-1" title="Edit">Edit</button>
+                                                    <button onclick="toggleTradeBillStatus(${b.id}, '${b.status || 'active'}')" class="px-2 py-1 bg-gray-700 rounded text-xs hover:bg-purple-600 mr-1" title="Toggle Status: ${(b.status||'active')==='active'?'→ Inactive':(b.status||'active')==='inactive'?'→ Closed':'→ Active'}">${(b.status||'active')==='active'?'⏸ Inactive':(b.status||'active')==='inactive'?'✓ Close':'▶ Activate'}</button>
+                                                    <button onclick="deleteTradeBill(${b.id})" class="px-2 py-1 bg-gray-700 rounded text-xs hover:bg-red-600" title="Delete">Del</button>
                                                 </td>
                                             </tr>
                                         `).join('')}
@@ -3353,6 +3548,24 @@
                 toast('Error deleting Trade Bill: ' + e.message, 'error');
             }
         }
+    }
+
+    async function toggleTradeBillStatus(id, currentStatus) {
+        const nextStatus = currentStatus === 'active' ? 'inactive' : currentStatus === 'inactive' ? 'closed' : 'active';
+        try {
+            const resp = await fetch(`/api/v2/trade-bills/${id}`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ status: nextStatus })
+            });
+            const data = await resp.json();
+            if (data.success || data.id) {
+                toast(`Trade Bill status → ${nextStatus}`, 'success');
+                await render();
+            } else {
+                toast(data.error || 'Failed to update status', 'error');
+            }
+        } catch(e) { toast('Error: ' + e.message, 'error'); }
     }
 
     // ========== TRADE JOURNAL V2 ==========
@@ -4223,7 +4436,7 @@
                 </div>
 
                 <!-- Portfolio Info Tiles -->
-                <div class="grid grid-cols-7 gap-3">
+                <div class="grid grid-cols-8 gap-3">
                     <div class="bg-purple-500/10 border border-purple-500/30 rounded-lg p-3 text-center">
                         <div id="tile-overall-pnl" class="text-lg font-bold text-purple-400">Loading...</div>
                         <div class="text-xs text-gray-400">Overall P&L</div>
@@ -4233,7 +4446,7 @@
                         <div class="text-xs text-gray-400">Position Size</div>
                     </div>
                     <div class="bg-orange-500/10 border border-orange-500/30 rounded-lg p-3 text-center">
-                        <div class="text-lg font-bold ${totalRiskPct > (s.risk_per_day || 2) ? 'text-red-400' : 'text-orange-400'}">${totalRiskPct.toFixed(2)}%</div>
+                        <div class="text-lg font-bold ${totalRiskPct > (s.max_monthly_drawdown || 6) ? 'text-red-400' : 'text-orange-400'}">${totalRiskPct.toFixed(2)}%</div>
                         <div class="text-xs text-gray-400">Total Risk%</div>
                     </div>
                     <div class="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-center">
@@ -4252,6 +4465,10 @@
                         <div class="text-lg font-bold text-pink-400">${sym}${riskLimit.toLocaleString(undefined, {maximumFractionDigits: 0})}</div>
                         <div class="text-xs text-gray-400">Risk Limit</div>
                     </div>
+                    <div class="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-center">
+                        <div class="text-lg font-bold ${totalRiskPct > (s.max_monthly_drawdown || 6) ? 'text-red-400' : 'text-amber-400'}">${(s.max_monthly_drawdown || 6).toFixed(1)}%</div>
+                        <div class="text-xs text-gray-400">Total Risk Allowed</div>
+                    </div>
                 </div>
 
                 <!-- Trade Records Table -->
@@ -4263,8 +4480,6 @@
                                     <th class="p-2 text-left text-gray-400">Date</th>
                                     <th class="p-2 text-left text-gray-400">Ticker</th>
                                     <th class="p-2 text-center text-gray-400">Dir</th>
-                                    <th class="p-2 text-right text-gray-400">Entries</th>
-                                    <th class="p-2 text-right text-gray-400">Exits</th>
                                     <th class="p-2 text-right text-gray-400">Total Qty</th>
                                     <th class="p-2 text-right text-gray-400">Remaining</th>
                                     <th class="p-2 text-right text-gray-400">Avg Entry</th>
@@ -4273,22 +4488,30 @@
                                     <th class="p-2 text-right text-gray-400">Target</th>
                                     <th class="p-2 text-right text-gray-400">Gain/Loss</th>
                                     <th class="p-2 text-right text-gray-400">G/L %</th>
+                                    <th class="p-2 text-right text-gray-400">Notional P&L</th>
+                                    <th class="p-2 text-right text-gray-400">NPL%</th>
                                     <th class="p-2 text-center text-gray-400">Status</th>
+                                    <th class="p-2 text-center text-gray-400">Last Exit</th>
+                                    <th class="p-2 text-center text-gray-400">Days</th>
                                     <th class="p-2 text-center text-gray-400">Grade</th>
                                     <th class="p-2 text-center text-gray-400">Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 ${journals.length > 0 ? journals.map(j => {
-                                    const entryCnt = (j.entries || []).length || '-';
-                                    const exitCnt = (j.exits || []).length || '-';
+                                    const firstEntryDate = j.first_entry_date || j.journal_date;
+                                    const lastExitDate = j.last_exit_date;
+                                    const daysOpen = (() => {
+                                        if (!firstEntryDate) return '-';
+                                        const start = new Date(firstEntryDate);
+                                        const end = j.status === 'closed' && lastExitDate ? new Date(lastExitDate) : new Date();
+                                        return Math.max(0, Math.ceil((end - start) / (1000 * 60 * 60 * 24)));
+                                    })();
                                     return `
                                         <tr class="border-t border-gray-700/50 hover:bg-[#1f2937]/50 cursor-pointer" onclick="openTradeLogDetail(${j.id})">
                                             <td class="p-2 font-mono">${j.journal_date || j.first_entry_date?.split('T')[0] || '-'}</td>
                                             <td class="p-2 font-mono font-bold text-blue-400">${j.ticker}</td>
                                             <td class="p-2 text-center"><span class="${j.direction === 'Long' ? 'text-green-400' : 'text-red-400'}">${j.direction === 'Long' ? '▲ Long' : '▼ Short'}</span></td>
-                                            <td class="p-2 text-right font-mono">${entryCnt}</td>
-                                            <td class="p-2 text-right font-mono">${exitCnt}</td>
                                             <td class="p-2 text-right font-mono">${j.total_shares != null ? j.total_shares : (j.quantity != null ? j.quantity : '-')}</td>
                                             <td class="p-2 text-right font-mono ${(j.remaining_qty||0) > 0 ? 'text-yellow-400' : ''}">${j.remaining_qty != null ? j.remaining_qty : '-'}</td>
                                             <td class="p-2 text-right font-mono">${j.avg_entry != null && j.avg_entry > 0 ? sym + j.avg_entry.toFixed(2) : (j.entry_price ? sym + j.entry_price.toFixed(2) : '-')}</td>
@@ -4297,7 +4520,11 @@
                                             <td class="p-2 text-right font-mono text-green-400">${j.target_price ? sym + j.target_price.toFixed(2) : '-'}</td>
                                             <td class="p-2 text-right font-mono ${(j.gain_loss_amount||0) >= 0 ? 'text-green-400' : 'text-red-400'}">${j.gain_loss_amount != null ? sym + j.gain_loss_amount.toFixed(2) : '-'}</td>
                                             <td class="p-2 text-right font-mono ${(j.gain_loss_percent||0) >= 0 ? 'text-green-400' : 'text-red-400'}">${j.gain_loss_percent != null ? j.gain_loss_percent.toFixed(2) + '%' : '-'}</td>
+                                            <td class="p-2 text-right font-mono text-xs" id="tl-npnl-${j.id}">${j.status==='open'&&(j.remaining_qty||0)>0 ? '<span class="text-gray-500">…</span>' : '<span class="text-gray-600">—</span>'}</td>
+                                            <td class="p-2 text-right font-mono text-xs" id="tl-npct-${j.id}">${j.status==='open'&&(j.remaining_qty||0)>0 ? '<span class="text-gray-500">…</span>' : '<span class="text-gray-600">—</span>'}</td>
                                             <td class="p-2 text-center"><span class="px-2 py-0.5 rounded text-xs ${j.status==='closed' ? ((j.gain_loss_amount||0)>0 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400') : 'bg-blue-500/20 text-blue-400'}">${j.status === 'closed' ? 'CLOSED' : 'OPEN'}</span></td>
+                                            <td class="p-2 text-center font-mono text-xs">${lastExitDate ? lastExitDate.split('T')[0] : '-'}</td>
+                                            <td class="p-2 text-center font-mono text-xs">${daysOpen}</td>
                                             <td class="p-2 text-center"><span class="px-2 py-0.5 rounded ${j.trade_grade==='A'?'bg-green-500/20 text-green-400':j.trade_grade==='B'?'bg-blue-500/20 text-blue-400':'bg-gray-500/20 text-gray-400'}">${j.trade_grade||'-'}</span></td>
                                             <td class="p-2 text-center">
                                                 <button onclick="event.stopPropagation(); openTradeLogDetail(${j.id})" class="text-blue-400 hover:text-blue-300 mr-2" title="Edit">✏️</button>
@@ -4305,7 +4532,7 @@
                                             </td>
                                         </tr>
                                     `;
-                                }).join('') : '<tr><td colspan="16" class="p-8 text-center text-gray-500">No trades recorded. Click "+ New Trade" to start your first pyramiding trade!</td></tr>'}
+                                }).join('') : '<tr><td colspan="18" class="p-8 text-center text-gray-500">No trades recorded. Click "+ New Trade" to start your first pyramiding trade!</td></tr>'}
                             </tbody>
                         </table>
                     </div>
@@ -4355,19 +4582,28 @@
             return;
         }
 
-        // Compute unrealized P&L using live CMP
+        // Compute unrealized P&L using live CMP and update per-row cells
         let unrealizedPnL = 0;
         tradesWithPositions.forEach(t => {
             const entry = t.avg_entry || t.entry_price || 0;
             const qty = t.remaining_qty || 0;
             const priceData = prices[t.ticker];
             const cmp = priceData ? priceData.cmp : 0;
+            const npnlEl = document.getElementById(`tl-npnl-${t.id}`);
+            const npctEl = document.getElementById(`tl-npct-${t.id}`);
             if (cmp > 0 && entry > 0 && qty > 0) {
-                if (t.direction === 'Short') {
-                    unrealizedPnL += (entry - cmp) * qty;
-                } else {
-                    unrealizedPnL += (cmp - entry) * qty;
+                const notional = t.direction === 'Short' ? (entry - cmp) * qty : (cmp - entry) * qty;
+                const notionalPct = (notional / (entry * qty)) * 100;
+                unrealizedPnL += notional;
+                if (npnlEl) {
+                    npnlEl.innerHTML = `<span class="${notional >= 0 ? 'text-green-400' : 'text-red-400'}">${sym}${notional.toFixed(0)}</span>`;
                 }
+                if (npctEl) {
+                    npctEl.innerHTML = `<span class="${notionalPct >= 0 ? 'text-green-400' : 'text-red-400'}">${notionalPct.toFixed(2)}%</span>`;
+                }
+            } else {
+                if (npnlEl) npnlEl.innerHTML = '<span class="text-gray-500">N/A</span>';
+                if (npctEl) npctEl.innerHTML = '<span class="text-gray-500">N/A</span>';
             }
         });
 
@@ -4396,6 +4632,7 @@
                     <div class="flex gap-2">
                         ${j.id && j.status !== 'closed' && (j.remaining_qty || 0) > 0 ? `
                             <button onclick="placeTradeLogSellGtt('${j.ticker}', ${j.remaining_qty || 0}, ${j.target_price || 0}, ${j.stop_loss || 0})" class="px-3 py-2 bg-orange-600 rounded-lg hover:bg-orange-700 text-sm" title="Sell remaining ${j.remaining_qty} shares via GTT">📤 Sell GTT (${j.remaining_qty})</button>
+                            <button onclick="editGttForTicker('${j.ticker}')" class="px-3 py-2 bg-blue-600 rounded-lg hover:bg-blue-700 text-sm" title="View / edit existing GTT orders for ${j.ticker}">✏️ Edit GTT</button>
                             <button onclick="placeNrmlOrder('BUY', '${j.ticker}')" class="px-3 py-2 bg-cyan-600 rounded-lg hover:bg-cyan-700 text-sm" title="Place NRML Buy order">🔷 NRML Buy</button>
                             <button onclick="placeNrmlOrder('SELL', '${j.ticker}', ${j.remaining_qty || 0})" class="px-3 py-2 bg-pink-600 rounded-lg hover:bg-pink-700 text-sm" title="Place NRML Sell order">🔻 NRML Sell</button>
                         ` : ''}
@@ -4406,12 +4643,13 @@
                 <!-- Trade Setup -->
                 <div class="bg-[#111827] rounded-xl p-4 border border-gray-700">
                     <h4 class="text-sm font-bold text-gray-400 border-b border-gray-600 pb-2 mb-3">Trade Setup</h4>
-                    <div class="grid grid-cols-8 gap-3 text-sm">
+                    <div class="grid grid-cols-9 gap-3 text-sm">
                         <div><label class="text-gray-500">Ticker</label><input id="tl-ticker" value="${j.ticker||''}" placeholder="RELIANCE" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
                         <div><label class="text-gray-500">Date</label><input type="date" id="tl-date" value="${(j.journal_date ? String(j.journal_date).split('T')[0] : '') || new Date().toISOString().split('T')[0]}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded"></div>
                         <div><label class="text-gray-500">Direction</label><select id="tl-direction" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded">${directions.map(d => `<option ${j.direction===d?'selected':''}>${d}</option>`).join('')}</select></div>
                         <div><label class="text-gray-500">Strategy</label><select id="tl-strategy" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded">${strategies.map(s => `<option ${j.strategy===s?'selected':''}>${s}</option>`).join('')}</select></div>
                         <div><label class="text-gray-500">Stop Loss</label><input type="number" id="tl-sl" value="${j.stop_loss||''}" step="0.01" class="w-full px-2 py-1.5 bg-red-900/30 border border-red-600 rounded font-mono"></div>
+                        <div><label class="text-gray-500">Trailing SL</label><input type="number" id="tl-trailing-sl" value="${j.trailing_stop||''}" step="0.01" class="w-full px-2 py-1.5 bg-yellow-900/30 border border-yellow-600 rounded font-mono"></div>
                         <div><label class="text-gray-500">Target</label><input type="number" id="tl-target" value="${j.target_price||''}" step="0.01" class="w-full px-2 py-1.5 bg-green-900/30 border border-green-600 rounded font-mono"></div>
                         <div><label class="text-gray-500">Initial SL <span class="text-gray-600">(static)</span></label><input type="number" id="tl-initialsl" value="${j.initial_stop_loss||j.stop_loss||''}" class="w-full px-2 py-1.5 bg-red-900/20 border border-gray-600 rounded font-mono" readonly></div>
                         <div><label class="text-gray-500">Mistake</label><select id="tl-mistake" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded"><option value="">None</option>${mistakes.map(m => `<option ${j.mistake===m?'selected':''}>${m}</option>`).join('')}</select></div>
@@ -4735,6 +4973,7 @@
             stop_loss: slVal,
             initial_stop_loss: slVal,  // Set initial SL on creation (backend uses it only for new trades)
             target_price: parseFloat(document.getElementById('tl-target').value) || null,
+            trailing_stop: parseFloat(document.getElementById('tl-trailing-sl').value) || null,
             entry_tactic: document.getElementById('tl-entry-tactic').value,
             entry_reason: document.getElementById('tl-entry-reason').value,
             exit_tactic: document.getElementById('tl-exit-tactic').value,
@@ -5198,36 +5437,34 @@
                         <th class="p-2 text-center text-gray-400">Status</th>
                         <th class="p-2 text-center text-gray-400">Actions</th>
                     </tr></thead><tbody>
-                    ${data.gtt_orders.map(g => {
-                        const isBuy = (g.transaction_type || '').toUpperCase() === 'BUY';
-                        const triggerVals = g.trigger_values || [];
-                        const orders = g.orders || [];
-                        const isTwoLeg = (g.trigger_type || '').toLowerCase() === 'two-leg' || triggerVals.length > 1;
-
-                        // For two-leg: first order is SL, second is target (or vice versa)
-                        let legInfo = '';
-                        if (isTwoLeg && orders.length >= 2) {
-                            const leg1 = orders[0];
-                            const leg2 = orders[1];
-                            legInfo = '<span class="text-red-400">SL: ' + sym + (triggerVals[0] || '-') + '</span> / <span class="text-green-400">T: ' + sym + (triggerVals[1] || '-') + '</span>';
-                        } else if (triggerVals.length > 1) {
-                            legInfo = '<span class="text-red-400">SL: ' + sym + (triggerVals[0] || '-') + '</span> / <span class="text-green-400">T: ' + sym + (triggerVals[1] || '-') + '</span>';
-                        } else {
-                            legInfo = '-';
-                        }
-
-                        return '<tr class="border-t border-gray-700/50 hover:bg-[#1f2937]/50">' +
-                            '<td class="p-2 font-mono font-bold text-blue-400">' + (g.tradingsymbol || g.symbol || '-') + '</td>' +
-                            '<td class="p-2 text-center"><span class="px-1.5 py-0.5 rounded text-xs ' + (isTwoLeg ? 'bg-purple-500/20 text-purple-400' : 'bg-orange-500/20 text-orange-400') + '">' + (g.trigger_type || 'single') + '</span></td>' +
-                            '<td class="p-2 text-center"><span class="' + (isBuy ? 'text-green-400' : 'text-red-400') + '">' + (g.transaction_type || '-') + '</span></td>' +
-                            '<td class="p-2 text-right font-mono">' + (g.quantity || '-') + '</td>' +
-                            '<td class="p-2 text-right font-mono">' + sym + (g.trigger_price || triggerVals[0] || '-') + '</td>' +
-                            '<td class="p-2 text-right font-mono">' + (g.limit_price ? sym + g.limit_price : '-') + '</td>' +
-                            '<td class="p-2 text-right font-mono">' + legInfo + '</td>' +
-                            '<td class="p-2 text-center"><span class="px-2 py-0.5 rounded text-xs bg-orange-500/20 text-orange-400">' + (g.status || 'ACTIVE') + '</span></td>' +
-                            '<td class="p-2 text-center"><button onclick="cancelGttOrder(' + (g.trigger_id || 0) + ')" class="px-2 py-1 text-xs bg-red-600/30 text-red-400 rounded hover:bg-red-600/50" title="Cancel GTT">✕</button></td>' +
-                            '</tr>';
-                    }).join('')}
+                    ${(()=>{
+                        window._gttCache = {};
+                        return data.gtt_orders.map(g => {
+                            window._gttCache[g.trigger_id || 0] = g;
+                            const isBuy = (g.transaction_type || '').toUpperCase() === 'BUY';
+                            const triggerVals = g.trigger_values || [];
+                            const orders = g.orders || [];
+                            const isTwoLeg = (g.trigger_type || '').toLowerCase() === 'two-leg' || triggerVals.length > 1;
+                            let legInfo = '';
+                            if (isTwoLeg && (orders.length >= 2 || triggerVals.length >= 2)) {
+                                legInfo = '<span class="text-red-400">SL: ' + sym + (triggerVals[0] || '-') + '</span> / <span class="text-green-400">T: ' + sym + (triggerVals[1] || '-') + '</span>';
+                            } else { legInfo = '-'; }
+                            return '<tr class="border-t border-gray-700/50 hover:bg-[#1f2937]/50">' +
+                                '<td class="p-2 font-mono font-bold text-blue-400">' + (g.tradingsymbol || g.symbol || '-') + '</td>' +
+                                '<td class="p-2 text-center"><span class="px-1.5 py-0.5 rounded text-xs ' + (isTwoLeg ? 'bg-purple-500/20 text-purple-400' : 'bg-orange-500/20 text-orange-400') + '">' + (g.trigger_type || 'single') + '</span></td>' +
+                                '<td class="p-2 text-center"><span class="' + (isBuy ? 'text-green-400' : 'text-red-400') + '">' + (g.transaction_type || '-') + '</span></td>' +
+                                '<td class="p-2 text-right font-mono">' + (g.quantity || '-') + '</td>' +
+                                '<td class="p-2 text-right font-mono">' + sym + (g.trigger_price || triggerVals[0] || '-') + '</td>' +
+                                '<td class="p-2 text-right font-mono">' + (g.limit_price ? sym + g.limit_price : '-') + '</td>' +
+                                '<td class="p-2 text-right font-mono">' + legInfo + '</td>' +
+                                '<td class="p-2 text-center"><span class="px-2 py-0.5 rounded text-xs bg-orange-500/20 text-orange-400">' + (g.status || 'ACTIVE') + '</span></td>' +
+                                '<td class="p-2 text-center whitespace-nowrap">' +
+                                    '<button onclick="editGttOrder(' + (g.trigger_id || 0) + ')" class="px-1.5 py-0.5 text-xs bg-blue-600/30 text-blue-400 rounded hover:bg-blue-600/50 mr-1" title="Modify GTT">✏️</button>' +
+                                    '<button onclick="cancelGttOrder(' + (g.trigger_id || 0) + ')" class="px-1.5 py-0.5 text-xs bg-red-600/30 text-red-400 rounded hover:bg-red-600/50" title="Cancel GTT">✕</button>' +
+                                '</td>' +
+                                '</tr>';
+                        }).join('');
+                    })()}
                     </tbody></table>
                 </div>` : ''}
 
@@ -5347,6 +5584,92 @@
                 toast(data.error || 'Cancel GTT failed', 'error');
             }
         } catch(e) { toast('Error: ' + e.message, 'error'); }
+    }
+
+    async function editGttOrder(triggerId) {
+        const g = window._gttCache ? window._gttCache[triggerId] : null;
+        if (!g) { toast('GTT data not found – refresh page', 'error'); return; }
+
+        const sym = '₹';
+        const isTwoLeg = (g.trigger_type || '').toLowerCase() === 'two-leg' || (g.trigger_values || []).length > 1;
+        const triggerVals = g.trigger_values || [g.trigger_price || 0];
+        const orders = g.orders || [];
+        const leg1 = orders[0] || {};
+        const leg2 = orders[1] || {};
+        const leg1Trigger = parseFloat(triggerVals[0]) || 0;
+        const leg2Trigger = parseFloat(triggerVals[1]) || 0;
+        const leg1Price = parseFloat(leg1.price) || leg1Trigger;
+        const leg2Price = parseFloat(leg2.price) || leg2Trigger;
+        const leg1Qty = parseInt(leg1.quantity) || parseInt(g.quantity) || 0;
+        const leg2Qty = parseInt(leg2.quantity) || parseInt(g.quantity) || 0;
+
+        const modal = document.getElementById('modal');
+        modal.innerHTML = `
+            <div class="bg-[#1f2937] rounded-xl border border-gray-600 max-w-lg w-full p-6 space-y-4">
+                <h3 class="text-lg font-bold text-white">✏️ Modify GTT: ${g.tradingsymbol || g.symbol || ''}</h3>
+                <div class="text-xs text-gray-400">Trigger ID: <span class="font-mono text-yellow-400">${triggerId}</span> &nbsp;|&nbsp; Type: <span class="text-purple-400">${g.trigger_type || 'single'}</span> &nbsp;|&nbsp; <span class="${(g.transaction_type||'').toUpperCase()==='BUY'?'text-green-400':'text-red-400'}">${g.transaction_type || '-'}</span></div>
+                ${isTwoLeg ? `
+                <div class="bg-red-900/20 border border-red-500/30 rounded-lg p-3 space-y-2">
+                    <h4 class="text-sm font-bold text-red-400">🔴 Leg 1 — Stop Loss</h4>
+                    <div class="grid grid-cols-3 gap-2">
+                        <div><label class="text-xs text-gray-400">Trigger (${sym})</label><input id="gtt-l1-trigger" type="number" step="0.05" value="${leg1Trigger}" class="w-full mt-1 px-2 py-1 bg-[#111827] border border-gray-600 rounded font-mono text-sm"></div>
+                        <div><label class="text-xs text-gray-400">Limit (${sym})</label><input id="gtt-l1-price" type="number" step="0.05" value="${leg1Price}" class="w-full mt-1 px-2 py-1 bg-[#111827] border border-gray-600 rounded font-mono text-sm"></div>
+                        <div><label class="text-xs text-gray-400">Qty</label><input id="gtt-l1-qty" type="number" value="${leg1Qty}" class="w-full mt-1 px-2 py-1 bg-[#111827] border border-gray-600 rounded font-mono text-sm"></div>
+                    </div>
+                </div>
+                <div class="bg-green-900/20 border border-green-500/30 rounded-lg p-3 space-y-2">
+                    <h4 class="text-sm font-bold text-green-400">🟢 Leg 2 — Target</h4>
+                    <div class="grid grid-cols-3 gap-2">
+                        <div><label class="text-xs text-gray-400">Trigger (${sym})</label><input id="gtt-l2-trigger" type="number" step="0.05" value="${leg2Trigger}" class="w-full mt-1 px-2 py-1 bg-[#111827] border border-gray-600 rounded font-mono text-sm"></div>
+                        <div><label class="text-xs text-gray-400">Limit (${sym})</label><input id="gtt-l2-price" type="number" step="0.05" value="${leg2Price}" class="w-full mt-1 px-2 py-1 bg-[#111827] border border-gray-600 rounded font-mono text-sm"></div>
+                        <div><label class="text-xs text-gray-400">Qty</label><input id="gtt-l2-qty" type="number" value="${leg2Qty}" class="w-full mt-1 px-2 py-1 bg-[#111827] border border-gray-600 rounded font-mono text-sm"></div>
+                    </div>
+                </div>
+                <p class="text-xs text-yellow-500">⚠️ Two-leg GTT: modification uses the Leg 1 (SL) values. Cancel and re-create for full two-leg edit.</p>
+                ` : `
+                <div class="space-y-2">
+                    <div class="grid grid-cols-3 gap-2">
+                        <div><label class="text-xs text-gray-400">Trigger (${sym})</label><input id="gtt-l1-trigger" type="number" step="0.05" value="${leg1Trigger}" class="w-full mt-1 px-2 py-1 bg-[#111827] border border-gray-600 rounded font-mono"></div>
+                        <div><label class="text-xs text-gray-400">Limit (${sym})</label><input id="gtt-l1-price" type="number" step="0.05" value="${leg1Price}" class="w-full mt-1 px-2 py-1 bg-[#111827] border border-gray-600 rounded font-mono"></div>
+                        <div><label class="text-xs text-gray-400">Qty</label><input id="gtt-l1-qty" type="number" value="${leg1Qty}" class="w-full mt-1 px-2 py-1 bg-[#111827] border border-gray-600 rounded font-mono"></div>
+                    </div>
+                </div>
+                `}
+                <div class="border-t border-gray-700 pt-4 flex gap-3">
+                    <button id="gtt-edit-confirm" class="flex-1 py-2.5 bg-blue-600 rounded-lg font-medium hover:bg-blue-700 text-white">✅ Save Changes</button>
+                    <button id="gtt-edit-cancel" class="flex-1 py-2.5 bg-gray-600 rounded-lg font-medium hover:bg-gray-700 text-white">❌ Cancel</button>
+                </div>
+            </div>
+        `;
+        modal.classList.remove('hidden');
+
+        document.getElementById('gtt-edit-confirm').onclick = async () => {
+            modal.classList.add('hidden');
+            const newTrigger = parseFloat(document.getElementById('gtt-l1-trigger').value);
+            const newPrice = parseFloat(document.getElementById('gtt-l1-price').value);
+            const newQty = parseInt(document.getElementById('gtt-l1-qty').value);
+            try {
+                const resp = await fetch(`/api/v2/kite/gtt/${triggerId}/modify`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        symbol: g.tradingsymbol || g.symbol,
+                        transaction_type: g.transaction_type || 'SELL',
+                        quantity: newQty,
+                        trigger_price: newTrigger,
+                        limit_price: newPrice
+                    })
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    toast(`GTT modified! New ID: ${data.new_trigger_id}`, 'success');
+                    await render();
+                } else {
+                    toast(data.error || 'Modify GTT failed', 'error');
+                }
+            } catch(e) { toast('Error: ' + e.message, 'error'); }
+        };
+        document.getElementById('gtt-edit-cancel').onclick = () => modal.classList.add('hidden');
     }
 
     // ========== P&L TRACKER ==========
@@ -6159,11 +6482,9 @@
 
                     <!-- Trade Limits -->
                     <h4 class="font-semibold text-gray-400 text-sm mt-4 pt-4 border-t border-gray-700">🛡️ Trade Limits (Rule Enforcement)</h4>
-                    <p class="text-xs text-gray-500 mb-2">Orders will be hard-blocked if any limit is exceeded.</p>
+                    <p class="text-xs text-gray-500 mb-2">Orders will be hard-blocked if total risk exceeds MaxMonthlyDD. Risk = (AvgEntry - TrailingSL) × Qty.</p>
                     <div class="grid grid-cols-2 gap-4">
-                        <div><label class="text-sm text-gray-400">Max Risk % per Day</label><input type="number" id="s-risk-per-day" value="${s.risk_per_day || 2}" step="0.5" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
-                        <div><label class="text-sm text-gray-400">Max Trades per Day</label><input type="number" id="s-max-trades-day" value="${s.max_trades_per_day || 3}" step="1" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
-                        <div><label class="text-sm text-gray-400">Max Risk % per Week</label><input type="number" id="s-risk-per-week" value="${s.risk_per_week || 5}" step="0.5" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Max Total Risk % (Monthly DD)</label><input type="number" id="s-max-monthly-dd" value="${s.max_monthly_drawdown || 6}" step="0.5" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                         <div><label class="text-sm text-gray-400">Max Open Positions</label><input type="number" id="s-max-positions" value="${s.max_open_positions || 5}" step="1" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                     </div>
 
@@ -6496,9 +6817,7 @@
             currency: 'INR',  // Always INR for NSE
             market: 'IN',  // Always IN for NSE
             // Trade Limits
-            risk_per_day: parseFloat(document.getElementById('s-risk-per-day').value),
-            max_trades_per_day: parseInt(document.getElementById('s-max-trades-day').value),
-            risk_per_week: parseFloat(document.getElementById('s-risk-per-week').value),
+            max_monthly_drawdown: parseFloat(document.getElementById('s-max-monthly-dd').value),
             max_open_positions: parseInt(document.getElementById('s-max-positions').value)
         };
         try {

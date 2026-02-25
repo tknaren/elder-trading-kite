@@ -25,6 +25,7 @@ Max Buying Price  = Prev day SuperTrend + Prev day ATR * 0.5
 Max Selling Price = Prev day SuperTrend - Prev day ATR * 0.5
 """
 
+from services.indicators import calculate_supertrend
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Optional
@@ -52,16 +53,24 @@ def calculate_rsi(close: pd.Series, period: int = 20) -> pd.Series:
 
 
 def calculate_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 10) -> pd.Series:
-    """Calculate Average True Range"""
+    """Calculate ATR using Wilder's RMA — matches TradingView ATR(period)"""
     tr1 = high - low
     tr2 = abs(high - close.shift(1))
     tr3 = abs(low - close.shift(1))
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    return tr.rolling(window=period).mean()
+    result = np.full(len(tr), np.nan)
+    tv = tr.values
+    if len(tv) < period:
+        return pd.Series(result, index=tr.index)
+    result[period - 1] = float(np.mean(tv[:period]))
+    alpha = 1.0 / period
+    for i in range(period, len(tv)):
+        result[i] = result[i - 1] * (1.0 - alpha) + tv[i] * alpha
+    return pd.Series(result, index=tr.index)
 
 
 def calculate_stochastic_gss(high: pd.Series, low: pd.Series, close: pd.Series,
-                              k_period: int = 55, smooth_k: int = 34, d_period: int = 21) -> Dict:
+                             k_period: int = 55, smooth_k: int = 34, d_period: int = 21) -> Dict:
     """
     Calculate Stochastic Oscillator with GSS parameters: (55, 34, 21)
     - k_period=55: raw %K lookback
@@ -77,7 +86,6 @@ def calculate_stochastic_gss(high: pd.Series, low: pd.Series, close: pd.Series,
 
 
 # Import SuperTrend from the main indicators module
-from services.indicators import calculate_supertrend
 
 
 # ============================================================
@@ -265,7 +273,8 @@ def calculate_gss_indicators(df: pd.DataFrame) -> Optional[Dict]:
         return None
 
     rsi = calculate_rsi(df['Close'], 20)
-    stoch = calculate_stochastic_gss(df['High'], df['Low'], df['Close'], 55, 34, 21)
+    stoch = calculate_stochastic_gss(
+        df['High'], df['Low'], df['Close'], 55, 34, 21)
     ema_20 = calculate_ema(df['Close'], 20)
     ema_50 = calculate_ema(df['Close'], 50)
     st = calculate_supertrend(df['High'], df['Low'], df['Close'], 10, 2.0)
@@ -307,10 +316,13 @@ def check_gss_long_conditions(indicators: Dict, idx: int, df: pd.DataFrame) -> D
 
     cond1 = float(rsi) > 50                                   # RSI > 50
     cond2 = float(stoch_k) > float(stoch_d)                   # %K > %D
-    cond3 = float(low) < float(st_val)                         # Low dipped below ST
+    # Low dipped below ST
+    cond3 = float(low) < float(st_val)
     cond4 = float(close) > float(st_val)                       # Close above ST
-    cond5 = int(st_dir) == 1 and int(st_dir_prev) == 1        # GREEN before & EOD
-    cond6 = float(st_val) < float(ema_20)                      # ST below EMA(20)
+    cond5 = int(st_dir) == 1 and int(
+        st_dir_prev) == 1        # GREEN before & EOD
+    # ST below EMA(20)
+    cond6 = float(st_val) < float(ema_20)
 
     return {
         'rsi_above_50': cond1,
@@ -342,10 +354,13 @@ def check_gss_short_conditions(indicators: Dict, idx: int, df: pd.DataFrame) -> 
 
     cond1 = float(rsi) < 50                                   # RSI < 50
     cond2 = float(stoch_k) < float(stoch_d)                   # %K < %D
-    cond3 = float(high) > float(st_val)                        # High went above ST
+    # High went above ST
+    cond3 = float(high) > float(st_val)
     cond4 = float(close) < float(st_val)                       # Close below ST
-    cond5 = int(st_dir) == -1 and int(st_dir_prev) == -1      # RED before & EOD
-    cond6 = float(st_val) > float(ema_20)                      # ST above EMA(20)
+    cond5 = int(st_dir) == -1 and int(st_dir_prev) == - \
+        1      # RED before & EOD
+    # ST above EMA(20)
+    cond6 = float(st_val) > float(ema_20)
 
     return {
         'rsi_below_50': cond1,
@@ -386,26 +401,36 @@ def scan_stock_gss(symbol: str, hist: pd.DataFrame, direction: str = 'long') -> 
 
     # Extract values (current bar)
     close = float(hist['Close'].iloc[idx])
-    rsi_val = float(indicators['rsi'].iloc[idx]) if not pd.isna(indicators['rsi'].iloc[idx]) else None
-    stoch_k = float(indicators['stoch_k'].iloc[idx]) if not pd.isna(indicators['stoch_k'].iloc[idx]) else None
-    stoch_d = float(indicators['stoch_d'].iloc[idx]) if not pd.isna(indicators['stoch_d'].iloc[idx]) else None
-    ema_20 = float(indicators['ema_20'].iloc[idx]) if not pd.isna(indicators['ema_20'].iloc[idx]) else None
-    ema_50 = float(indicators['ema_50'].iloc[idx]) if not pd.isna(indicators['ema_50'].iloc[idx]) else None
-    st_val = float(indicators['supertrend'].iloc[idx]) if not pd.isna(indicators['supertrend'].iloc[idx]) else None
+    rsi_val = float(indicators['rsi'].iloc[idx]) if not pd.isna(
+        indicators['rsi'].iloc[idx]) else None
+    stoch_k = float(indicators['stoch_k'].iloc[idx]) if not pd.isna(
+        indicators['stoch_k'].iloc[idx]) else None
+    stoch_d = float(indicators['stoch_d'].iloc[idx]) if not pd.isna(
+        indicators['stoch_d'].iloc[idx]) else None
+    ema_20 = float(indicators['ema_20'].iloc[idx]) if not pd.isna(
+        indicators['ema_20'].iloc[idx]) else None
+    ema_50 = float(indicators['ema_50'].iloc[idx]) if not pd.isna(
+        indicators['ema_50'].iloc[idx]) else None
+    st_val = float(indicators['supertrend'].iloc[idx]) if not pd.isna(
+        indicators['supertrend'].iloc[idx]) else None
     st_dir = int(indicators['st_direction'].iloc[idx])
 
     # Previous bar values (for ATR and SuperTrend)
     prev_idx = idx - 1
-    prev_atr = float(indicators['atr'].iloc[prev_idx]) if not pd.isna(indicators['atr'].iloc[prev_idx]) else None
-    prev_st = float(indicators['supertrend'].iloc[prev_idx]) if not pd.isna(indicators['supertrend'].iloc[prev_idx]) else None
+    prev_atr = float(indicators['atr'].iloc[prev_idx]) if not pd.isna(
+        indicators['atr'].iloc[prev_idx]) else None
+    prev_st = float(indicators['supertrend'].iloc[prev_idx]) if not pd.isna(
+        indicators['supertrend'].iloc[prev_idx]) else None
 
     # Compute ATR * 0.5 and max buying/selling price
     prev_atr_half = round(prev_atr * 0.5, 2) if prev_atr else None
 
     if direction == 'long':
-        max_price = round(prev_st + prev_atr_half, 2) if prev_st and prev_atr_half else None
+        max_price = round(prev_st + prev_atr_half,
+                          2) if prev_st and prev_atr_half else None
     else:
-        max_price = round(prev_st - prev_atr_half, 2) if prev_st and prev_atr_half else None
+        max_price = round(prev_st - prev_atr_half,
+                          2) if prev_st and prev_atr_half else None
 
     price_key = 'max_buying_price' if direction == 'long' else 'max_selling_price'
 
@@ -430,7 +455,7 @@ def scan_stock_gss(symbol: str, hist: pd.DataFrame, direction: str = 'long') -> 
 
 
 def run_gss_screener(symbols: List[str], hist_data: Dict[str, pd.DataFrame],
-                      direction: str = 'long') -> Dict:
+                     direction: str = 'long') -> Dict:
     """
     Run GSS screener across multiple symbols.
 
@@ -463,7 +488,8 @@ def run_gss_screener(symbols: List[str], hist_data: Dict[str, pd.DataFrame],
             skipped_count += 1
 
     # Sort: matched signals first, then by symbol
-    all_signals.sort(key=lambda x: (not x.get('all_conditions_met', False), x.get('symbol', '')))
+    all_signals.sort(key=lambda x: (
+        not x.get('all_conditions_met', False), x.get('symbol', '')))
 
     return {
         'signals': all_signals,

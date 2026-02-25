@@ -1,5 +1,5 @@
 """
-Elder Trading System - Database Models
+Kite Trading System - Database Models
 SQL Server database operations and schema management via pyodbc
 """
 
@@ -1210,7 +1210,7 @@ class Database:
 
             # Create default strategy
             elder_config = {
-                "name": "Elder Triple Screen",
+                "name": "Kite Trading System",
                 "timeframes": {"screen1": "weekly", "screen2": "daily"},
                 "indicators": {
                     "weekly": ["EMA_22", "MACD_Histogram"],
@@ -1222,8 +1222,8 @@ class Database:
                 INSERT INTO strategies (user_id, name, description, config)
                 OUTPUT INSERTED.id
                 VALUES (?, ?, ?, ?)
-            """, (user_id, 'Elder Triple Screen',
-                  "Dr. Alexander Elder's Triple Screen Trading System",
+            """, (user_id, 'Kite Trading System',
+                  "Kite Trading System — Multi-timeframe Analysis",
                   json.dumps(elder_config))).fetchone()
             strategy_id = int(strategy_id_row[0])
 
@@ -1305,7 +1305,7 @@ class Database:
         cursor = conn.execute("SELECT COUNT(*) AS cnt FROM strategies WHERE user_id IS NULL")
         if cursor.fetchone()['cnt'] == 0:
             default_strategies = [
-                ('EL - Daily Swing', 'Elder Triple Screen daily swing entry'),
+                ('EL - Daily Swing', 'Kite Trading System daily swing entry'),
                 ('EL - False Breakout', 'Elder false breakout reversal'),
                 ('EL - LC Bounce', 'Elder lower channel bounce'),
                 ('SE - Canon', 'Steve Nison candle pattern entry'),

@@ -16,6 +16,7 @@ Filter Conditions:
 Shows all indicator values even if filters don't match.
 """
 
+from services.screener_v2 import NIFTY_100
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -28,12 +29,20 @@ def calculate_ema(series: pd.Series, period: int) -> pd.Series:
 
 
 def calculate_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
-    """Calculate Average True Range"""
+    """Calculate ATR using Wilder's RMA — matches TradingView ATR(period)"""
     tr1 = high - low
     tr2 = abs(high - close.shift(1))
     tr3 = abs(low - close.shift(1))
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    return tr.rolling(window=period).mean()
+    result = np.full(len(tr), np.nan)
+    tv = tr.values
+    if len(tv) < period:
+        return pd.Series(result, index=tr.index)
+    result[period - 1] = float(np.mean(tv[:period]))
+    alpha = 1.0 / period
+    for i in range(period, len(tv)):
+        result[i] = result[i - 1] * (1.0 - alpha) + tv[i] * alpha
+    return pd.Series(result, index=tr.index)
 
 
 def calculate_keltner_channel(high: pd.Series, low: pd.Series, close: pd.Series,
@@ -449,8 +458,10 @@ def scan_stock_candlestick_historical(
 
             # Filter by selected patterns if specified
             if selected_patterns:
-                pattern_names = [p for p in pattern_names if p in selected_patterns]
-                patterns = [p for p in patterns if p.get('pattern') in selected_patterns]
+                pattern_names = [
+                    p for p in pattern_names if p in selected_patterns]
+                patterns = [p for p in patterns if p.get(
+                    'pattern') in selected_patterns]
 
             # Skip if no matching patterns after filtering
             if not pattern_names:
@@ -470,7 +481,8 @@ def scan_stock_candlestick_historical(
                 # For other levels, use kc_middle + (kc_level * ATR)
                 atr_val = float(indicators['atr'].iloc[idx]) if not pd.isna(
                     indicators['atr'].iloc[idx]) else 0
-                kc_threshold = kc_middle + (kc_level * atr_val) if kc_middle and atr_val else kc_middle
+                kc_threshold = kc_middle + \
+                    (kc_level * atr_val) if kc_middle and atr_val else kc_middle
 
             # Calculate filter conditions
             below_kc_threshold = close_price < kc_threshold if kc_threshold else False
@@ -606,7 +618,6 @@ def run_candlestick_screener(
 
 
 # Stock list - NIFTY 100 (NSE India)
-from services.screener_v2 import NIFTY_100
 
 
 def get_stock_list(market: str = 'IN') -> List[str]:

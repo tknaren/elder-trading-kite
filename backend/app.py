@@ -1,5 +1,5 @@
 """
-Elder Trading System - Local Application v2
+Kite Trading System v1.0 - Local Application
 Enhanced with connected workflow: Screener -> Trade Bill -> Kite Connect -> Trade Log -> Positions
 
 Run with: python app.py
@@ -77,7 +77,7 @@ if __name__ == '__main__':
     import threading
 
     print("\n" + "="*50)
-    print("  Elder Trading System - Local Server")
+    print("  Kite Trading System v1.0 - Local Server")
     print("="*50)
     print(f"\n  Database: SQL Server ({DatabaseConfig.display_info()})")
     print("  Open in browser: http://localhost:5001")

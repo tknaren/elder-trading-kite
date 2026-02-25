@@ -1,8 +1,8 @@
 @echo off
-title Elder Trading System
+title Kite Trading System v1.0
 echo.
 echo ================================================
-echo     Elder Trading System - Starting Server
+echo     Kite Trading System v1.0 - Starting Server
 echo ================================================
 echo.
 echo Opening browser in 3 seconds...
