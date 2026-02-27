@@ -871,31 +871,34 @@ def create_gtt_oco_split():
     """
     data = request.get_json()
     quantity = int(data.get('quantity', 0))
-    if quantity <= 0:
-        return jsonify({'success': False, 'error': 'Quantity must be positive'}), 400
 
-    half_qty = quantity // 2
-    if half_qty <= 0:
-        return jsonify({'success': False, 'error': 'Quantity must be at least 2 for OCO split'}), 400
+    # Accept separate sl_quantity and target_quantity; fall back to legacy behavior
+    sl_quantity = int(data.get('sl_quantity', 0)) or quantity
+    target_quantity = int(data.get('target_quantity', 0)) or (quantity // 2 if quantity > 0 else 0)
+
+    if sl_quantity <= 0:
+        return jsonify({'success': False, 'error': 'SL quantity must be positive'}), 400
+    if target_quantity <= 0:
+        return jsonify({'success': False, 'error': 'Target quantity must be positive'}), 400
 
     symbol = data['symbol']
     results = {'sl_gtt': None, 'target_gtt': None}
 
-    # 1. GTT for Stop Loss - FULL quantity
+    # 1. GTT for Stop Loss
     sl_result = place_gtt_order(
         symbol=symbol,
         transaction_type=TRANSACTION_SELL,
-        quantity=quantity,
+        quantity=sl_quantity,
         trigger_price=data['stop_loss_trigger'],
         limit_price=data['stop_loss_price']
     )
     results['sl_gtt'] = sl_result
 
-    # 2. GTT for Target - HALF quantity
+    # 2. GTT for Target
     target_result = place_gtt_order(
         symbol=symbol,
         transaction_type=TRANSACTION_SELL,
-        quantity=half_qty,
+        quantity=target_quantity,
         trigger_price=data['target_trigger'],
         limit_price=data['target_price']
     )
@@ -906,9 +909,9 @@ def create_gtt_oco_split():
         'success': success,
         'sl_gtt': sl_result,
         'target_gtt': target_result,
-        'sl_quantity': quantity,
-        'target_quantity': half_qty,
-        'message': f'SL GTT: {quantity} shares, Target GTT: {half_qty} shares'
+        'sl_quantity': sl_quantity,
+        'target_quantity': target_quantity,
+        'message': f'SL GTT: {sl_quantity} shares, Target GTT: {target_quantity} shares'
     }), 201 if success else 400
 
 

@@ -1749,10 +1749,8 @@
             if (srcEl) srcEl.textContent = cmpSource === 'live' ? '● Live from Kite' : `● Cached (${stockResp.date})`;
             if (srcEl) srcEl.className = `text-xs mt-0.5 ${cmpSource === 'live' ? 'text-green-400' : 'text-gray-500'}`;
 
-            // Entry, SL, Target from cached data
-            document.getElementById('tb-entry').value = stockResp.suggested_entry.toFixed(2);
-            document.getElementById('tb-sl').value = stockResp.suggested_stop.toFixed(2);
-            document.getElementById('tb-target').value = stockResp.suggested_target.toFixed(2);
+            // Entry, SL, Target: leave empty for manual input (user decides entry/SL/target)
+            // Cached suggestions available: stockResp.suggested_entry, stockResp.suggested_stop, stockResp.suggested_target
 
             // ATR
             if (atrResp?.atr) {
@@ -2775,9 +2773,9 @@
     async function loadPortfolioContext() {
         const el = document.getElementById('tb-portfolio-ctx');
         if (!el) return;
-        const s = settings[0] || {trading_capital: 500000, risk_per_trade: 2};
+        const s = settings[0] || {trading_capital: 500000, risk_per_trade: 2, max_monthly_drawdown: 6};
         const capital = s.trading_capital || 500000;
-        const maxRiskPct = s.risk_per_trade || 2;
+        const maxRiskPct = s.max_monthly_drawdown || 6;
         const sym = '₹';
         try {
             // Fetch open trades to compute real portfolio risk from GTT stop losses
@@ -2785,10 +2783,11 @@
             const jData = await jResp.json();
             const openTrades = (jData.journals || []).filter(j => j.status === 'open');
 
-            // Total money at risk = sum of (entry - SL) x remaining qty for all open trades
+            // Total money at risk = sum of (entry - effectiveSL) x remaining qty for all open trades
+            // effectiveSL = trailing_stop if available, otherwise stop_loss (mirrors backend COALESCE logic)
             const moneyAtRisk = openTrades.reduce((sum, t) => {
                 const entry = t.avg_entry || t.entry_price || 0;
-                const sl = t.stop_loss || 0;
+                const sl = t.trailing_stop || t.stop_loss || 0;
                 const qty = t.remaining_qty || 0;
                 if (sl <= 0 || entry <= 0 || qty <= 0) return sum;
                 const risk = t.direction === 'Short' ? (sl - entry) * qty : (entry - sl) * qty;
@@ -2829,9 +2828,10 @@
         const manualQty = parseInt(document.getElementById('tb-qty').value) || 0;
         const otherCharges = parseFloat(document.getElementById('tb-oc').value) || 0;
 
-        const s = settings[0] || {trading_capital: 500000, risk_per_trade: 2, currency: 'INR'};
+        const s = settings[0] || {trading_capital: 500000, risk_per_trade: 2, currency: 'INR', max_monthly_drawdown: 6};
         const acSize = s.trading_capital;
         const riskPerTradePercent = s.risk_per_trade;
+        const maxTotalRiskPct = s.max_monthly_drawdown || 6;
 
         // Need at least entry and stop loss
         if (!entry || !sl) return;
@@ -2843,9 +2843,9 @@
         // Max Risk = Capital × (Risk% / 100)  — for display only
         const maxRisk = Math.round(acSize * (riskPerTradePercent / 100));
 
-        // Remaining risk budget = max risk% − currently used risk% from open positions
+        // Remaining risk budget = max total risk% − currently used risk% from open positions
         const usedRiskPct = window._portfolioRiskPct || 0;
-        const remainingRiskPct = Math.max(0, riskPerTradePercent - usedRiskPct);
+        const remainingRiskPct = Math.max(0, maxTotalRiskPct - usedRiskPct);
         const remainingRiskBudget = Math.round(acSize * (remainingRiskPct / 100));
 
         // Max Qty = even number based on REMAINING risk budget (not full max risk)
@@ -2893,7 +2893,7 @@
         const warnEl = document.getElementById('tb-risk-budget-warn');
         if (warnEl) {
             if (remainingRiskPct <= 0) {
-                warnEl.textContent = `⚠️ Risk budget exhausted (Used: ${usedRiskPct.toFixed(2)}% / Max: ${riskPerTradePercent}%) — no new position allowed`;
+                warnEl.textContent = `⚠️ Risk budget exhausted (Used: ${usedRiskPct.toFixed(2)}% / Max: ${maxTotalRiskPct}%) — no new position allowed`;
                 warnEl.className = 'text-xs text-red-400 mt-1';
             } else if (usedRiskPct > 0) {
                 warnEl.textContent = `ℹ️ Portfolio risk: ${usedRiskPct.toFixed(2)}% used — remaining budget: ${remainingRiskPct.toFixed(2)}%`;
@@ -3195,8 +3195,13 @@
                 <p class="text-xs text-gray-400">Symbol: <span class="text-blue-400 font-mono font-bold">${ticker}</span> &nbsp;|&nbsp; Transaction: <span class="text-red-400">SELL</span></p>
                 <!-- SL Leg -->
                 <div class="bg-red-900/20 border border-red-500/30 rounded-lg p-4 space-y-3">
-                    <h4 class="text-sm font-bold text-red-400">🔴 Stop Loss GTT — ${qty} shares (full position)</h4>
-                    <div class="grid grid-cols-2 gap-3">
+                    <h4 class="text-sm font-bold text-red-400">🔴 Stop Loss GTT</h4>
+                    <div class="grid grid-cols-3 gap-3">
+                        <div>
+                            <label class="text-xs text-gray-400">SL Qty</label>
+                            <input id="oco-sl-qty" type="number" step="1" min="1" value="${qty}"
+                                class="w-full mt-1 px-2 py-1.5 bg-[#111827] border border-red-500/50 rounded font-mono text-sm">
+                        </div>
                         <div>
                             <label class="text-xs text-gray-400">SL Trigger Price (₹)</label>
                             <input id="oco-sl-trigger" type="number" step="0.05" value="${sl.toFixed(2)}"
@@ -3204,7 +3209,7 @@
                                 oninput="document.getElementById('oco-sl-price').value=this.value">
                         </div>
                         <div>
-                            <label class="text-xs text-gray-400">SL Limit Price (₹) <span class="text-gray-500 italic">– edit if needed</span></label>
+                            <label class="text-xs text-gray-400">SL Limit Price (₹) <span class="text-gray-500 italic">– edit</span></label>
                             <input id="oco-sl-price" type="number" step="0.05" value="${sl.toFixed(2)}"
                                 class="w-full mt-1 px-2 py-1.5 bg-[#111827] border border-orange-500/50 rounded font-mono text-sm">
                         </div>
@@ -3212,8 +3217,13 @@
                 </div>
                 <!-- Target Leg -->
                 <div class="bg-green-900/20 border border-green-500/30 rounded-lg p-4 space-y-3">
-                    <h4 class="text-sm font-bold text-green-400">🟢 Target GTT — ${halfQty} shares (half position)</h4>
-                    <div class="grid grid-cols-2 gap-3">
+                    <h4 class="text-sm font-bold text-green-400">🟢 Target GTT</h4>
+                    <div class="grid grid-cols-3 gap-3">
+                        <div>
+                            <label class="text-xs text-gray-400">Target Qty</label>
+                            <input id="oco-target-qty" type="number" step="1" min="1" value="${halfQty}"
+                                class="w-full mt-1 px-2 py-1.5 bg-[#111827] border border-green-500/50 rounded font-mono text-sm">
+                        </div>
                         <div>
                             <label class="text-xs text-gray-400">Target Trigger Price (₹)</label>
                             <input id="oco-target-trigger" type="number" step="0.05" value="${target.toFixed(2)}"
@@ -3238,6 +3248,8 @@
         return new Promise((resolve) => {
             document.getElementById('oco-confirm-btn').onclick = async () => {
                 modal.classList.add('hidden');
+                const finalSlQty = parseInt(document.getElementById('oco-sl-qty').value);
+                const finalTargetQty = parseInt(document.getElementById('oco-target-qty').value);
                 const finalSlTrigger = parseFloat(document.getElementById('oco-sl-trigger').value);
                 const finalSlPrice = parseFloat(document.getElementById('oco-sl-price').value);
                 const finalTargetTrigger = parseFloat(document.getElementById('oco-target-trigger').value);
@@ -3248,7 +3260,8 @@
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({
                             symbol: ticker,
-                            quantity: qty,
+                            sl_quantity: finalSlQty,
+                            target_quantity: finalTargetQty,
                             stop_loss_trigger: finalSlTrigger,
                             stop_loss_price: finalSlPrice,
                             target_trigger: finalTargetTrigger,
@@ -3257,7 +3270,7 @@
                     });
                     const data = await result.json();
                     if (data.success) {
-                        toast(`OCO Split placed! SL: ${qty} shares, Target: ${halfQty} shares`, 'success');
+                        toast(`OCO Split placed! SL: ${finalSlQty} shares, Target: ${finalTargetQty} shares`, 'success');
                     } else {
                         toast(data.sl_gtt?.error || data.target_gtt?.error || 'Failed to place OCO orders', 'error');
                     }
@@ -3338,16 +3351,23 @@
         const sl = slPrice || 0;
         const target = targetPrice || 0;
 
-        // Show editable OCO modal
+        const halfQty = Math.floor(remainingQty / 2);
+
+        // Show editable OCO modal with qty fields
         const modal = document.getElementById('modal');
         modal.innerHTML = `
             <div class="bg-[#1f2937] rounded-xl border border-gray-600 max-w-lg w-full p-6 space-y-4">
                 <h3 class="text-lg font-bold text-white">📤 GTT OCO Sell — ${ticker}</h3>
-                <p class="text-xs text-gray-400">Quantity: <span class="text-yellow-400 font-mono font-bold">${remainingQty}</span> shares &nbsp;|&nbsp; Transaction: <span class="text-red-400">SELL</span></p>
+                <p class="text-xs text-gray-400">Total Position: <span class="text-yellow-400 font-mono font-bold">${remainingQty}</span> shares &nbsp;|&nbsp; Transaction: <span class="text-red-400">SELL</span></p>
                 <!-- SL Leg -->
                 <div class="bg-red-900/20 border border-red-500/30 rounded-lg p-4 space-y-3">
                     <h4 class="text-sm font-bold text-red-400">Stop Loss Leg</h4>
-                    <div class="grid grid-cols-2 gap-3">
+                    <div class="grid grid-cols-3 gap-3">
+                        <div>
+                            <label class="text-xs text-gray-400">SL Qty</label>
+                            <input id="tl-oco-sl-qty" type="number" step="1" min="1" value="${remainingQty}"
+                                class="w-full mt-1 px-2 py-1.5 bg-[#111827] border border-red-500/50 rounded font-mono text-sm">
+                        </div>
                         <div>
                             <label class="text-xs text-gray-400">SL Trigger Price</label>
                             <input id="tl-oco-sl-trigger" type="number" step="0.05" value="${sl.toFixed(2)}"
@@ -3355,7 +3375,7 @@
                                 oninput="document.getElementById('tl-oco-sl-price').value=this.value">
                         </div>
                         <div>
-                            <label class="text-xs text-gray-400">SL Limit Price <span class="text-gray-500 italic">– edit if needed</span></label>
+                            <label class="text-xs text-gray-400">SL Limit Price <span class="text-gray-500 italic">– edit</span></label>
                             <input id="tl-oco-sl-price" type="number" step="0.05" value="${sl.toFixed(2)}"
                                 class="w-full mt-1 px-2 py-1.5 bg-[#111827] border border-orange-500/50 rounded font-mono text-sm">
                         </div>
@@ -3364,7 +3384,12 @@
                 <!-- Target Leg -->
                 <div class="bg-green-900/20 border border-green-500/30 rounded-lg p-4 space-y-3">
                     <h4 class="text-sm font-bold text-green-400">Target Leg</h4>
-                    <div class="grid grid-cols-2 gap-3">
+                    <div class="grid grid-cols-3 gap-3">
+                        <div>
+                            <label class="text-xs text-gray-400">Target Qty</label>
+                            <input id="tl-oco-target-qty" type="number" step="1" min="1" value="${halfQty}"
+                                class="w-full mt-1 px-2 py-1.5 bg-[#111827] border border-green-500/50 rounded font-mono text-sm">
+                        </div>
                         <div>
                             <label class="text-xs text-gray-400">Target Trigger Price</label>
                             <input id="tl-oco-target-trigger" type="number" step="0.05" value="${target.toFixed(2)}"
@@ -3389,17 +3414,20 @@
         return new Promise((resolve) => {
             document.getElementById('tl-oco-confirm').onclick = async () => {
                 modal.classList.add('hidden');
+                const finalSlQty = parseInt(document.getElementById('tl-oco-sl-qty').value);
+                const finalTargetQty = parseInt(document.getElementById('tl-oco-target-qty').value);
                 const finalSlTrigger = parseFloat(document.getElementById('tl-oco-sl-trigger').value);
                 const finalSlPrice = parseFloat(document.getElementById('tl-oco-sl-price').value);
                 const finalTargetTrigger = parseFloat(document.getElementById('tl-oco-target-trigger').value);
                 const finalTargetPrice = parseFloat(document.getElementById('tl-oco-target-price').value);
                 try {
-                    const result = await fetch('/api/v2/kite/gtt/oco', {
+                    const result = await fetch('/api/v2/kite/gtt/oco-split', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({
                             symbol: ticker,
-                            quantity: remainingQty,
+                            sl_quantity: finalSlQty,
+                            target_quantity: finalTargetQty,
                             stop_loss_trigger: finalSlTrigger,
                             stop_loss_price: finalSlPrice,
                             target_trigger: finalTargetTrigger,
@@ -3408,9 +3436,9 @@
                     });
                     const data = await result.json();
                     if (data.success) {
-                        toast(`OCO GTT placed! Trigger ID: ${data.trigger_id}`, 'success');
+                        toast(`OCO Split placed! SL: ${finalSlQty} shares, Target: ${finalTargetQty} shares`, 'success');
                     } else {
-                        toast(data.error || 'Failed to place OCO GTT', 'error');
+                        toast(data.sl_gtt?.error || data.target_gtt?.error || 'Failed to place OCO GTT', 'error');
                     }
                 } catch(e) { toast('Error: ' + e.message, 'error'); }
                 resolve();
@@ -4372,10 +4400,11 @@
             return sum + (entry * qty);
         }, 0);
 
-        // Money at Risk: SUM((entry - SL) × remaining_qty) for open trades (direction-aware)
+        // Money at Risk: SUM((entry - effectiveSL) × remaining_qty) for open trades (direction-aware)
+        // effectiveSL = trailing_stop if set, otherwise stop_loss (mirrors backend COALESCE logic)
         const moneyAtRisk = openTrades.reduce((sum, t) => {
             const entry = t.avg_entry || t.entry_price || 0;
-            const sl = t.stop_loss || 0;
+            const sl = t.trailing_stop || t.stop_loss || 0;
             const qty = t.remaining_qty || 0;
             if (sl <= 0 || entry <= 0 || qty <= 0) return sum;
             const risk = t.direction === 'Short' ? (sl - entry) * qty : (entry - sl) * qty;
@@ -4485,7 +4514,10 @@
                                     <th class="p-2 text-right text-gray-400">Avg Entry</th>
                                     <th class="p-2 text-right text-gray-400">Avg Exit</th>
                                     <th class="p-2 text-right text-gray-400">SL</th>
+                                    <th class="p-2 text-right text-gray-400">Trail SL</th>
                                     <th class="p-2 text-right text-gray-400">Target</th>
+                                    <th class="p-2 text-right text-gray-400">Pos Size</th>
+                                    <th class="p-2 text-right text-gray-400">Risk %</th>
                                     <th class="p-2 text-right text-gray-400">Gain/Loss</th>
                                     <th class="p-2 text-right text-gray-400">G/L %</th>
                                     <th class="p-2 text-right text-gray-400">Notional P&L</th>
@@ -4517,7 +4549,10 @@
                                             <td class="p-2 text-right font-mono">${j.avg_entry != null && j.avg_entry > 0 ? sym + j.avg_entry.toFixed(2) : (j.entry_price ? sym + j.entry_price.toFixed(2) : '-')}</td>
                                             <td class="p-2 text-right font-mono">${j.avg_exit != null && j.avg_exit > 0 ? sym + j.avg_exit.toFixed(2) : '-'}</td>
                                             <td class="p-2 text-right font-mono text-red-400">${j.stop_loss ? sym + j.stop_loss.toFixed(2) : '-'}</td>
+                                            <td class="p-2 text-right font-mono text-yellow-400">${j.trailing_stop ? sym + j.trailing_stop.toFixed(2) : '-'}</td>
                                             <td class="p-2 text-right font-mono text-green-400">${j.target_price ? sym + j.target_price.toFixed(2) : '-'}</td>
+                                            <td class="p-2 text-right font-mono">${(() => { const e = j.avg_entry || j.entry_price || 0; const q = j.total_shares || j.quantity || 0; return e > 0 && q > 0 ? sym + (e * q).toLocaleString(undefined, {maximumFractionDigits: 0}) : '-'; })()}</td>
+                                            <td class="p-2 text-right font-mono ${(() => { const e = j.avg_entry || j.entry_price || 0; const sl = j.trailing_stop || j.stop_loss || 0; const q = j.remaining_qty || 0; if (sl <= 0 || e <= 0 || q <= 0) return ''; const risk = j.direction === 'Short' ? (sl - e) * q : (e - sl) * q; const pct = capital > 0 ? (risk / capital * 100) : 0; return pct > 0 ? 'text-red-400' : 'text-green-400'; })()}">${(() => { const e = j.avg_entry || j.entry_price || 0; const sl = j.trailing_stop || j.stop_loss || 0; const q = j.remaining_qty || 0; if (sl <= 0 || e <= 0 || q <= 0) return '-'; const risk = j.direction === 'Short' ? (sl - e) * q : (e - sl) * q; const pct = capital > 0 ? (risk / capital * 100) : 0; return pct.toFixed(2) + '%'; })()}</td>
                                             <td class="p-2 text-right font-mono ${(j.gain_loss_amount||0) >= 0 ? 'text-green-400' : 'text-red-400'}">${j.gain_loss_amount != null ? sym + j.gain_loss_amount.toFixed(2) : '-'}</td>
                                             <td class="p-2 text-right font-mono ${(j.gain_loss_percent||0) >= 0 ? 'text-green-400' : 'text-red-400'}">${j.gain_loss_percent != null ? j.gain_loss_percent.toFixed(2) + '%' : '-'}</td>
                                             <td class="p-2 text-right font-mono text-xs" id="tl-npnl-${j.id}">${j.status==='open'&&(j.remaining_qty||0)>0 ? '<span class="text-gray-500">…</span>' : '<span class="text-gray-600">—</span>'}</td>
@@ -4532,7 +4567,7 @@
                                             </td>
                                         </tr>
                                     `;
-                                }).join('') : '<tr><td colspan="18" class="p-8 text-center text-gray-500">No trades recorded. Click "+ New Trade" to start your first pyramiding trade!</td></tr>'}
+                                }).join('') : '<tr><td colspan="21" class="p-8 text-center text-gray-500">No trades recorded. Click "+ New Trade" to start your first pyramiding trade!</td></tr>'}
                             </tbody>
                         </table>
                     </div>
@@ -4643,7 +4678,7 @@
                 <!-- Trade Setup -->
                 <div class="bg-[#111827] rounded-xl p-4 border border-gray-700">
                     <h4 class="text-sm font-bold text-gray-400 border-b border-gray-600 pb-2 mb-3">Trade Setup</h4>
-                    <div class="grid grid-cols-9 gap-3 text-sm">
+                    <div class="grid grid-cols-8 gap-3 text-sm">
                         <div><label class="text-gray-500">Ticker</label><input id="tl-ticker" value="${j.ticker||''}" placeholder="RELIANCE" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono"></div>
                         <div><label class="text-gray-500">Date</label><input type="date" id="tl-date" value="${(j.journal_date ? String(j.journal_date).split('T')[0] : '') || new Date().toISOString().split('T')[0]}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded"></div>
                         <div><label class="text-gray-500">Direction</label><select id="tl-direction" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded">${directions.map(d => `<option ${j.direction===d?'selected':''}>${d}</option>`).join('')}</select></div>
@@ -4652,7 +4687,6 @@
                         <div><label class="text-gray-500">Trailing SL</label><input type="number" id="tl-trailing-sl" value="${j.trailing_stop||''}" step="0.01" class="w-full px-2 py-1.5 bg-yellow-900/30 border border-yellow-600 rounded font-mono"></div>
                         <div><label class="text-gray-500">Target</label><input type="number" id="tl-target" value="${j.target_price||''}" step="0.01" class="w-full px-2 py-1.5 bg-green-900/30 border border-green-600 rounded font-mono"></div>
                         <div><label class="text-gray-500">Initial SL <span class="text-gray-600">(static)</span></label><input type="number" id="tl-initialsl" value="${j.initial_stop_loss||j.stop_loss||''}" class="w-full px-2 py-1.5 bg-red-900/20 border border-gray-600 rounded font-mono" readonly></div>
-                        <div><label class="text-gray-500">Mistake</label><select id="tl-mistake" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded"><option value="">None</option>${mistakes.map(m => `<option ${j.mistake===m?'selected':''}>${m}</option>`).join('')}</select></div>
                     </div>
                 </div>
 
@@ -4790,13 +4824,14 @@
                     </div>
 
                     <!-- Trade Overview -->
-                    <div class="grid grid-cols-6 gap-3 text-sm mb-3">
+                    <div class="grid grid-cols-7 gap-3 text-sm mb-3">
                         <div><label class="text-gray-500">First Entry Date</label><input value="${j.first_entry_date?.split('T')[0]||''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
                         <div><label class="text-gray-500">Total Shares</label><input value="${j.total_shares != null ? j.total_shares : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
                         <div><label class="text-gray-500">Avg Entry</label><input value="${j.avg_entry != null && j.avg_entry > 0 ? sym + j.avg_entry.toFixed(2) : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
                         <div><label class="text-gray-500">High During Trade</label><input value="${j.high_during_trade != null ? sym + j.high_during_trade.toFixed(2) : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
                         <div><label class="text-gray-500">Low During Trade</label><input value="${j.low_during_trade != null ? sym + j.low_during_trade.toFixed(2) : ''}" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded font-mono" readonly></div>
                         <div><label class="text-gray-500">Trade Grade</label><select id="tl-grade" class="w-full px-2 py-1.5 bg-[#1f2937] border border-gray-600 rounded">${grades.map(g => `<option ${j.trade_grade===g?'selected':''}>${g}</option>`).join('')}</select></div>
+                        <div><label class="text-gray-500">Mistakes Made</label><select id="tl-mistake" class="w-full px-2 py-1.5 bg-red-900/20 border border-red-600/50 rounded"><option value="">None</option>${mistakes.map(m => `<option ${j.mistake===m?'selected':''}>${m}</option>`).join('')}</select></div>
                     </div>
 
                     <!-- Booked P&L (from exited shares) + Open Position side by side -->
@@ -6476,7 +6511,7 @@
 
                     <div class="grid grid-cols-3 gap-4">
                         <div><label class="text-sm text-gray-400">Risk % per Trade</label><input type="number" id="s-risk" value="${s.risk_per_trade}" step="0.5" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
-                        <div><label class="text-sm text-gray-400">Max Monthly DD %</label><input type="number" id="s-dd" value="${s.max_monthly_drawdown}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Max Monthly DD %</label><input type="number" id="s-dd" value="${s.max_monthly_drawdown}" oninput="document.getElementById('s-max-monthly-dd').value=this.value" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                         <div><label class="text-sm text-gray-400">Target R:R</label><input type="number" id="s-rr" value="${s.target_rr}" step="0.5" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                     </div>
 
@@ -6484,7 +6519,7 @@
                     <h4 class="font-semibold text-gray-400 text-sm mt-4 pt-4 border-t border-gray-700">🛡️ Trade Limits (Rule Enforcement)</h4>
                     <p class="text-xs text-gray-500 mb-2">Orders will be hard-blocked if total risk exceeds MaxMonthlyDD. Risk = (AvgEntry - TrailingSL) × Qty.</p>
                     <div class="grid grid-cols-2 gap-4">
-                        <div><label class="text-sm text-gray-400">Max Total Risk % (Monthly DD)</label><input type="number" id="s-max-monthly-dd" value="${s.max_monthly_drawdown || 6}" step="0.5" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Max Total Risk % (Monthly DD)</label><input type="number" id="s-max-monthly-dd" value="${s.max_monthly_drawdown || 6}" step="0.5" oninput="document.getElementById('s-dd').value=this.value" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                         <div><label class="text-sm text-gray-400">Max Open Positions</label><input type="number" id="s-max-positions" value="${s.max_open_positions || 5}" step="1" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                     </div>
 
@@ -6812,11 +6847,10 @@
             trading_capital: parseFloat(document.getElementById('s-capital').value),
             broker: document.getElementById('s-broker').value,
             risk_per_trade: parseFloat(document.getElementById('s-risk').value),
-            max_monthly_drawdown: parseFloat(document.getElementById('s-dd').value),
             target_rr: parseFloat(document.getElementById('s-rr').value),
             currency: 'INR',  // Always INR for NSE
             market: 'IN',  // Always IN for NSE
-            // Trade Limits
+            // Trade Limits — max_monthly_drawdown saved from Trade Limits section
             max_monthly_drawdown: parseFloat(document.getElementById('s-max-monthly-dd').value),
             max_open_positions: parseInt(document.getElementById('s-max-positions').value)
         };
