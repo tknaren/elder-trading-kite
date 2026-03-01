@@ -660,3 +660,42 @@ def get_screener_info():
         'default_lookback_days': 180,
         'max_lookback_days': 365
     })
+
+
+# ═══════════════════════════════════════════════════════
+# RELATIVE STRENGTH SCREENER
+# ═══════════════════════════════════════════════════════
+
+@screener_routes.route('/relative-strength/run', methods=['POST'])
+def run_rs_screener():
+    """
+    Run Relative Strength screener across NIFTY 500 stocks.
+    Uses Mansfield RS formula against market (Nifty) and sector benchmarks.
+    Returns qualifying stocks with 20 data columns.
+    """
+    try:
+        from services.relative_strength import scan_relative_strength, load_sector_mapping
+
+        sector_map = load_sector_mapping()
+        if not sector_map:
+            return jsonify({
+                'error': 'Sector mapping data not found. Please ensure data/sector_mapping.json exists.',
+                'results': []
+            })
+
+        results = scan_relative_strength(sector_map)
+
+        return jsonify({
+            'success': True,
+            'results': results,
+            'total_scanned': len(sector_map),
+            'total_passed': len(results)
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'error': f'RS Screener error: {str(e)}',
+            'results': []
+        }), 500

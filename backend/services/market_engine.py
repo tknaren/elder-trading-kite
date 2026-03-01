@@ -2,17 +2,18 @@
 Elder Trading System - Background Market Engine
 =================================================
 
-Daemon thread that runs a 5-minute cycle during market hours:
+Daemon thread that runs at 15-minute aligned intervals during market hours:
   1. Fetch LTP for all watchlist symbols (batch)
   2. Refresh multi-timeframe OHLCV + indicators
   3. Evaluate active alerts against latest prices
-  4. Execute auto-trades for triggered alerts (Trade Bill + GTT Buy)
-  5. Refresh orders/positions from Kite
-  6. Queue notifications for frontend polling
+  4. Execute auto-trades for triggered alerts (candle close entry + auto sizing)
+  5. Monitor pending auto-trade orders for fill → place OCO Sell on execution
+  6. Refresh orders/positions from Kite
+  7. Queue notifications for frontend polling
 
 Architecture:
   - Single daemon thread, started when Flask app boots
-  - 5-minute sleep between cycles (configurable)
+  - 15-min aligned scheduling: runs at :01, :16, :31, :46 past each hour
   - Only runs during NSE market hours (9:15-15:30 IST, Mon-Fri)
   - Notifications stored in-memory queue, polled by frontend every 10 seconds
   - Engine state persisted to market_engine_state table
@@ -27,6 +28,51 @@ from typing import Dict, List, Optional
 from collections import deque
 
 from services.kite_client import get_client, is_nse_market_open
+
+import pytz
+IST = pytz.timezone('Asia/Kolkata')
+
+# Schedule: 1 minute after each 15-min candle close
+SCHEDULE_MINUTES = [1, 16, 31, 46]
+
+
+def _get_next_schedule_time():
+    """Calculate the next scheduled run time (IST)."""
+    now = datetime.now(IST)
+    current_minute = now.minute
+
+    # Find next scheduled minute in current hour
+    for sm in SCHEDULE_MINUTES:
+        if sm > current_minute:
+            return now.replace(minute=sm, second=0, microsecond=0)
+
+    # Next hour, first schedule
+    next_time = (now + timedelta(hours=1)).replace(minute=SCHEDULE_MINUTES[0], second=0, microsecond=0)
+    return next_time
+
+
+def _get_candle_close(symbol, timeframe='15min'):
+    """
+    Get the close price of the most recently completed candle.
+    Reads from intraday_ohlcv table (populated by timeframe_data refresh).
+    Fallback: returns None (caller should use LTP).
+    """
+    from models.database import get_database
+    db = get_database()
+    conn = db.get_connection()
+    try:
+        row = conn.execute('''
+            SELECT TOP 1 close_price FROM intraday_ohlcv
+            WHERE symbol = ? AND timeframe = ?
+            ORDER BY datetime DESC
+        ''', (symbol.replace('NSE:', ''), timeframe)).fetchone()
+        if row:
+            return row['close_price']
+    except Exception as e:
+        print(f"  Candle close lookup error for {symbol}: {e}")
+    finally:
+        conn.close()
+    return None
 
 
 # ═══════════════════════════════════════════════════════
@@ -274,18 +320,19 @@ def _handle_triggered_alert(app, user_id: int, trigger: Dict, ltp_map: Dict):
 def _execute_alert_trade(app, user_id: int, trigger: Dict, ltp_map: Dict) -> Dict:
     """
     Execute the auto-trade flow:
-      1. Calculate position size from account settings
-      2. Create Trade Bill
-      3. Place GTT Buy order
-      4. Create Trade Journal entry
+      1. Get candle close price (or fallback to LTP)
+      2. Calculate position size from AUTO-TRADE settings
+      3. Create Trade Bill (auto_created = 1)
+      4. Place NRML Limit Buy order at candle close price
+      5. Track in auto_trade_orders (OCO placed later on fill)
+      6. Create Trade Journal entry
     """
     from models.database import get_database
 
     symbol = trigger['symbol']
     ltp = trigger['trigger_price']
     sl = trigger.get('stop_loss')
-    target = trigger.get('target_price')
-    qty = trigger.get('quantity')
+    alert_timeframe = trigger.get('timeframe', '15min')
 
     result = {'symbol': symbol, 'trigger_price': ltp}
 
@@ -294,46 +341,85 @@ def _execute_alert_trade(app, user_id: int, trigger: Dict, ltp_map: Dict) -> Dic
         conn = db.get_connection()
 
         try:
-            # Get account settings for position sizing
+            # Get auto-trade settings (separate from manual trading settings)
             acct = conn.execute('''
-                SELECT trading_capital, risk_per_trade FROM account_settings
-                WHERE user_id = ?
+                SELECT trading_capital, risk_per_trade,
+                       auto_trade_capital, auto_trade_sl_pct,
+                       auto_trade_rr_ratio, auto_trade_max_trades
+                FROM account_settings WHERE user_id = ?
             ''', (user_id,)).fetchone()
 
-            if acct and sl and not qty:
-                # Auto-calculate quantity from risk
-                capital = acct['trading_capital'] or 500000
-                risk_pct = acct['risk_per_trade'] or 2.0
-                max_risk = capital * risk_pct / 100
-                risk_per_share = abs(ltp - sl)
-                if risk_per_share > 0:
-                    qty = int(max_risk / risk_per_share)
-                    # Even quantity for OCO split
-                    qty = max(2, (qty // 2) * 2)
+            at_capital = (acct['auto_trade_capital'] if acct else None) or 100000
+            at_sl_pct = (acct['auto_trade_sl_pct'] if acct else None) or 1.0
+            at_rr = (acct['auto_trade_rr_ratio'] if acct else None) or 2.0
+            at_max = (acct['auto_trade_max_trades'] if acct else None) or 3
 
-            if not qty:
-                qty = 1  # Fallback
+            # Check max auto trades limit
+            active_auto = conn.execute('''
+                SELECT COUNT(*) AS cnt FROM auto_trade_orders
+                WHERE user_id = ? AND buy_status IN ('PENDING', 'COMPLETE')
+                AND (oco_status IS NULL OR oco_status != 'TRIGGERED')
+            ''', (user_id,)).fetchone()
+            if active_auto and active_auto['cnt'] >= at_max:
+                result['error'] = f'Max auto trades reached ({at_max})'
+                print(f"  Max auto trades reached ({at_max}), skipping {symbol}")
+                conn.close()
+                return result
 
-            # Create Trade Bill
+            # Use candle close price as entry (fallback to LTP)
+            candle_close = _get_candle_close(symbol, alert_timeframe)
+            entry = candle_close if candle_close else ltp
+            result['entry_price'] = entry
+            result['entry_source'] = 'candle_close' if candle_close else 'ltp'
+
+            if not sl:
+                result['error'] = 'No stop_loss configured in alert'
+                conn.close()
+                return result
+
+            # Auto-calculate quantity from auto-trade settings
+            risk_per_share = abs(entry - sl)
+            if risk_per_share <= 0:
+                result['error'] = 'Entry equals SL, cannot calculate risk'
+                conn.close()
+                return result
+
+            max_risk = at_capital * at_sl_pct / 100
+            qty = int(max_risk / risk_per_share)  # floor to whole number
+            if qty < 1:
+                qty = 1
+
+            # Calculate target from RR ratio
+            direction = trigger.get('direction', 'LONG')
+            if direction.upper() == 'LONG':
+                target = entry + risk_per_share * at_rr
+            else:
+                target = entry - risk_per_share * at_rr
+
+            result['quantity'] = qty
+            result['target'] = target
+
+            # Create Trade Bill (auto_created = 1)
             bill_data = {
                 'ticker': symbol.replace('NSE:', ''),
                 'symbol': symbol,
                 'current_market_price': ltp,
-                'entry_price': ltp,
+                'entry_price': entry,
                 'stop_loss': sl,
                 'target_price': target,
                 'quantity': qty,
-                'direction': trigger.get('direction', 'LONG'),
+                'direction': direction,
                 'status': 'active',
                 'alert_id': trigger['alert_id'],
-                'auto_created': True,
-                'risk_per_share': abs(ltp - sl) if sl else 0,
-                'risk_amount_currency': abs(ltp - sl) * qty if sl else 0,
+                'auto_created': 1,
+                'risk_per_share': risk_per_share,
+                'risk_amount_currency': risk_per_share * qty,
+                'reward_amount_currency': risk_per_share * at_rr * qty,
+                'risk_reward_ratio': at_rr,
                 'position_size': qty,
-                'position_value': ltp * qty,
+                'position_value': entry * qty,
             }
 
-            # Dynamic insert
             columns = ', '.join(bill_data.keys())
             placeholders = ', '.join(['?' for _ in bill_data])
             values = tuple(bill_data.values())
@@ -346,9 +432,9 @@ def _execute_alert_trade(app, user_id: int, trigger: Dict, ltp_map: Dict) -> Dic
 
             trade_bill_id = int(bill_row[0])
             result['trade_bill_id'] = trade_bill_id
-            print(f"  Created Trade Bill #{trade_bill_id} for {symbol}")
+            print(f"  Created Auto Trade Bill #{trade_bill_id} for {symbol} @ {entry}")
 
-            # Create Trade Journal entry
+            # Create Trade Journal entry (pre-populated, entries added on fill)
             journal_row = conn.execute('''
                 INSERT INTO trade_journal_v2 (
                     user_id, trade_bill_id, ticker, cmp, direction, status,
@@ -360,8 +446,8 @@ def _execute_alert_trade(app, user_id: int, trigger: Dict, ltp_map: Dict) -> Dic
             ''', (
                 user_id, trade_bill_id,
                 symbol.replace('NSE:', ''), ltp,
-                trigger.get('direction', 'Long'),
-                ltp, qty, sl, target,
+                'Long' if direction.upper() == 'LONG' else 'Short',
+                entry, qty, sl, target,
                 trigger['alert_id']
             )).fetchone()
 
@@ -371,46 +457,46 @@ def _execute_alert_trade(app, user_id: int, trigger: Dict, ltp_map: Dict) -> Dic
 
             conn.commit()
 
-            # Place NRML Limit Buy Order (CNC delivery)
+            # Place NRML Limit Buy Order at candle close price
+            buy_order_id = None
             try:
                 from services.kite_orders import place_order
                 nrml_result = place_order(
                     symbol=symbol.replace('NSE:', ''),
                     transaction_type='BUY',
                     quantity=qty,
-                    price=ltp,
+                    price=entry,
                     order_type='LIMIT',
                     product='CNC'
                 )
                 if nrml_result and nrml_result.get('order_id'):
-                    result['order_id'] = str(nrml_result['order_id'])
-                    print(f"  NRML Buy placed: {result['order_id']}")
+                    buy_order_id = str(nrml_result['order_id'])
+                    result['order_id'] = buy_order_id
+                    print(f"  NRML Buy placed: {buy_order_id} @ {entry}")
                 else:
                     result['order_error'] = 'NRML order returned no order_id'
             except Exception as e:
                 result['order_error'] = str(e)
                 print(f"  NRML order failed: {e}")
 
-            # Place GTT OCO Sell (SL + Target) in parallel
-            if sl and target:
-                try:
-                    from services.kite_orders import place_gtt_oco
-                    oco_result = place_gtt_oco(
-                        symbol=symbol,
-                        quantity=qty,
-                        stop_loss_trigger=sl,
-                        stop_loss_price=sl,
-                        target_trigger=target,
-                        target_price=target
-                    )
-                    if oco_result and oco_result.get('trigger_id'):
-                        result['gtt_oco_id'] = str(oco_result['trigger_id'])
-                        print(f"  GTT OCO placed: {result['gtt_oco_id']}")
-                    else:
-                        result['gtt_oco_error'] = 'OCO placement returned no trigger_id'
-                except Exception as e:
-                    result['gtt_oco_error'] = str(e)
-                    print(f"  GTT OCO placement failed: {e}")
+            # Track in auto_trade_orders (OCO placed after fill confirmation)
+            conn2 = db.get_connection()
+            try:
+                conn2.execute('''
+                    INSERT INTO auto_trade_orders (
+                        user_id, alert_id, trade_bill_id, journal_id,
+                        symbol, buy_order_id, buy_status, buy_price,
+                        quantity, stop_loss, target
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    user_id, trigger['alert_id'], trade_bill_id, journal_id,
+                    symbol.replace('NSE:', ''),
+                    buy_order_id, 'PENDING' if buy_order_id else 'FAILED',
+                    entry, qty, sl, target
+                ))
+                conn2.commit()
+            finally:
+                conn2.close()
 
         except Exception as e:
             conn.rollback()
@@ -443,23 +529,147 @@ def _refresh_orders_positions_cache(app, user_id: int):
 # ENGINE LIFECYCLE
 # ═══════════════════════════════════════════════════════
 
+def _monitor_auto_trade_orders(app):
+    """
+    Check pending auto-trade buy orders for execution.
+    When filled: place OCO Sell GTT (same qty both legs), update tracking.
+    """
+    from models.database import get_database
+
+    with app.app_context():
+        db = get_database()
+        conn = db.get_connection()
+        try:
+            # Get pending orders that have a buy_order_id
+            pending = conn.execute('''
+                SELECT * FROM auto_trade_orders
+                WHERE buy_status = 'PENDING' AND buy_order_id IS NOT NULL
+            ''').fetchall()
+
+            if not pending:
+                return
+
+            # Fetch order book from Kite
+            client = get_client()
+            if not client or not client._authenticated:
+                return
+
+            try:
+                orders = client.kite.orders()
+            except Exception as e:
+                print(f"  Order fetch error: {e}")
+                return
+
+            order_map = {str(o['order_id']): o for o in orders}
+
+            for ato in pending:
+                kite_order = order_map.get(ato['buy_order_id'])
+                if not kite_order:
+                    continue
+
+                status = kite_order.get('status', '')
+
+                if status == 'COMPLETE':
+                    fill_price = kite_order.get('average_price', ato['buy_price'])
+                    print(f"  Auto-trade FILLED: {ato['symbol']} @ {fill_price}")
+
+                    # 1. Place OCO Sell (same qty both legs)
+                    oco_id = None
+                    try:
+                        from services.kite_orders import place_gtt_oco
+                        oco_result = place_gtt_oco(
+                            symbol=f"NSE:{ato['symbol']}",
+                            quantity=ato['quantity'],
+                            stop_loss_trigger=ato['stop_loss'],
+                            stop_loss_price=ato['stop_loss'],
+                            target_trigger=ato['target'],
+                            target_price=ato['target']
+                        )
+                        if oco_result and oco_result.get('trigger_id'):
+                            oco_id = str(oco_result['trigger_id'])
+                            print(f"  OCO Sell placed: {oco_id}")
+                    except Exception as e:
+                        print(f"  OCO placement error: {e}")
+
+                    # 2. Update auto_trade_orders tracking
+                    conn.execute('''
+                        UPDATE auto_trade_orders
+                        SET buy_status = 'COMPLETE', fill_price = ?,
+                            oco_trigger_id = ?, oco_status = ?,
+                            updated_at = GETDATE()
+                        WHERE id = ?
+                    ''', (fill_price, oco_id, 'PLACED' if oco_id else None, ato['id']))
+
+                    # 3. Create trade entry record with actual fill price
+                    if ato['journal_id']:
+                        try:
+                            conn.execute('''
+                                INSERT INTO trade_entries (
+                                    journal_id, entry_datetime, entry_price, quantity,
+                                    day_high, day_low
+                                ) VALUES (?, GETDATE(), ?, ?, 0, 0)
+                            ''', (ato['journal_id'], fill_price, ato['quantity']))
+
+                            # Update journal with avg_entry from fill
+                            conn.execute('''
+                                UPDATE trade_journal_v2
+                                SET avg_entry = ?, total_shares = ?, remaining_qty = ?,
+                                    first_entry_date = GETDATE()
+                                WHERE id = ?
+                            ''', (fill_price, ato['quantity'], ato['quantity'], ato['journal_id']))
+                        except Exception as e:
+                            print(f"  Journal update error: {e}")
+
+                    conn.commit()
+
+                    push_notification(
+                        'trade_filled',
+                        f'Order Filled: {ato["symbol"]}',
+                        f"Buy filled @ {fill_price:.2f}, Qty: {ato['quantity']}. "
+                        f"{'OCO Sell placed.' if oco_id else 'OCO pending.'}",
+                        symbol=ato['symbol']
+                    )
+
+                elif status in ('CANCELLED', 'REJECTED'):
+                    conn.execute('''
+                        UPDATE auto_trade_orders
+                        SET buy_status = ?, updated_at = GETDATE()
+                        WHERE id = ?
+                    ''', (status, ato['id']))
+                    conn.commit()
+
+                    push_notification(
+                        'order_failed',
+                        f'Order {status}: {ato["symbol"]}',
+                        f"Buy order {ato['buy_order_id']} was {status}.",
+                        symbol=ato['symbol']
+                    )
+
+        except Exception as e:
+            print(f"  Order monitoring error: {e}")
+            traceback.print_exc()
+        finally:
+            conn.close()
+
+
 def _engine_loop(app, cycle_seconds: int = 300):
     """
-    Main engine loop. Runs in a daemon thread.
-    Sleeps between cycles, only active during market hours.
+    Main engine loop with 15-min aligned scheduling.
+    Runs at :01, :16, :31, :46 past each hour during market hours.
+    cycle_seconds is kept for API compatibility but scheduling is now time-aligned.
     """
     global _engine_running
 
     print("\n" + "=" * 60)
-    print("  Market Engine STARTED")
-    print(f"  Cycle interval: {cycle_seconds}s ({cycle_seconds//60} min)")
+    print("  Market Engine STARTED (15-min aligned)")
+    print(f"  Schedule: runs at minutes {SCHEDULE_MINUTES} past each hour")
     print("=" * 60 + "\n")
 
     _engine_stats['started_at'] = datetime.now().isoformat()
     _engine_stats['status'] = 'running'
 
     push_notification('info', 'Engine Started',
-                      f'Market engine started with {cycle_seconds}s cycle interval.')
+                      f'Market engine started with 15-min aligned scheduling.')
 
     while _engine_running:
         try:
@@ -468,6 +678,8 @@ def _engine_loop(app, cycle_seconds: int = 300):
             if is_open:
                 _engine_stats['status'] = 'running'
                 _run_cycle(app)
+                # Monitor pending auto-trade orders for fills
+                _monitor_auto_trade_orders(app)
             else:
                 _engine_stats['status'] = 'waiting'
                 print(f"  Market closed: {msg}. Waiting...")
@@ -476,8 +688,17 @@ def _engine_loop(app, cycle_seconds: int = 300):
             print(f"  Engine loop error: {e}")
             traceback.print_exc()
 
-        # Sleep in 1-second increments so we can respond to stop requests quickly
-        for _ in range(cycle_seconds):
+        # Sleep until next scheduled time
+        try:
+            next_time = _get_next_schedule_time()
+            wait_seconds = max(1, (next_time - datetime.now(IST)).total_seconds())
+            next_str = next_time.strftime('%H:%M:%S')
+            print(f"  Next cycle at {next_str} IST ({int(wait_seconds)}s)")
+        except Exception:
+            wait_seconds = cycle_seconds  # Fallback
+
+        # Sleep in 1-second increments for responsive shutdown
+        for _ in range(int(wait_seconds)):
             if not _engine_running:
                 break
             time_module.sleep(1)

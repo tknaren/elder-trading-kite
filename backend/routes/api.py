@@ -760,10 +760,11 @@ def create_trade_bill():
                 target_1_3_a, risk_amount_currency, reward_amount_currency, risk_reward_ratio,
                 break_even, trailing_stop, is_filled, stop_entered, target_entered,
                 journal_entered, comments, status, created_at,
-                atr, candle_pattern, candle_1_conviction, candle_2_conviction
+                atr, candle_pattern, candle_1_conviction, candle_2_conviction,
+                auto_created
             )
             OUTPUT INSERTED.id
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             user_id, data.get('ticker'), data.get('current_market_price'),
             data.get('entry_price'), data.get(
@@ -788,7 +789,8 @@ def create_trade_bill():
                 'journal_entered') else 0,
             data.get('comments', ''), 'active', datetime.now().isoformat(),
             data.get('atr'), data.get('candle_pattern'),
-            data.get('candle_1_conviction'), data.get('candle_2_conviction')
+            data.get('candle_1_conviction'), data.get('candle_2_conviction'),
+            1 if data.get('auto_created') else 0
         ))
         trade_bill_id = int(cursor.fetchone()[0])
         conn.commit()
@@ -970,7 +972,8 @@ def update_account_info():
         'max_monthly_drawdown', 'target_rr', 'max_open_positions',
         'currency', 'broker', 'kite_api_key', 'kite_api_secret',
         'kite_access_token', 'kite_token_expiry', 'last_data_refresh',
-        'risk_per_day', 'max_trades_per_day', 'risk_per_week'
+        'risk_per_day', 'max_trades_per_day', 'risk_per_week',
+        'auto_trade_capital', 'auto_trade_sl_pct', 'auto_trade_rr_ratio', 'auto_trade_max_trades'
     ]
 
     # Filter data to only include allowed fields

@@ -185,6 +185,10 @@ class Database:
             ('risk_per_day', 'FLOAT DEFAULT 2.0'),
             ('max_trades_per_day', 'INT DEFAULT 3'),
             ('risk_per_week', 'FLOAT DEFAULT 5.0'),
+            ('auto_trade_capital', 'FLOAT DEFAULT 100000'),
+            ('auto_trade_sl_pct', 'FLOAT DEFAULT 1.0'),
+            ('auto_trade_rr_ratio', 'FLOAT DEFAULT 2.0'),
+            ('auto_trade_max_trades', 'INT DEFAULT 3'),
         ]:
             try:
                 conn.execute(f"""
@@ -1049,6 +1053,31 @@ class Database:
             )
         """)
 
+        # Auto-Trade Orders — tracks automated order lifecycle
+        conn.execute("""
+            IF OBJECT_ID('auto_trade_orders', 'U') IS NULL
+            CREATE TABLE auto_trade_orders (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                user_id INT NOT NULL,
+                alert_id INT,
+                trade_bill_id INT,
+                journal_id INT,
+                symbol NVARCHAR(100) NOT NULL,
+                buy_order_id NVARCHAR(100),
+                buy_status NVARCHAR(50) DEFAULT 'PENDING',
+                buy_price FLOAT,
+                fill_price FLOAT,
+                quantity INT,
+                stop_loss FLOAT,
+                target FLOAT,
+                oco_trigger_id NVARCHAR(100),
+                oco_status NVARCHAR(50),
+                created_at DATETIME2 DEFAULT GETDATE(),
+                updated_at DATETIME2 DEFAULT GETDATE(),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+
         # Market Engine State — persists background engine config
         conn.execute("""
             IF OBJECT_ID('market_engine_state', 'U') IS NULL
@@ -1428,9 +1457,10 @@ class Database:
             'break_even', 'trailing_stop', 'is_filled', 'stop_entered', 'target_entered',
             'journal_entered', 'comments', 'status', 'order_id', 'signal_strength', 'grade',
             'symbol', 'market', 'direction', 'risk_amount', 'position_value',
-            'atr', 'candle_pattern', 'candle_1_conviction', 'candle_2_conviction', 'updated_at'
+            'atr', 'candle_pattern', 'candle_1_conviction', 'candle_2_conviction', 'updated_at',
+            'auto_created'
         }
-        bit_columns = {'is_filled', 'stop_entered', 'target_entered', 'journal_entered'}
+        bit_columns = {'is_filled', 'stop_entered', 'target_entered', 'journal_entered', 'auto_created'}
 
         filtered_data = {}
         for k, v in data.items():

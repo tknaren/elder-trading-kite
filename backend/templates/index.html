@@ -68,11 +68,9 @@
             {id:'market-engine', icon:'⚡', label:'Engine'}
         ]},
         {section: 'Screeners', items: [
-            {id:'screener', icon:'🔍', label:'Screener'},
-            {id:'backtest', icon:'📊', label:'Signal Scanner'},
             {id:'candlestick-screener', icon:'🕯️', label:'Candlestick'},
-            {id:'rsi-macd-screener', icon:'📈', label:'RSI+MACD'},
-            {id:'gss-screener', icon:'🎯', label:'GSS'}
+            {id:'gss-screener', icon:'🎯', label:'GSS'},
+            {id:'rs-screener', icon:'💪', label:'Relative Strength'}
         ]},
         {section: 'Trade Bill', items: [
             {id:'trade-bill', icon:'💼', label:'Trade Bill'},
@@ -329,11 +327,9 @@
 
     async function render() {
         const c = document.getElementById('content');
-        if(currentTab==='screener') c.innerHTML = screenView();
-        else if(currentTab==='backtest') c.innerHTML = await backtestView();
-        else if(currentTab==='candlestick-screener') c.innerHTML = candlestickScreenerView();
-        else if(currentTab==='rsi-macd-screener') c.innerHTML = rsiMacdScreenerView();
+        if(currentTab==='candlestick-screener') c.innerHTML = candlestickScreenerView();
         else if(currentTab==='gss-screener') c.innerHTML = gssScreenerView();
+        else if(currentTab==='rs-screener') c.innerHTML = await relativeStrengthView();
         else if(currentTab==='trading-watchlist') c.innerHTML = await tradingWatchlistView();
         else if(currentTab==='alert-manager') c.innerHTML = await alertManagerView();
         else if(currentTab==='market-engine') c.innerHTML = await marketEngineView();
@@ -2597,6 +2593,143 @@
         }
     }
 
+    // ========== RELATIVE STRENGTH SCREENER ==========
+    let rsResults = [];
+    let rsLoading = false;
+    let rsSortBy = 'static_rs';
+    let rsSortDir = 'desc';
+
+    function rsSort(col) {
+        if (rsSortBy === col) rsSortDir = rsSortDir === 'asc' ? 'desc' : 'asc';
+        else { rsSortBy = col; rsSortDir = 'desc'; }
+        render();
+    }
+    function rsIcon(col) { return rsSortBy === col ? (rsSortDir === 'asc' ? ' ▲' : ' ▼') : ''; }
+
+    async function relativeStrengthView() {
+        let sorted = [...rsResults];
+        if (rsSortBy) {
+            const dir = rsSortDir === 'asc' ? 1 : -1;
+            sorted.sort((a, b) => {
+                const va = a[rsSortBy], vb = b[rsSortBy];
+                if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * dir;
+                return String(va || '').localeCompare(String(vb || '')) * dir;
+            });
+        }
+
+        const tableRows = sorted.map(r => '<tr class="border-t border-gray-700/50 hover:bg-[#1f2937]/50">' +
+            '<td class="p-2 font-semibold">' + (r.name || '-') + '</td>' +
+            '<td class="p-2 font-mono text-blue-400">' + r.symbol + '</td>' +
+            '<td class="p-2">' + (r.exchange || 'NSE') + '</td>' +
+            '<td class="p-2 text-gray-300">' + (r.sector || '-') + '</td>' +
+            '<td class="p-2 text-gray-400">' + (r.industry || '-') + '</td>' +
+            '<td class="p-2 text-right font-mono">₹' + (r.close != null ? r.close.toFixed(2) : '-') + '</td>' +
+            '<td class="p-2 text-right font-mono ' + ((r.change_pct||0)>=0?'text-green-400':'text-red-400') + '">' + (r.change_pct != null ? r.change_pct.toFixed(2) : '0') + '%</td>' +
+            '<td class="p-2 text-right font-mono">' + (r.mcap ? r.mcap.toLocaleString() : '-') + '</td>' +
+            '<td class="p-2 text-right font-mono ' + ((r.change_1w||0)>=0?'text-green-400':'text-red-400') + '">' + (r.change_1w != null ? r.change_1w.toFixed(2) : '0') + '%</td>' +
+            '<td class="p-2 text-right font-mono ' + ((r.change_3m||0)>=0?'text-green-400':'text-red-400') + '">' + (r.change_3m != null ? r.change_3m.toFixed(2) : '0') + '%</td>' +
+            '<td class="p-2 text-right font-mono text-gray-400">' + (r.mkt_1w != null ? r.mkt_1w.toFixed(2) : '0') + '%</td>' +
+            '<td class="p-2 text-right font-mono text-gray-400">' + (r.mkt_3m != null ? r.mkt_3m.toFixed(2) : '0') + '%</td>' +
+            '<td class="p-2 text-right font-mono text-gray-400">' + (r.sect_1w != null ? r.sect_1w.toFixed(2) : '0') + '%</td>' +
+            '<td class="p-2 text-right font-mono text-gray-400">' + (r.sect_3m != null ? r.sect_3m.toFixed(2) : '0') + '%</td>' +
+            '<td class="p-2 text-right font-mono ' + ((r.static_rs||0)>0?'text-green-400':'text-red-400') + '">' + (r.static_rs != null ? r.static_rs.toFixed(2) : '0') + '</td>' +
+            '<td class="p-2 text-right font-mono ' + ((r.adaptive_rs||0)>0?'text-green-400':'text-red-400') + '">' + (r.adaptive_rs != null ? r.adaptive_rs.toFixed(2) : '0') + '</td>' +
+            '<td class="p-2 text-right font-mono ' + ((r.rs_market_55||0)>0?'text-green-400':'text-red-400') + '">' + (r.rs_market_55 != null ? r.rs_market_55.toFixed(2) : '0') + '</td>' +
+            '<td class="p-2 text-right font-mono ' + ((r.rs_sector_55||0)>0?'text-green-400':'text-red-400') + '">' + (r.rs_sector_55 != null ? r.rs_sector_55.toFixed(2) : '0') + '</td>' +
+            '<td class="p-2 text-right font-mono">' + (r.high != null ? r.high.toFixed(2) : '-') + '</td>' +
+            '<td class="p-2 text-right font-mono">' + (r.high_52w != null ? r.high_52w.toFixed(2) : '-') + '</td>' +
+            '</tr>'
+        ).join('');
+
+        const tableHtml = !rsLoading && sorted.length > 0 ? `
+            <div class="text-sm text-gray-400 mb-2">${sorted.length} stocks match all filter criteria</div>
+            <div class="bg-[#111827] rounded-xl border border-gray-700 overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-xs">
+                        <thead class="bg-[#1f2937] text-gray-400">
+                            <tr>
+                                <th class="p-2 text-left cursor-pointer hover:text-white select-none" onclick="rsSort('name')">Stock${rsIcon('name')}</th>
+                                <th class="p-2 text-left cursor-pointer hover:text-white select-none" onclick="rsSort('symbol')">Symbol${rsIcon('symbol')}</th>
+                                <th class="p-2 text-left cursor-pointer hover:text-white select-none" onclick="rsSort('exchange')">Exch${rsIcon('exchange')}</th>
+                                <th class="p-2 text-left cursor-pointer hover:text-white select-none" onclick="rsSort('sector')">Sector${rsIcon('sector')}</th>
+                                <th class="p-2 text-left cursor-pointer hover:text-white select-none" onclick="rsSort('industry')">Industry${rsIcon('industry')}</th>
+                                <th class="p-2 text-right cursor-pointer hover:text-white select-none" onclick="rsSort('close')">Close${rsIcon('close')}</th>
+                                <th class="p-2 text-right cursor-pointer hover:text-white select-none" onclick="rsSort('change_pct')">Chg%${rsIcon('change_pct')}</th>
+                                <th class="p-2 text-right cursor-pointer hover:text-white select-none" onclick="rsSort('mcap')">MCap(Cr)${rsIcon('mcap')}</th>
+                                <th class="p-2 text-right cursor-pointer hover:text-white select-none" onclick="rsSort('change_1w')">1W%${rsIcon('change_1w')}</th>
+                                <th class="p-2 text-right cursor-pointer hover:text-white select-none" onclick="rsSort('change_3m')">3M%${rsIcon('change_3m')}</th>
+                                <th class="p-2 text-right cursor-pointer hover:text-white select-none" onclick="rsSort('mkt_1w')">Mkt 1W%${rsIcon('mkt_1w')}</th>
+                                <th class="p-2 text-right cursor-pointer hover:text-white select-none" onclick="rsSort('mkt_3m')">Mkt 3M%${rsIcon('mkt_3m')}</th>
+                                <th class="p-2 text-right cursor-pointer hover:text-white select-none" onclick="rsSort('sect_1w')">Sect 1W%${rsIcon('sect_1w')}</th>
+                                <th class="p-2 text-right cursor-pointer hover:text-white select-none" onclick="rsSort('sect_3m')">Sect 3M%${rsIcon('sect_3m')}</th>
+                                <th class="p-2 text-right cursor-pointer hover:text-white select-none" onclick="rsSort('static_rs')">Static RS${rsIcon('static_rs')}</th>
+                                <th class="p-2 text-right cursor-pointer hover:text-white select-none" onclick="rsSort('adaptive_rs')">Adaptive RS${rsIcon('adaptive_rs')}</th>
+                                <th class="p-2 text-right cursor-pointer hover:text-white select-none" onclick="rsSort('rs_market_55')">RS Mkt 55D${rsIcon('rs_market_55')}</th>
+                                <th class="p-2 text-right cursor-pointer hover:text-white select-none" onclick="rsSort('rs_sector_55')">RS Sect 55D${rsIcon('rs_sector_55')}</th>
+                                <th class="p-2 text-right cursor-pointer hover:text-white select-none" onclick="rsSort('high')">High${rsIcon('high')}</th>
+                                <th class="p-2 text-right cursor-pointer hover:text-white select-none" onclick="rsSort('high_52w')">52W High${rsIcon('high_52w')}</th>
+                            </tr>
+                        </thead>
+                        <tbody>${tableRows}</tbody>
+                    </table>
+                </div>
+            </div>` : '';
+
+        const emptyHtml = !rsLoading && rsResults.length === 0 ? `
+            <div class="text-center py-20 text-gray-500">
+                <div class="text-6xl mb-4">💪</div>
+                <h3 class="text-xl font-semibold">Relative Strength Screener</h3>
+                <p class="mt-2">Click "Run Scanner" to scan NIFTY 500 stocks for relative strength.</p>
+                <div class="mt-4 text-left max-w-md mx-auto text-sm text-gray-600">
+                    <p class="font-semibold text-gray-400 mb-1">Filter Rules (ALL must pass):</p>
+                    <ul class="list-disc pl-5 space-y-1">
+                        <li>Stock outperforms Nifty in both 1W and 3M</li>
+                        <li>Stock outperforms its Sector Index in both 1W and 3M</li>
+                        <li>Static RS &gt; 0 AND Adaptive RS &gt; 0</li>
+                        <li>RS Market (55D) &gt; 0 AND RS Sector (55D) &gt; 0</li>
+                        <li>Close within 15% of 52-Week High</li>
+                    </ul>
+                </div>
+            </div>` : '';
+
+        return `
+            <div class="space-y-6">
+                <div class="flex justify-between items-center">
+                    <div>
+                        <h2 class="text-2xl font-bold">💪 Relative Strength Screener</h2>
+                        <p class="text-gray-500 text-sm">Mansfield RS — Stocks outperforming market &amp; sector benchmarks</p>
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="runRsScreener()" class="px-4 py-2 bg-blue-600 rounded-lg hover:bg-blue-700 ${rsLoading ? 'opacity-50' : ''}" ${rsLoading ? 'disabled' : ''}>
+                            ${rsLoading ? '⏳ Scanning...' : '🔍 Run Scanner'}
+                        </button>
+                    </div>
+                </div>
+                ${rsLoading ? '<div class="text-center py-20"><div class="animate-spin inline-block w-8 h-8 border-4 border-blue-400 border-t-transparent rounded-full"></div><p class="mt-4 text-gray-400">Scanning NIFTY 500 stocks... This may take a minute.</p></div>' : ''}
+                ${tableHtml}
+                ${emptyHtml}
+            </div>
+        `;
+    }
+
+    async function runRsScreener() {
+        rsLoading = true;
+        rsResults = [];
+        render();
+        try {
+            const resp = await fetch('/api/v2/screener/relative-strength/run', { method: 'POST' });
+            const data = await resp.json();
+            rsResults = data.results || [];
+            if (data.error) toast(data.error, 'error');
+            else toast('Found ' + rsResults.length + ' stocks matching RS criteria', 'success');
+        } catch(e) {
+            toast('RS Screener error: ' + e.message, 'error');
+        } finally {
+            rsLoading = false;
+            render();
+        }
+    }
+
     // ========== TRADE BILL ==========
     function tradeBillView() {
         const tb = window.tradeBillTemplate || {};
@@ -2628,7 +2761,7 @@
                 <!-- Trade Info Section -->
                 <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
                     <h3 class="font-bold text-lg text-blue-400">Trade Info</h3>
-                    <div class="grid grid-cols-3 gap-4">
+                    <div class="grid grid-cols-4 gap-4">
                         <div>
                             <label class="text-sm text-gray-400">Ticker (NSE)</label>
                             <input id="tb-ticker" value="${tb.ticker||''}" placeholder="RELIANCE" onkeyup="handleTickerTypeahead(event)" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono">
@@ -2640,6 +2773,12 @@
                             <div id="cmp-source" class="text-xs text-gray-600 mt-0.5"></div>
                         </div>
                         <div><label class="text-sm text-gray-400">Entry Price (${sym})</label><input id="tb-entry" type="number" value="${tb.entry_price||''}" step="0.05" placeholder="2450.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Trade Type</label>
+                            <select id="tb-auto" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg">
+                                <option value="0" ${!tb.auto_created?'selected':''}>✋ Manual</option>
+                                <option value="1" ${tb.auto_created?'selected':''}>🤖 Automatic</option>
+                            </select>
+                        </div>
                     </div>
                     <div class="grid grid-cols-4 gap-4">
                         <div><label class="text-sm text-gray-400">Stop Loss (${sym})</label><input id="tb-sl" type="number" value="${tb.stop_loss||''}" step="0.05" placeholder="2400.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
@@ -2990,7 +3129,8 @@
             stop_entered: document.getElementById('tb-stop-entered').checked,
             target_entered: document.getElementById('tb-target-entered').checked,
             journal_entered: document.getElementById('tb-journal-entered').checked,
-            comments: document.getElementById('tb-comments').value
+            comments: document.getElementById('tb-comments').value,
+            auto_created: parseInt(document.getElementById('tb-auto').value) === 1
         };
 
         try {
@@ -3505,6 +3645,7 @@
                                             <th class="text-right p-3 font-medium text-gray-400">Pos Size</th>
                                             <th class="text-right p-3 font-medium text-gray-400">Risk (${sym})</th>
                                             <th class="text-right p-3 font-medium text-gray-400">R:R</th>
+                                            <th class="text-center p-3 font-medium text-gray-400">Type</th>
                                             <th class="text-center p-3 font-medium text-gray-400">Status</th>
                                             <th class="text-center p-3 font-medium text-gray-400">Actions</th>
                                         </tr>
@@ -3520,6 +3661,9 @@
                                                 <td class="p-3 text-right font-mono">${b.position_size ? sym + b.position_size.toLocaleString(undefined, {maximumFractionDigits: 0}) : '-'}</td>
                                                 <td class="p-3 text-right font-mono">${sym}${b.risk_amount_currency?.toFixed(2)}</td>
                                                 <td class="p-3 text-right font-mono ${b.risk_reward_ratio >= 2 ? 'text-green-400' : 'text-yellow-400'}">${b.risk_reward_ratio?.toFixed(2)}</td>
+                                                <td class="p-3 text-center">
+                                                    <span class="px-2 py-0.5 rounded text-xs ${b.auto_created ? 'bg-purple-500/20 text-purple-400' : 'bg-gray-500/20 text-gray-400'}">${b.auto_created ? 'Auto' : 'Manual'}</span>
+                                                </td>
                                                 <td class="p-3 text-center">
                                                     <span class="px-2 py-1 rounded text-xs font-bold ${
                                                         b.is_filled ? 'bg-green-500/20 text-green-400' :
@@ -4341,6 +4485,46 @@
     let currentTradeLog = null;
     let tradeLogMode = 'list'; // 'list' or 'detail'
 
+    // ── TradeLog Sorting State ──
+    window._tlSortBy = 'journal_date';
+    window._tlSortDir = 'desc';
+
+    const TL_COL_MAP = {
+        'journal_date': {field: j => j.journal_date || j.first_entry_date, type: 'date'},
+        'ticker': {field: j => j.ticker, type: 'string'},
+        'direction': {field: j => j.direction, type: 'string'},
+        'total_shares': {field: j => j.total_shares || j.quantity || 0, type: 'number'},
+        'remaining_qty': {field: j => j.remaining_qty || 0, type: 'number'},
+        'avg_entry': {field: j => j.avg_entry || j.entry_price || 0, type: 'number'},
+        'avg_exit': {field: j => j.avg_exit || 0, type: 'number'},
+        'stop_loss': {field: j => j.stop_loss || 0, type: 'number'},
+        'trailing_stop': {field: j => j.trailing_stop || 0, type: 'number'},
+        'target_price': {field: j => j.target_price || 0, type: 'number'},
+        'pos_size': {field: j => { const e = j.avg_entry || j.entry_price || 0; const q = j.total_shares || j.quantity || 0; return e * q; }, type: 'number'},
+        'risk_pct': {field: j => { const e = j.avg_entry || j.entry_price || 0; const sl = j.trailing_stop || j.stop_loss || 0; const q = j.remaining_qty || 0; if (sl <= 0 || e <= 0 || q <= 0) return 0; return j.direction === 'Short' ? (sl - e) * q : (e - sl) * q; }, type: 'number'},
+        'gain_loss_amount': {field: j => j.gain_loss_amount || 0, type: 'number'},
+        'gain_loss_percent': {field: j => j.gain_loss_percent || 0, type: 'number'},
+        'status': {field: j => j.status, type: 'string'},
+        'last_exit_date': {field: j => j.last_exit_date || '', type: 'date'},
+        'days_open': {field: j => { const d = j.first_entry_date || j.journal_date; if (!d) return 0; const start = new Date(d); const end = j.status === 'closed' && j.last_exit_date ? new Date(j.last_exit_date) : new Date(); return Math.max(0, Math.ceil((end - start) / (1000*60*60*24))); }, type: 'number'},
+        'trade_grade': {field: j => j.trade_grade || '', type: 'string'},
+    };
+
+    function sortTradeLog(column) {
+        if (window._tlSortBy === column) {
+            window._tlSortDir = window._tlSortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+            window._tlSortBy = column;
+            window._tlSortDir = 'asc';
+        }
+        render();
+    }
+
+    function tlSortIcon(col) {
+        if (window._tlSortBy !== col) return '';
+        return window._tlSortDir === 'asc' ? ' ▲' : ' ▼';
+    }
+
     async function tradeLogView() {
         // Load strategies and mistakes dynamically from API
         let strategies = [];
@@ -4506,30 +4690,44 @@
                         <table class="w-full text-sm">
                             <thead class="bg-[#1f2937]">
                                 <tr>
-                                    <th class="p-2 text-left text-gray-400">Date</th>
-                                    <th class="p-2 text-left text-gray-400">Ticker</th>
-                                    <th class="p-2 text-center text-gray-400">Dir</th>
-                                    <th class="p-2 text-right text-gray-400">Total Qty</th>
-                                    <th class="p-2 text-right text-gray-400">Remaining</th>
-                                    <th class="p-2 text-right text-gray-400">Avg Entry</th>
-                                    <th class="p-2 text-right text-gray-400">Avg Exit</th>
-                                    <th class="p-2 text-right text-gray-400">SL</th>
-                                    <th class="p-2 text-right text-gray-400">Trail SL</th>
-                                    <th class="p-2 text-right text-gray-400">Target</th>
-                                    <th class="p-2 text-right text-gray-400">Pos Size</th>
-                                    <th class="p-2 text-right text-gray-400">Risk %</th>
-                                    <th class="p-2 text-right text-gray-400">Gain/Loss</th>
-                                    <th class="p-2 text-right text-gray-400">G/L %</th>
+                                    <th class="p-2 text-left text-gray-400 cursor-pointer hover:text-white select-none" onclick="sortTradeLog('journal_date')">Date${tlSortIcon('journal_date')}</th>
+                                    <th class="p-2 text-left text-gray-400 cursor-pointer hover:text-white select-none" onclick="sortTradeLog('ticker')">Ticker${tlSortIcon('ticker')}</th>
+                                    <th class="p-2 text-center text-gray-400 cursor-pointer hover:text-white select-none" onclick="sortTradeLog('direction')">Dir${tlSortIcon('direction')}</th>
+                                    <th class="p-2 text-right text-gray-400 cursor-pointer hover:text-white select-none" onclick="sortTradeLog('total_shares')">Total Qty${tlSortIcon('total_shares')}</th>
+                                    <th class="p-2 text-right text-gray-400 cursor-pointer hover:text-white select-none" onclick="sortTradeLog('remaining_qty')">Remaining${tlSortIcon('remaining_qty')}</th>
+                                    <th class="p-2 text-right text-gray-400 cursor-pointer hover:text-white select-none" onclick="sortTradeLog('avg_entry')">Avg Entry${tlSortIcon('avg_entry')}</th>
+                                    <th class="p-2 text-right text-gray-400 cursor-pointer hover:text-white select-none" onclick="sortTradeLog('avg_exit')">Avg Exit${tlSortIcon('avg_exit')}</th>
+                                    <th class="p-2 text-right text-gray-400 cursor-pointer hover:text-white select-none" onclick="sortTradeLog('stop_loss')">SL${tlSortIcon('stop_loss')}</th>
+                                    <th class="p-2 text-right text-gray-400 cursor-pointer hover:text-white select-none" onclick="sortTradeLog('trailing_stop')">Trail SL${tlSortIcon('trailing_stop')}</th>
+                                    <th class="p-2 text-right text-gray-400 cursor-pointer hover:text-white select-none" onclick="sortTradeLog('target_price')">Target${tlSortIcon('target_price')}</th>
+                                    <th class="p-2 text-right text-gray-400 cursor-pointer hover:text-white select-none" onclick="sortTradeLog('pos_size')">Pos Size${tlSortIcon('pos_size')}</th>
+                                    <th class="p-2 text-right text-gray-400 cursor-pointer hover:text-white select-none" onclick="sortTradeLog('risk_pct')">Risk %${tlSortIcon('risk_pct')}</th>
+                                    <th class="p-2 text-right text-gray-400 cursor-pointer hover:text-white select-none" onclick="sortTradeLog('gain_loss_amount')">Gain/Loss${tlSortIcon('gain_loss_amount')}</th>
+                                    <th class="p-2 text-right text-gray-400 cursor-pointer hover:text-white select-none" onclick="sortTradeLog('gain_loss_percent')">G/L %${tlSortIcon('gain_loss_percent')}</th>
                                     <th class="p-2 text-right text-gray-400">Notional P&L</th>
                                     <th class="p-2 text-right text-gray-400">NPL%</th>
-                                    <th class="p-2 text-center text-gray-400">Status</th>
-                                    <th class="p-2 text-center text-gray-400">Last Exit</th>
-                                    <th class="p-2 text-center text-gray-400">Days</th>
-                                    <th class="p-2 text-center text-gray-400">Grade</th>
+                                    <th class="p-2 text-center text-gray-400 cursor-pointer hover:text-white select-none" onclick="sortTradeLog('status')">Status${tlSortIcon('status')}</th>
+                                    <th class="p-2 text-center text-gray-400 cursor-pointer hover:text-white select-none" onclick="sortTradeLog('last_exit_date')">Last Exit${tlSortIcon('last_exit_date')}</th>
+                                    <th class="p-2 text-center text-gray-400 cursor-pointer hover:text-white select-none" onclick="sortTradeLog('days_open')">Days${tlSortIcon('days_open')}</th>
+                                    <th class="p-2 text-center text-gray-400 cursor-pointer hover:text-white select-none" onclick="sortTradeLog('trade_grade')">Grade${tlSortIcon('trade_grade')}</th>
                                     <th class="p-2 text-center text-gray-400">Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
+                                ${(() => {
+                                    // Apply sorting
+                                    if (window._tlSortBy && TL_COL_MAP[window._tlSortBy]) {
+                                        const col = TL_COL_MAP[window._tlSortBy];
+                                        const dir = window._tlSortDir === 'asc' ? 1 : -1;
+                                        journals.sort((a, b) => {
+                                            const va = col.field(a), vb = col.field(b);
+                                            if (col.type === 'number') return ((va || 0) - (vb || 0)) * dir;
+                                            if (col.type === 'date') return (new Date(va || 0) - new Date(vb || 0)) * dir;
+                                            return String(va || '').localeCompare(String(vb || '')) * dir;
+                                        });
+                                    }
+                                    return '';
+                                })()}
                                 ${journals.length > 0 ? journals.map(j => {
                                     const firstEntryDate = j.first_entry_date || j.journal_date;
                                     const lastExitDate = j.last_exit_date;
@@ -6523,6 +6721,18 @@
                         <div><label class="text-sm text-gray-400">Max Open Positions</label><input type="number" id="s-max-positions" value="${s.max_open_positions || 5}" step="1" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
                     </div>
 
+                    <!-- Auto-Trade Configuration -->
+                    <h4 class="font-semibold text-gray-400 text-sm mt-4 pt-4 border-t border-gray-700">🤖 Auto-Trade Configuration</h4>
+                    <p class="text-xs text-gray-500 mb-2">Settings for automatic trade execution when alerts trigger. Auto-trades use separate capital allocation from manual trades.</p>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div><label class="text-sm text-gray-400">Capital Allocation (₹)</label><input type="number" id="s-at-capital" value="${s.auto_trade_capital || 100000}" step="1000" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">SL % of Capital</label><input type="number" id="s-at-sl-pct" value="${s.auto_trade_sl_pct || 1.0}" step="0.1" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div><label class="text-sm text-gray-400">Risk:Reward Ratio</label><input type="number" id="s-at-rr" value="${s.auto_trade_rr_ratio || 2.0}" step="0.5" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Max Auto Trades</label><input type="number" id="s-at-max" value="${s.auto_trade_max_trades || 3}" step="1" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                    </div>
+
                     <button onclick="saveSettings()" class="w-full py-3 bg-blue-600 rounded-lg font-medium hover:bg-blue-700">💾 Save Trading Settings</button>
                 </div>
 
@@ -6852,7 +7062,12 @@
             market: 'IN',  // Always IN for NSE
             // Trade Limits — max_monthly_drawdown saved from Trade Limits section
             max_monthly_drawdown: parseFloat(document.getElementById('s-max-monthly-dd').value),
-            max_open_positions: parseInt(document.getElementById('s-max-positions').value)
+            max_open_positions: parseInt(document.getElementById('s-max-positions').value),
+            // Auto-Trade Configuration
+            auto_trade_capital: parseFloat(document.getElementById('s-at-capital').value) || 100000,
+            auto_trade_sl_pct: parseFloat(document.getElementById('s-at-sl-pct').value) || 1.0,
+            auto_trade_rr_ratio: parseFloat(document.getElementById('s-at-rr').value) || 2.0,
+            auto_trade_max_trades: parseInt(document.getElementById('s-at-max').value) || 3
         };
         try {
             await api('PUT', '/account/info', data);

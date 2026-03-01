@@ -12,7 +12,8 @@
       "Bash(grep:*)",
       "Bash(python3:*)",
       "Bash(pip show:*)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(find \"/c/Naren/Working/Source/GitHubRepo/Claude_Trade/elder-trading-kite/backend\" -name \"*.py\" -type f -exec grep -l \"CREATE TABLE\" {} ;)"
     ]
   }
 }
