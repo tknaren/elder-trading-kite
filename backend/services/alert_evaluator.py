@@ -17,13 +17,30 @@ from typing import List, Dict, Optional
 import json
 import traceback
 
+import pytz
+
 from models.database import get_database
+
+IST = pytz.timezone('Asia/Kolkata')
+
+# 75-min block close times in IST (hour, minute) — 1 min after each close
+VALID_75MIN_SCHEDULE = {
+    (10, 31),   # Block 1 closes 10:30
+    (11, 46),   # Block 2 closes 11:45
+    (13, 1),    # Block 3 closes 13:00
+    (14, 16),   # Block 4 closes 14:15
+    (15, 31),   # Block 5 closes 15:30
+}
+
+# 15-min candle close minutes — only evaluate 15-min alerts at these minutes
+VALID_15MIN_MINUTES = {1, 16, 31, 46}
 
 
 def evaluate_alerts(user_id: int, ltp_map: Dict[str, float],
                     candle_patterns: Dict[str, Dict] = None) -> List[Dict]:
     """
     Evaluate all active alerts for a user against current LTP values.
+    Filters alerts by timeframe — 75-min alerts only evaluated at 75-min boundaries.
 
     Args:
         user_id: User ID
@@ -38,6 +55,10 @@ def evaluate_alerts(user_id: int, ltp_map: Dict[str, float],
     conn = db.get_connection()
     triggered = []
 
+    # Current IST time for timeframe-aware filtering
+    now_ist = datetime.now(IST)
+    current_hm = (now_ist.hour, now_ist.minute)
+
     try:
         # Fetch all active alerts for this user
         alerts = conn.execute('''
@@ -51,21 +72,20 @@ def evaluate_alerts(user_id: int, ltp_map: Dict[str, float],
         for alert in alerts:
             alert = dict(alert)
             symbol = alert['symbol']
+
+            # Timeframe-aware filtering: only evaluate at matching candle boundaries
+            tf = alert.get('timeframe', '15min')
+            if tf == '75min' and current_hm not in VALID_75MIN_SCHEDULE:
+                continue  # Not a 75-min boundary cycle
+            if tf == '15min' and now_ist.minute not in VALID_15MIN_MINUTES:
+                continue  # Not a 15-min boundary cycle
+            # 5-min alerts evaluate at every cycle (no filtering needed)
             # Normalize to bare symbol for LTP lookup (LTP map now uses bare keys)
             bare_symbol = symbol.replace('NSE:', '').strip().upper()
             ltp = ltp_map.get(bare_symbol)
 
             if ltp is None:
                 continue  # No price data for this symbol
-
-            # Check cooldown
-            last_trigger = alert.get('last_trigger_time')
-            cooldown = alert.get('cooldown_minutes', 60) or 60
-            if last_trigger:
-                if isinstance(last_trigger, str):
-                    last_trigger = datetime.fromisoformat(last_trigger)
-                if now - last_trigger < timedelta(minutes=cooldown):
-                    continue  # Still in cooldown
 
             # Evaluate price condition
             condition = alert.get('condition_type', 'price_below')
@@ -77,34 +97,6 @@ def evaluate_alerts(user_id: int, ltp_map: Dict[str, float],
 
             price_met = _check_price_condition(ltp, target_val, operator)
             if not price_met:
-                continue
-
-            # Check candle confirmation if required
-            candle_ok = True
-            if alert.get('candle_confirm') and candle_patterns:
-                sym_patterns = candle_patterns.get(symbol, {})
-                required_pattern = alert.get('candle_pattern', '')
-                if required_pattern:
-                    # Check if any matching pattern found
-                    candle_ok = any(
-                        required_pattern.lower() in pname.lower()
-                        for pname in sym_patterns.keys()
-                    )
-                else:
-                    # Any bullish pattern for LONG, any bearish for SHORT
-                    direction = alert.get('direction', 'LONG')
-                    if direction == 'LONG':
-                        candle_ok = any(
-                            v.get('type') == 'bullish' or v.get('conviction') in ('high', 'medium')
-                            for v in sym_patterns.values()
-                        ) if sym_patterns else False
-                    else:
-                        candle_ok = any(
-                            v.get('type') == 'bearish'
-                            for v in sym_patterns.values()
-                        ) if sym_patterns else False
-
-            if not candle_ok:
                 continue
 
             # Alert triggered!
@@ -119,16 +111,23 @@ def evaluate_alerts(user_id: int, ltp_map: Dict[str, float],
                 'stop_loss': alert.get('stop_loss'),
                 'target_price': alert.get('target_price'),
                 'quantity': alert.get('quantity'),
-                'candle_confirmed': bool(alert.get('candle_confirm')),
+                'condition_value': alert.get('condition_value'),
+                'timeframe': alert.get('timeframe', '15min'),
+                'trade_bill_id': alert.get('trade_bill_id'),
+                'max_target_price': alert.get('max_target_price'),
+                'min_quantity': alert.get('min_quantity'),
+                'max_take_profit': alert.get('max_take_profit'),
             }
             triggered.append(trigger_info)
 
-            # Update alert: increment trigger count, set last trigger time
+            # Update alert: increment trigger count, set last trigger time,
+            # and mark as 'triggered' to prevent re-triggering (no cooldown needed)
             conn.execute('''
                 UPDATE stock_alerts
                 SET trigger_count = ISNULL(trigger_count, 0) + 1,
                     last_trigger_time = GETDATE(),
-                    triggered_at = GETDATE()
+                    triggered_at = GETDATE(),
+                    status = 'triggered'
                 WHERE id = ?
             ''', (alert['id'],))
 
@@ -198,6 +197,32 @@ def log_alert_trigger(alert_id: int, user_id: int, symbol: str,
     except Exception as e:
         print(f"Error logging alert trigger: {e}")
         conn.rollback()
+    finally:
+        conn.close()
+
+
+def log_audit(user_id: int, action_type: str, source: str,
+              symbol: str = None, details: str = None,
+              status: str = 'success', related_id: int = None,
+              related_type: str = None):
+    """Log an action to the audit_log table."""
+    db = get_database()
+    conn = db.get_connection()
+    try:
+        conn.execute('''
+            INSERT INTO audit_log
+            (user_id, action_type, source, symbol, details, status,
+             related_id, related_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (user_id, action_type, source, symbol, details, status,
+              related_id, related_type))
+        conn.commit()
+    except Exception as e:
+        print(f"  Audit log error: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
     finally:
         conn.close()
 

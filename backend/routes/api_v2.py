@@ -1339,11 +1339,19 @@ def get_trade_journals():
     db = get_db()
     user_id = get_user_id()
 
-    journals = db.execute('''
-        SELECT * FROM trade_journal_v2
-        WHERE user_id = ?
-        ORDER BY journal_date DESC, created_at DESC
-    ''', (user_id,)).fetchall()
+    show_archived = request.args.get('status') == 'archived'
+    if show_archived:
+        journals = db.execute('''
+            SELECT * FROM trade_journal_v2
+            WHERE user_id = ? AND status = 'archived'
+            ORDER BY journal_date DESC, created_at DESC
+        ''', (user_id,)).fetchall()
+    else:
+        journals = db.execute('''
+            SELECT * FROM trade_journal_v2
+            WHERE user_id = ? AND ISNULL(status, 'open') != 'archived'
+            ORDER BY journal_date DESC, created_at DESC
+        ''', (user_id,)).fetchall()
 
     result = []
     for j in journals:
@@ -1554,7 +1562,7 @@ def update_trade_journal(journal_id):
 
 @api_v2.route('/trade-journal/<int:journal_id>', methods=['DELETE'])
 def delete_trade_journal(journal_id):
-    """Delete a trade journal and its entries/exits"""
+    """Archive a trade journal (soft-delete)"""
     db = get_db()
     user_id = get_user_id()
 
@@ -1566,13 +1574,29 @@ def delete_trade_journal(journal_id):
     if not journal:
         return jsonify({'error': 'Journal not found'}), 404
 
-    # Delete entries and exits first (cascaded by FK)
-    db.execute('DELETE FROM trade_entries WHERE journal_id = ?', (journal_id,))
-    db.execute('DELETE FROM trade_exits WHERE journal_id = ?', (journal_id,))
-    db.execute('DELETE FROM trade_journal_v2 WHERE id = ?', (journal_id,))
+    # Soft-delete: set status to archived
+    db.execute('''
+        UPDATE trade_journal_v2 SET status = 'archived', updated_at = GETDATE()
+        WHERE id = ? AND user_id = ?
+    ''', (journal_id, user_id))
     db.commit()
 
-    return jsonify({'success': True})
+    return jsonify({'success': True, 'message': 'Journal archived'})
+
+
+@api_v2.route('/trade-journal/<int:journal_id>/restore', methods=['POST'])
+def restore_trade_journal(journal_id):
+    """Restore an archived trade journal"""
+    db = get_db()
+    user_id = get_user_id()
+
+    db.execute('''
+        UPDATE trade_journal_v2 SET status = 'open', updated_at = GETDATE()
+        WHERE id = ? AND user_id = ?
+    ''', (journal_id, user_id))
+    db.commit()
+
+    return jsonify({'success': True, 'message': 'Journal restored'})
 
 
 def _auto_fill_day_range(db, ticker, datetime_str, day_high, day_low):
@@ -3299,10 +3323,38 @@ def get_live_cmp_batch():
 
 @api_v2.route('/stock-atr/<symbol>', methods=['GET'])
 def get_stock_atr(symbol):
-    """Get ATR from cached indicators"""
+    """Get ATR from cached indicators, or compute on-the-fly with custom period"""
     db = get_db()
     full_sym = symbol if ':' in symbol else f'NSE:{symbol}'
+    period = request.args.get('period', type=int)
 
+    if period and period != 14:
+        # Compute ATR(period) on-the-fly from daily OHLC data
+        rows = db.execute('''
+            SELECT TOP (?) high, low, [close] FROM stock_historical_data
+            WHERE symbol = ? ORDER BY date DESC
+        ''', (period + 10, full_sym)).fetchall()  # extra rows for warm-up
+
+        if len(rows) >= period + 1:
+            import pandas as pd
+            from services.indicators import calculate_atr
+            # Reverse to chronological order
+            rows = list(reversed(rows))
+            highs = pd.Series([r['high'] for r in rows])
+            lows = pd.Series([r['low'] for r in rows])
+            closes = pd.Series([r['close'] for r in rows])
+            atr_series = calculate_atr(highs, lows, closes, period)
+            atr_val = float(atr_series.iloc[-1])
+            if not pd.isna(atr_val):
+                return jsonify({
+                    'symbol': full_sym,
+                    'atr': round(atr_val, 2),
+                    'period': period
+                })
+
+        return jsonify({'error': f'Insufficient data for ATR({period}) on {symbol}'}), 404
+
+    # Default: use cached ATR(14) from indicators table
     row = db.execute('''
         SELECT TOP 1 atr, date FROM stock_indicators_daily
         WHERE symbol = ? ORDER BY date DESC
@@ -3980,10 +4032,11 @@ def create_alert():
             condition_type, condition_value, condition_operator,
             timeframe, candle_confirm, candle_pattern,
             auto_trade, stop_loss, target_price, quantity,
-            cooldown_minutes, notes
+            cooldown_minutes, notes, trade_bill_id,
+            max_target_price, min_quantity, max_take_profit
         )
         OUTPUT INSERTED.id
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         user_id, symbol,
         data.get('alert_name', f'{symbol} Alert'),
@@ -3998,12 +4051,25 @@ def create_alert():
         data.get('stop_loss'),
         data.get('target_price'),
         data.get('quantity'),
-        data.get('cooldown_minutes', 60),
-        data.get('notes')
+        data.get('cooldown_minutes', 0),
+        data.get('notes'),
+        data.get('trade_bill_id'),
+        data.get('max_target_price'),
+        data.get('min_quantity'),
+        data.get('max_take_profit')
     )).fetchone()
 
     db.commit()
     alert_id = int(row[0])
+
+    try:
+        from services.alert_evaluator import log_audit
+        log_audit(user_id, 'alert_created', 'manual', symbol,
+                  f"Alert '{data.get('alert_name', '')}' created, condition: {data.get('condition_operator', '<=')} {data.get('condition_value')}",
+                  related_id=alert_id, related_type='alert')
+    except Exception:
+        pass
+
     return jsonify({'success': True, 'id': alert_id}), 201
 
 
@@ -4028,6 +4094,7 @@ def update_alert(alert_id):
             timeframe = ?, candle_confirm = ?, candle_pattern = ?,
             auto_trade = ?, stop_loss = ?, target_price = ?, quantity = ?,
             cooldown_minutes = ?, notes = ?, status = ?,
+            max_target_price = ?, min_quantity = ?, max_take_profit = ?,
             updated_at = GETDATE()
         WHERE id = ?
     ''', (
@@ -4046,6 +4113,9 @@ def update_alert(alert_id):
         data.get('cooldown_minutes'),
         data.get('notes'),
         data.get('status', 'active'),
+        data.get('max_target_price'),
+        data.get('min_quantity'),
+        data.get('max_take_profit'),
         alert_id
     ))
     db.commit()
@@ -4064,8 +4134,19 @@ def delete_alert(alert_id):
     if not existing:
         return jsonify({'error': 'Alert not found'}), 404
 
+    # Delete child records first (FK constraint, no cascade)
+    db.execute('DELETE FROM alert_history WHERE alert_id = ?', (alert_id,))
     db.execute('DELETE FROM stock_alerts WHERE id = ?', (alert_id,))
     db.commit()
+
+    try:
+        from services.alert_evaluator import log_audit
+        log_audit(user_id, 'alert_deleted', 'manual', None,
+                  f"Alert #{alert_id} deleted",
+                  related_id=alert_id, related_type='alert')
+    except Exception:
+        pass
+
     return jsonify({'success': True})
 
 
@@ -4086,6 +4167,15 @@ def toggle_alert(alert_id):
         UPDATE stock_alerts SET status = ?, updated_at = GETDATE() WHERE id = ?
     ''', (new_status, alert_id))
     db.commit()
+
+    try:
+        from services.alert_evaluator import log_audit
+        log_audit(user_id, 'alert_toggled', 'manual',
+                  details=f"Alert #{alert_id} → {new_status}",
+                  related_id=alert_id, related_type='alert')
+    except Exception:
+        pass
+
     return jsonify({'success': True, 'status': new_status})
 
 
@@ -4127,6 +4217,12 @@ def engine_start():
     cycle_seconds = data.get('cycle_seconds', 300)
     started = start_engine(current_app._get_current_object(), cycle_seconds)
     if started:
+        try:
+            from services.alert_evaluator import log_audit
+            log_audit(get_user_id(), 'engine_started', 'api',
+                      details=f"Cycle: {cycle_seconds}s")
+        except Exception:
+            pass
         return jsonify({'success': True, 'message': 'Engine started'})
     return jsonify({'success': False, 'message': 'Engine already running'})
 
@@ -4137,6 +4233,11 @@ def engine_stop():
     from services.market_engine import stop_engine
     stopped = stop_engine()
     if stopped:
+        try:
+            from services.alert_evaluator import log_audit
+            log_audit(get_user_id(), 'engine_stopped', 'api')
+        except Exception:
+            pass
         return jsonify({'success': True, 'message': 'Engine stopped'})
     return jsonify({'success': False, 'message': 'Engine not running'})
 
@@ -4439,6 +4540,72 @@ def import_csv(entity):
         return jsonify({'error': f'Unknown entity: {entity}'}), 400
 
     return jsonify({'success': True, 'imported': imported})
+
+
+@api_v2.route('/audit-log', methods=['GET'])
+def get_audit_log():
+    """Get paginated audit log with optional filters"""
+    db = get_db()
+    user_id = get_user_id()
+
+    page = int(request.args.get('page', 1))
+    per_page = int(request.args.get('per_page', 50))
+    action_type = request.args.get('action_type')
+    symbol = request.args.get('symbol')
+    source = request.args.get('source')
+    date_from = request.args.get('date_from')
+    date_to = request.args.get('date_to')
+
+    offset = (page - 1) * per_page
+
+    conditions = ['user_id = ?']
+    params = [user_id]
+
+    if action_type:
+        conditions.append('action_type = ?')
+        params.append(action_type)
+    if symbol:
+        conditions.append('symbol LIKE ?')
+        params.append(f'%{symbol}%')
+    if source:
+        conditions.append('source = ?')
+        params.append(source)
+    if date_from:
+        conditions.append('timestamp >= ?')
+        params.append(date_from)
+    if date_to:
+        conditions.append('timestamp <= ?')
+        params.append(date_to)
+
+    where = ' AND '.join(conditions)
+
+    count_row = db.execute(
+        f'SELECT COUNT(*) AS total FROM audit_log WHERE {where}', params
+    ).fetchone()
+    total = count_row['total'] if count_row else 0
+
+    rows = db.execute(f'''
+        SELECT * FROM audit_log
+        WHERE {where}
+        ORDER BY timestamp DESC
+        OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+    ''', (*params, offset, per_page)).fetchall()
+
+    entries = []
+    for r in rows:
+        entry = dict(r)
+        if entry.get('timestamp'):
+            entry['timestamp'] = str(entry['timestamp'])
+        entries.append(entry)
+
+    return jsonify({
+        'success': True,
+        'entries': entries,
+        'total': total,
+        'page': page,
+        'per_page': per_page,
+        'total_pages': max(1, (total + per_page - 1) // per_page)
+    })
 
 
 def _float(v):

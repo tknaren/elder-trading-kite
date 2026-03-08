@@ -32,8 +32,8 @@ from services.kite_client import get_client, is_nse_market_open
 import pytz
 IST = pytz.timezone('Asia/Kolkata')
 
-# Schedule: 1 minute after each 15-min candle close
-SCHEDULE_MINUTES = [1, 16, 31, 46]
+# Schedule: 1 minute after each 5-min candle close
+SCHEDULE_MINUTES = [1, 6, 11, 16, 21, 26, 31, 36, 41, 46, 51, 56]
 
 
 def _get_next_schedule_time():
@@ -252,25 +252,34 @@ def _run_cycle(app):
     _engine_stats['last_cycle_duration'] = round(elapsed, 1)
     _engine_stats['cycles_completed'] += 1
 
+    # Audit log for cycle completion
+    try:
+        from services.alert_evaluator import log_audit
+        cycle_num = _engine_stats['cycles_completed']
+        sym_count = _engine_stats.get('symbols_count', 0)
+        alerts_triggered = _engine_stats.get('alerts_triggered', 0)
+        log_audit(1, 'engine_cycle', 'engine',
+                  details=f"Cycle #{cycle_num}: {sym_count} symbols, {elapsed:.1f}s, {alerts_triggered} alerts triggered")
+    except Exception:
+        pass
+
     print(f"  Cycle complete in {elapsed:.1f}s")
 
 
 def _handle_triggered_alert(app, user_id: int, trigger: Dict, ltp_map: Dict):
     """Handle a single triggered alert — either auto-trade or just notify."""
-    from services.alert_evaluator import log_alert_trigger, deactivate_alert
+    from services.alert_evaluator import log_alert_trigger, deactivate_alert, log_audit
 
     symbol = trigger['symbol']
     alert_id = trigger['alert_id']
     sym_short = symbol.replace('NSE:', '')
 
     if trigger.get('auto_trade'):
-        # Auto-trade: Create Trade Bill + place GTT Buy
+        # Auto-trade: Use/Create Trade Bill + place Buy order
         try:
             result = _execute_alert_trade(app, user_id, trigger, ltp_map)
 
-            action = 'trade_bill_created'
-            if result.get('gtt_id'):
-                action = 'gtt_placed'
+            action = 'order_placed' if result.get('order_id') else 'trade_bill_created'
 
             log_alert_trigger(
                 alert_id=alert_id,
@@ -279,17 +288,27 @@ def _handle_triggered_alert(app, user_id: int, trigger: Dict, ltp_map: Dict):
                 trigger_price=trigger['trigger_price'],
                 action_taken=action,
                 trade_bill_id=result.get('trade_bill_id'),
-                gtt_order_id=result.get('gtt_id'),
+                gtt_order_id=result.get('order_id'),
                 journal_id=result.get('journal_id'),
                 details=json.dumps(result)
             )
 
+            # Audit log entries
+            log_audit(user_id, 'alert_triggered', 'engine', sym_short,
+                      f"Alert #{alert_id} triggered at {trigger['trigger_price']:.2f}",
+                      related_id=alert_id, related_type='alert')
+            if result.get('order_id'):
+                log_audit(user_id, 'order_placed', 'engine', sym_short,
+                          f"CNC Buy #{result['order_id']} @ {result.get('entry_price')}, qty={result.get('quantity')}",
+                          related_id=result.get('trade_bill_id'), related_type='trade_bill')
+
+            bill_msg = f"TB #{result.get('trade_bill_id')} ({'existing' if result.get('bill_source') == 'existing' else 'created'})"
             push_notification(
                 'trade_created',
                 f'Auto-Trade: {sym_short}',
                 f"Alert triggered at {trigger['trigger_price']:.2f}. "
-                f"Trade Bill #{result.get('trade_bill_id')} created. "
-                f"{'GTT Buy placed.' if result.get('gtt_id') else 'GTT placement pending.'}",
+                f"{bill_msg}. "
+                f"{'Buy order placed. OCO on fill.' if result.get('order_id') else 'Order pending.'}",
                 symbol=symbol,
                 data=result
             )
@@ -302,11 +321,17 @@ def _handle_triggered_alert(app, user_id: int, trigger: Dict, ltp_map: Dict):
             traceback.print_exc()
             log_alert_trigger(alert_id, user_id, symbol, trigger['trigger_price'],
                               'error', details=str(e))
+            log_audit(user_id, 'error', 'engine', sym_short,
+                      f"Auto-trade failed for alert #{alert_id}: {str(e)}",
+                      status='error', related_id=alert_id, related_type='alert')
             push_notification('error', f'Trade Error: {sym_short}',
                               f"Auto-trade failed: {str(e)}", symbol=symbol)
     else:
         # Semi-automatic: just notify the user
         log_alert_trigger(alert_id, user_id, symbol, trigger['trigger_price'], 'notified')
+        log_audit(user_id, 'alert_triggered', 'engine', sym_short,
+                  f"Alert #{alert_id} notified at {trigger['trigger_price']:.2f}",
+                  related_id=alert_id, related_type='alert')
         push_notification(
             'alert_triggered',
             f'Alert: {sym_short}',
@@ -366,133 +391,185 @@ def _execute_alert_trade(app, user_id: int, trigger: Dict, ltp_map: Dict) -> Dic
                 conn.close()
                 return result
 
-            # Use candle close price as entry (fallback to LTP)
-            candle_close = _get_candle_close(symbol, alert_timeframe)
-            entry = candle_close if candle_close else ltp
+            # --- Use alert parameters directly (fallback to auto-calc) ---
+            direction = trigger.get('direction', 'LONG')
+            alert_entry = trigger.get('condition_value')   # Entry from alert
+            alert_qty = trigger.get('quantity')             # Qty from alert
+            alert_target = trigger.get('target_price')      # Target from alert
+
+            # Entry: alert's condition_value → candle close → LTP
+            if alert_entry:
+                entry = float(alert_entry)
+                result['entry_source'] = 'alert'
+            else:
+                candle_close = _get_candle_close(symbol, alert_timeframe)
+                entry = candle_close if candle_close else ltp
+                result['entry_source'] = 'candle_close' if candle_close else 'ltp'
             result['entry_price'] = entry
-            result['entry_source'] = 'candle_close' if candle_close else 'ltp'
 
             if not sl:
                 result['error'] = 'No stop_loss configured in alert'
                 conn.close()
                 return result
 
-            # Auto-calculate quantity from auto-trade settings
             risk_per_share = abs(entry - sl)
             if risk_per_share <= 0:
                 result['error'] = 'Entry equals SL, cannot calculate risk'
                 conn.close()
                 return result
 
-            max_risk = at_capital * at_sl_pct / 100
-            qty = int(max_risk / risk_per_share)  # floor to whole number
-            if qty < 1:
-                qty = 1
-
-            # Calculate target from RR ratio
-            direction = trigger.get('direction', 'LONG')
-            if direction.upper() == 'LONG':
-                target = entry + risk_per_share * at_rr
+            # Quantity: alert's qty → auto-calc from risk settings
+            if alert_qty and int(alert_qty) > 0:
+                qty = int(alert_qty)
             else:
-                target = entry - risk_per_share * at_rr
+                max_risk = at_capital * at_sl_pct / 100
+                qty = max(1, int(max_risk / risk_per_share))
+
+            # Target: alert's target → RR ratio calc
+            if alert_target and float(alert_target) > 0:
+                target = float(alert_target)
+            else:
+                if direction.upper() == 'LONG':
+                    target = entry + risk_per_share * at_rr
+                else:
+                    target = entry - risk_per_share * at_rr
 
             result['quantity'] = qty
             result['target'] = target
 
-            # Create Trade Bill (auto_created = 1)
-            bill_data = {
-                'ticker': symbol.replace('NSE:', ''),
-                'symbol': symbol,
-                'current_market_price': ltp,
-                'entry_price': entry,
-                'stop_loss': sl,
-                'target_price': target,
-                'quantity': qty,
-                'direction': direction,
-                'status': 'active',
-                'alert_id': trigger['alert_id'],
-                'auto_created': 1,
-                'risk_per_share': risk_per_share,
-                'risk_amount_currency': risk_per_share * qty,
-                'reward_amount_currency': risk_per_share * at_rr * qty,
-                'risk_reward_ratio': at_rr,
-                'position_size': qty,
-                'position_value': entry * qty,
-            }
+            # Use existing TradeBill if alert was created from one, otherwise create new
+            existing_bill_id = trigger.get('trade_bill_id')
 
-            columns = ', '.join(bill_data.keys())
-            placeholders = ', '.join(['?' for _ in bill_data])
-            values = tuple(bill_data.values())
+            if existing_bill_id:
+                trade_bill_id = int(existing_bill_id)
+                result['trade_bill_id'] = trade_bill_id
+                result['bill_source'] = 'existing'
+                print(f"  Using existing Trade Bill #{trade_bill_id} for {symbol}")
 
-            bill_row = conn.execute(f'''
-                INSERT INTO trade_bills (user_id, {columns})
-                OUTPUT INSERTED.id
-                VALUES (?, {placeholders})
-            ''', (user_id, *values)).fetchone()
+                # Update the existing bill with computed trade parameters
+                conn.execute('''
+                    UPDATE trade_bills
+                    SET current_market_price = ?, entry_price = ?, stop_loss = ?,
+                        target_price = ?, quantity = ?, status = 'active',
+                        risk_per_share = ?, risk_amount_currency = ?,
+                        reward_amount_currency = ?, position_size = ?,
+                        position_value = ?, updated_at = GETDATE()
+                    WHERE id = ?
+                ''', (
+                    ltp, entry, sl, target, qty,
+                    risk_per_share, risk_per_share * qty,
+                    risk_per_share * at_rr * qty, qty, entry * qty,
+                    trade_bill_id
+                ))
+            else:
+                # Create Trade Bill (auto_created = 1)
+                bill_data = {
+                    'ticker': symbol.replace('NSE:', ''),
+                    'symbol': symbol,
+                    'current_market_price': ltp,
+                    'entry_price': entry,
+                    'stop_loss': sl,
+                    'target_price': target,
+                    'quantity': qty,
+                    'direction': direction,
+                    'status': 'active',
+                    'alert_id': trigger['alert_id'],
+                    'auto_created': 1,
+                    'risk_per_share': risk_per_share,
+                    'risk_amount_currency': risk_per_share * qty,
+                    'reward_amount_currency': risk_per_share * at_rr * qty,
+                    'risk_reward_ratio': at_rr,
+                    'position_size': qty,
+                    'position_value': entry * qty,
+                }
 
-            trade_bill_id = int(bill_row[0])
-            result['trade_bill_id'] = trade_bill_id
-            print(f"  Created Auto Trade Bill #{trade_bill_id} for {symbol} @ {entry}")
+                columns = ', '.join(bill_data.keys())
+                placeholders = ', '.join(['?' for _ in bill_data])
+                values = tuple(bill_data.values())
 
-            # Create Trade Journal entry (pre-populated, entries added on fill)
-            journal_row = conn.execute('''
-                INSERT INTO trade_journal_v2 (
-                    user_id, trade_bill_id, ticker, cmp, direction, status,
-                    journal_date, entry_price, quantity, stop_loss, target_price,
-                    alert_id, auto_created
-                )
-                OUTPUT INSERTED.id
-                VALUES (?, ?, ?, ?, ?, 'open', GETDATE(), ?, ?, ?, ?, ?, 1)
-            ''', (
-                user_id, trade_bill_id,
-                symbol.replace('NSE:', ''), ltp,
-                'Long' if direction.upper() == 'LONG' else 'Short',
-                entry, qty, sl, target,
-                trigger['alert_id']
-            )).fetchone()
+                bill_row = conn.execute(f'''
+                    INSERT INTO trade_bills (user_id, {columns})
+                    OUTPUT INSERTED.id
+                    VALUES (?, {placeholders})
+                ''', (user_id, *values)).fetchone()
 
-            journal_id = int(journal_row[0])
-            result['journal_id'] = journal_id
-            print(f"  Created Journal #{journal_id}")
+                trade_bill_id = int(bill_row[0])
+                result['trade_bill_id'] = trade_bill_id
+                result['bill_source'] = 'created'
+                print(f"  Created Auto Trade Bill #{trade_bill_id} for {symbol} @ {entry}")
+
+            # Journal and OCO are created on fill in _monitor_auto_trade_orders
+            journal_id = None
+            result['journal_id'] = None
 
             conn.commit()
 
-            # Place NRML Limit Buy Order at candle close price
+            # --- Smart order placement: type and qty based on CMP vs entry zone ---
+            max_target_price = trigger.get('max_target_price')
+            min_quantity = trigger.get('min_quantity')
+            order_qty = qty  # default to normal qty
+            order_type_to_use = 'MARKET'
+            limit_price = None
+
+            if max_target_price and float(max_target_price) > 0:
+                max_target = float(max_target_price)
+                target_price_entry = float(trigger.get('condition_value', entry))
+                midpoint = (target_price_entry + max_target) / 2
+
+                if ltp <= max_target:
+                    # CMP within entry zone → MARKET order
+                    order_type_to_use = 'MARKET'
+                    limit_price = None
+                    if ltp <= midpoint:
+                        order_qty = qty  # lower half → normal qty
+                    else:
+                        order_qty = int(min_quantity) if min_quantity else qty  # upper half → min qty
+                else:
+                    # CMP exceeded max entry → LIMIT at max target price
+                    order_type_to_use = 'LIMIT'
+                    limit_price = max_target
+                    order_qty = int(min_quantity) if min_quantity else qty
+
+                print(f"  Smart order: CMP={ltp}, zone=[{target_price_entry}, {max_target}], "
+                      f"mid={midpoint}, type={order_type_to_use}, qty={order_qty}")
+
             buy_order_id = None
             try:
                 from services.kite_orders import place_order
-                nrml_result = place_order(
+                buy_result = place_order(
                     symbol=symbol.replace('NSE:', ''),
                     transaction_type='BUY',
-                    quantity=qty,
-                    price=entry,
-                    order_type='LIMIT',
+                    quantity=order_qty,
+                    price=limit_price,
+                    order_type=order_type_to_use,
                     product='CNC'
                 )
-                if nrml_result and nrml_result.get('order_id'):
-                    buy_order_id = str(nrml_result['order_id'])
+                if buy_result and buy_result.get('order_id'):
+                    buy_order_id = str(buy_result['order_id'])
                     result['order_id'] = buy_order_id
-                    print(f"  NRML Buy placed: {buy_order_id} @ {entry}")
+                    print(f"  CNC {order_type_to_use} Buy placed: {buy_order_id}, qty={order_qty}")
                 else:
-                    result['order_error'] = 'NRML order returned no order_id'
+                    result['order_error'] = 'Buy order returned no order_id'
             except Exception as e:
                 result['order_error'] = str(e)
-                print(f"  NRML order failed: {e}")
+                print(f"  Buy order failed: {e}")
 
-            # Track in auto_trade_orders (OCO placed after fill confirmation)
+            # Track in auto_trade_orders (OCO + Journal created on fill)
             conn2 = db.get_connection()
             try:
                 conn2.execute('''
                     INSERT INTO auto_trade_orders (
                         user_id, alert_id, trade_bill_id, journal_id,
                         symbol, buy_order_id, buy_status, buy_price,
-                        quantity, stop_loss, target
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        quantity, stop_loss, target,
+                        oco_trigger_id, oco_status, direction
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
-                    user_id, trigger['alert_id'], trade_bill_id, journal_id,
+                    user_id, trigger['alert_id'], trade_bill_id, None,
                     symbol.replace('NSE:', ''),
                     buy_order_id, 'PENDING' if buy_order_id else 'FAILED',
-                    entry, qty, sl, target
+                    entry, order_qty, sl, target,
+                    None, None, direction
                 ))
                 conn2.commit()
             finally:
@@ -573,52 +650,97 @@ def _monitor_auto_trade_orders(app):
                     fill_price = kite_order.get('average_price', ato['buy_price'])
                     print(f"  Auto-trade FILLED: {ato['symbol']} @ {fill_price}")
 
-                    # 1. Place OCO Sell (same qty both legs)
+                    from services.alert_evaluator import log_audit
+                    log_audit(ato['user_id'], 'order_filled', 'engine', ato['symbol'],
+                              f"Buy filled @ {fill_price}, qty={ato['quantity']}",
+                              related_id=ato['trade_bill_id'], related_type='trade_bill')
+
+                    # Calculate OCO target dynamically from actual fill price (1:2 RR)
+                    direction_upper = (ato.get('direction') or 'LONG').upper()
+                    oco_sl = ato['stop_loss']
+                    if direction_upper == 'LONG':
+                        oco_target = round(fill_price + 2 * (fill_price - oco_sl), 2)
+                    else:
+                        oco_target = round(fill_price - 2 * (oco_sl - fill_price), 2)
+                    print(f"  OCO target from fill: {oco_target} (fill={fill_price}, SL={oco_sl}, 1:2 RR)")
+
+                    # 1. Place OCO Sell GTT on fill
                     oco_id = None
                     try:
                         from services.kite_orders import place_gtt_oco
                         oco_result = place_gtt_oco(
-                            symbol=f"NSE:{ato['symbol']}",
+                            symbol=ato['symbol'],
                             quantity=ato['quantity'],
-                            stop_loss_trigger=ato['stop_loss'],
-                            stop_loss_price=ato['stop_loss'],
-                            target_trigger=ato['target'],
-                            target_price=ato['target']
+                            stop_loss_trigger=oco_sl,
+                            stop_loss_price=oco_sl,
+                            target_trigger=oco_target,
+                            target_price=oco_target
                         )
                         if oco_result and oco_result.get('trigger_id'):
                             oco_id = str(oco_result['trigger_id'])
-                            print(f"  OCO Sell placed: {oco_id}")
+                            print(f"  OCO Sell placed on fill: {oco_id}")
+                            log_audit(ato['user_id'], 'oco_placed', 'engine', ato['symbol'],
+                                      f"OCO #{oco_id} SL={oco_sl}, Target={oco_target} (fill-based 1:2 RR)",
+                                      related_id=ato['trade_bill_id'], related_type='trade_bill')
                     except Exception as e:
                         print(f"  OCO placement error: {e}")
 
-                    # 2. Update auto_trade_orders tracking
+                    # 2. Update auto_trade_orders tracking (store computed oco_target)
                     conn.execute('''
                         UPDATE auto_trade_orders
                         SET buy_status = 'COMPLETE', fill_price = ?,
-                            oco_trigger_id = ?, oco_status = ?,
+                            oco_trigger_id = ?,
+                            oco_status = ?,
+                            target = ?,
                             updated_at = GETDATE()
                         WHERE id = ?
-                    ''', (fill_price, oco_id, 'PLACED' if oco_id else None, ato['id']))
+                    ''', (fill_price, oco_id, 'PLACED' if oco_id else None, oco_target, ato['id']))
 
-                    # 3. Create trade entry record with actual fill price
-                    if ato['journal_id']:
+                    # 3. Create Trade Journal (TradeLog) on fill
+                    journal_id = ato.get('journal_id')
+                    if not journal_id:
+                        try:
+                            direction_str = ato.get('direction', 'LONG')
+                            journal_dir = 'Long' if direction_str.upper() == 'LONG' else 'Short'
+                            journal_row = conn.execute('''
+                                INSERT INTO trade_journal_v2 (
+                                    user_id, trade_bill_id, ticker, cmp, direction, status,
+                                    journal_date, entry_price, quantity, stop_loss, target_price,
+                                    alert_id, auto_created, avg_entry, total_shares,
+                                    remaining_qty, first_entry_date
+                                )
+                                OUTPUT INSERTED.id
+                                VALUES (?, ?, ?, ?, ?, 'open', GETDATE(), ?, ?, ?, ?,
+                                        ?, 1, ?, ?, ?, GETDATE())
+                            ''', (
+                                ato['user_id'], ato['trade_bill_id'],
+                                ato['symbol'], fill_price,
+                                journal_dir,
+                                fill_price, ato['quantity'], ato['stop_loss'], oco_target,
+                                ato['alert_id'],
+                                fill_price, ato['quantity'], ato['quantity']
+                            )).fetchone()
+                            journal_id = int(journal_row[0])
+                            print(f"  Created Journal #{journal_id} on fill")
+
+                            # Link journal_id back to auto_trade_orders
+                            conn.execute('''
+                                UPDATE auto_trade_orders SET journal_id = ? WHERE id = ?
+                            ''', (journal_id, ato['id']))
+                        except Exception as e:
+                            print(f"  Journal creation error: {e}")
+
+                    # 4. Create trade entry record with actual fill price
+                    if journal_id:
                         try:
                             conn.execute('''
                                 INSERT INTO trade_entries (
                                     journal_id, entry_datetime, entry_price, quantity,
                                     day_high, day_low
                                 ) VALUES (?, GETDATE(), ?, ?, 0, 0)
-                            ''', (ato['journal_id'], fill_price, ato['quantity']))
-
-                            # Update journal with avg_entry from fill
-                            conn.execute('''
-                                UPDATE trade_journal_v2
-                                SET avg_entry = ?, total_shares = ?, remaining_qty = ?,
-                                    first_entry_date = GETDATE()
-                                WHERE id = ?
-                            ''', (fill_price, ato['quantity'], ato['quantity'], ato['journal_id']))
+                            ''', (journal_id, fill_price, ato['quantity']))
                         except Exception as e:
-                            print(f"  Journal update error: {e}")
+                            print(f"  Trade entry creation error: {e}")
 
                     conn.commit()
 
@@ -626,7 +748,8 @@ def _monitor_auto_trade_orders(app):
                         'trade_filled',
                         f'Order Filled: {ato["symbol"]}',
                         f"Buy filled @ {fill_price:.2f}, Qty: {ato['quantity']}. "
-                        f"{'OCO Sell placed.' if oco_id else 'OCO pending.'}",
+                        f"{'OCO Sell placed.' if oco_id else 'OCO pending.'} "
+                        f"{'Journal #' + str(journal_id) + ' created.' if journal_id else ''}",
                         symbol=ato['symbol']
                     )
 

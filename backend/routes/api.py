@@ -761,10 +761,12 @@ def create_trade_bill():
                 break_even, trailing_stop, is_filled, stop_entered, target_entered,
                 journal_entered, comments, status, created_at,
                 atr, candle_pattern, candle_1_conviction, candle_2_conviction,
-                auto_created
+                auto_created,
+                max_capital_per_trade, sl_distance_pct, max_qty_for_capital,
+                max_entry, min_quantity, max_take_profit
             )
             OUTPUT INSERTED.id
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             user_id, data.get('ticker'), data.get('current_market_price'),
             data.get('entry_price'), data.get(
@@ -790,7 +792,10 @@ def create_trade_bill():
             data.get('comments', ''), 'active', datetime.now().isoformat(),
             data.get('atr'), data.get('candle_pattern'),
             data.get('candle_1_conviction'), data.get('candle_2_conviction'),
-            1 if data.get('auto_created') else 0
+            1 if data.get('auto_created') else 0,
+            data.get('max_capital_per_trade'), data.get('sl_distance_pct'),
+            data.get('max_qty_for_capital'), data.get('max_entry'),
+            data.get('min_quantity'), data.get('max_take_profit')
         ))
         trade_bill_id = int(cursor.fetchone()[0])
         conn.commit()
@@ -821,7 +826,7 @@ def get_trade_bills():
                 'SELECT * FROM trade_bills WHERE user_id = ? AND status = ? ORDER BY created_at DESC', (user_id, status))
         else:
             cursor.execute(
-                'SELECT * FROM trade_bills WHERE user_id = ? ORDER BY created_at DESC', (user_id,))
+                "SELECT * FROM trade_bills WHERE user_id = ? AND ISNULL(status, 'active') != 'archived' ORDER BY created_at DESC", (user_id,))
 
         rows = cursor.fetchall()
         conn.close()
@@ -862,12 +867,50 @@ def update_trade_bill(trade_bill_id):
 
 @api.route('/trade-bills/<int:trade_bill_id>', methods=['DELETE'])
 def delete_trade_bill(trade_bill_id):
-    """Delete a trade bill"""
+    """Archive a trade bill (soft-delete)"""
     db = get_database()
-    success = db.delete_trade_bill(trade_bill_id)
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE trade_bills SET status = 'archived', updated_at = GETDATE() WHERE id = ?",
+            (trade_bill_id,)
+        )
+        conn.commit()
+        success = cursor.rowcount > 0
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': str(e)}), 400
+    finally:
+        conn.close()
 
     if success:
-        return jsonify({'success': True, 'message': 'Trade Bill deleted'})
+        return jsonify({'success': True, 'message': 'Trade Bill archived'})
+    else:
+        return jsonify({'error': 'Trade Bill not found'}), 404
+
+
+@api.route('/trade-bills/<int:trade_bill_id>/restore', methods=['POST'])
+def restore_trade_bill(trade_bill_id):
+    """Restore an archived trade bill"""
+    db = get_database()
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE trade_bills SET status = 'active', updated_at = GETDATE() WHERE id = ?",
+            (trade_bill_id,)
+        )
+        conn.commit()
+        success = cursor.rowcount > 0
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': str(e)}), 400
+    finally:
+        conn.close()
+
+    if success:
+        return jsonify({'success': True, 'message': 'Trade Bill restored'})
     else:
         return jsonify({'error': 'Trade Bill not found'}), 404
 

@@ -1032,6 +1032,15 @@ class Database:
             CREATE INDEX idx_alerts_user_status ON stock_alerts(user_id, status)
         """)
 
+        # Add trade_bill_id column to stock_alerts if not exists
+        conn.execute("""
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.columns
+                WHERE object_id = OBJECT_ID('stock_alerts') AND name = 'trade_bill_id'
+            )
+            ALTER TABLE stock_alerts ADD trade_bill_id INT NULL
+        """)
+
         # Alert History — audit log of trigger events
         conn.execute("""
             IF OBJECT_ID('alert_history', 'U') IS NULL
@@ -1076,6 +1085,15 @@ class Database:
                 updated_at DATETIME2 DEFAULT GETDATE(),
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
+        """)
+
+        # Add direction column to auto_trade_orders if not exists
+        conn.execute("""
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.columns
+                WHERE object_id = OBJECT_ID('auto_trade_orders') AND name = 'direction'
+            )
+            ALTER TABLE auto_trade_orders ADD direction NVARCHAR(20) DEFAULT 'LONG'
         """)
 
         # Market Engine State — persists background engine config
@@ -1212,6 +1230,61 @@ class Database:
             )
             ALTER TABLE strategies ALTER COLUMN user_id INT NULL
         """)
+
+        # Audit Log — system-wide decision/action tracking
+        conn.execute("""
+            IF OBJECT_ID('audit_log', 'U') IS NULL
+            CREATE TABLE audit_log (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                user_id INT NOT NULL,
+                timestamp DATETIME2 DEFAULT GETDATE(),
+                action_type NVARCHAR(50) NOT NULL,
+                source NVARCHAR(50) NOT NULL,
+                symbol NVARCHAR(100),
+                details NVARCHAR(MAX),
+                status NVARCHAR(20) DEFAULT 'success',
+                related_id INT,
+                related_type NVARCHAR(50),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_audit_log_user_time')
+            CREATE INDEX idx_audit_log_user_time ON audit_log(user_id, timestamp DESC)
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_audit_log_action')
+            CREATE INDEX idx_audit_log_action ON audit_log(action_type)
+        """)
+
+        # ══════════════════════════════════════════════════════════════
+        # TRADE BILL — Capital allocation & smart entry fields
+        # ══════════════════════════════════════════════════════════════
+        for col, col_type in [
+            ('max_capital_per_trade', 'FLOAT'),
+            ('sl_distance_pct', 'FLOAT'),
+            ('max_qty_for_capital', 'INT'),
+            ('max_entry', 'FLOAT'),
+            ('min_quantity', 'INT'),
+            ('max_take_profit', 'FLOAT'),
+        ]:
+            conn.execute(f"""
+                IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('trade_bills') AND name = '{col}')
+                    ALTER TABLE trade_bills ADD {col} {col_type}
+            """)
+
+        # ══════════════════════════════════════════════════════════════
+        # STOCK ALERTS — Smart order placement fields
+        # ══════════════════════════════════════════════════════════════
+        for col, col_type in [
+            ('max_target_price', 'FLOAT'),
+            ('min_quantity', 'INT'),
+            ('max_take_profit', 'FLOAT'),
+        ]:
+            conn.execute(f"""
+                IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('stock_alerts') AND name = '{col}')
+                    ALTER TABLE stock_alerts ADD {col} {col_type}
+            """)
 
         conn.commit()
         conn.close()
@@ -1458,7 +1531,9 @@ class Database:
             'journal_entered', 'comments', 'status', 'order_id', 'signal_strength', 'grade',
             'symbol', 'market', 'direction', 'risk_amount', 'position_value',
             'atr', 'candle_pattern', 'candle_1_conviction', 'candle_2_conviction', 'updated_at',
-            'auto_created'
+            'auto_created',
+            'max_capital_per_trade', 'sl_distance_pct', 'max_qty_for_capital',
+            'max_entry', 'min_quantity', 'max_take_profit'
         }
         bit_columns = {'is_filled', 'stop_entered', 'target_entered', 'journal_entered', 'auto_created'}
 
@@ -1486,14 +1561,32 @@ class Database:
         return success
 
     def delete_trade_bill(self, trade_bill_id: int) -> bool:
-        """Delete a trade bill"""
+        """Delete a trade bill and all dependent records"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('DELETE FROM trade_bills WHERE id = ?',
-                       (trade_bill_id,))
-        conn.commit()
-        success = cursor.rowcount > 0
-        conn.close()
+        try:
+            # Unlink journals from this trade bill (preserve journal + entries/exits)
+            cursor.execute(
+                'UPDATE trade_journal_v2 SET trade_bill_id = NULL WHERE trade_bill_id = ?',
+                (trade_bill_id,)
+            )
+            cursor.execute('DELETE FROM positions WHERE trade_bill_id = ?', (trade_bill_id,))
+            cursor.execute('DELETE FROM kite_orders WHERE trade_bill_id = ?', (trade_bill_id,))
+            cursor.execute('DELETE FROM kite_gtt_orders WHERE trade_bill_id = ?', (trade_bill_id,))
+            try:
+                cursor.execute('DELETE FROM auto_trade_orders WHERE trade_bill_id = ?', (trade_bill_id,))
+            except Exception:
+                pass  # Table may not exist in older installs
+
+            # Now delete the trade bill itself
+            cursor.execute('DELETE FROM trade_bills WHERE id = ?', (trade_bill_id,))
+            conn.commit()
+            success = cursor.rowcount > 0
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
         return success
 
     def calculate_trade_metrics(self, entry_price: float, stop_loss: float,
