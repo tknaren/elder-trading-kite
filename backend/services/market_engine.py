@@ -65,7 +65,7 @@ def _get_candle_close(symbol, timeframe='15min'):
             SELECT TOP 1 close_price FROM intraday_ohlcv
             WHERE symbol = ? AND timeframe = ?
             ORDER BY datetime DESC
-        ''', (symbol.replace('NSE:', ''), timeframe)).fetchone()
+        ''', (symbol.replace('NSE:', '').replace('NFO:', ''), timeframe)).fetchone()
         if row:
             return row['close_price']
     except Exception as e:
@@ -212,6 +212,26 @@ def _run_cycle(app):
                 except Exception as e:
                     print(f"  LTP fetch error: {e}")
 
+                # Also fetch LTP for NFO symbols (from active futures alerts)
+                try:
+                    nfo_conn = db.get_connection()
+                    nfo_alerts = nfo_conn.execute('''
+                        SELECT DISTINCT symbol FROM stock_alerts
+                        WHERE user_id = ? AND status = 'active'
+                        AND exchange = 'NFO'
+                    ''', (user_id,)).fetchall()
+                    nfo_conn.close()
+
+                    if nfo_alerts:
+                        nfo_symbols = [f"NFO:{a['symbol']}" for a in nfo_alerts]
+                        nfo_ltp = client.get_ltp(nfo_symbols)
+                        for sym, data in nfo_ltp.items():
+                            bare = sym.replace('NFO:', '').strip()
+                            ltp_map[bare] = data.get('last_price')
+                        print(f"  NFO LTP fetched for {len(nfo_alerts)} futures symbols")
+                except Exception as e:
+                    print(f"  NFO LTP fetch error: {e}")
+
             # 3. Refresh multi-timeframe data
             try:
                 refresh_result = refresh_all_timeframes(symbols)
@@ -272,7 +292,7 @@ def _handle_triggered_alert(app, user_id: int, trigger: Dict, ltp_map: Dict):
 
     symbol = trigger['symbol']
     alert_id = trigger['alert_id']
-    sym_short = symbol.replace('NSE:', '')
+    sym_short = symbol.replace('NSE:', '').replace('NFO:', '')
 
     if trigger.get('auto_trade'):
         # Auto-trade: Use/Create Trade Bill + place Buy order
@@ -298,8 +318,10 @@ def _handle_triggered_alert(app, user_id: int, trigger: Dict, ltp_map: Dict):
                       f"Alert #{alert_id} triggered at {trigger['trigger_price']:.2f}",
                       related_id=alert_id, related_type='alert')
             if result.get('order_id'):
+                exch_label = result.get('exchange', 'NSE')
+                prod_label = 'NRML' if exch_label == 'NFO' else 'CNC'
                 log_audit(user_id, 'order_placed', 'engine', sym_short,
-                          f"CNC Buy #{result['order_id']} @ {result.get('entry_price')}, qty={result.get('quantity')}",
+                          f"{prod_label} order #{result['order_id']} @ {result.get('entry_price')}, qty={result.get('quantity')}",
                           related_id=result.get('trade_bill_id'), related_type='trade_bill')
 
             bill_msg = f"TB #{result.get('trade_bill_id')} ({'existing' if result.get('bill_source') == 'existing' else 'created'})"
@@ -358,8 +380,11 @@ def _execute_alert_trade(app, user_id: int, trigger: Dict, ltp_map: Dict) -> Dic
     ltp = trigger['trigger_price']
     sl = trigger.get('stop_loss')
     alert_timeframe = trigger.get('timeframe', '15min')
+    exchange = trigger.get('exchange', 'NSE').upper()
+    is_futures = exchange == 'NFO'
+    product_type = 'NRML' if is_futures else 'CNC'
 
-    result = {'symbol': symbol, 'trigger_price': ltp}
+    result = {'symbol': symbol, 'trigger_price': ltp, 'exchange': exchange}
 
     with app.app_context():
         db = get_database()
@@ -464,7 +489,7 @@ def _execute_alert_trade(app, user_id: int, trigger: Dict, ltp_map: Dict) -> Dic
             else:
                 # Create Trade Bill (auto_created = 1)
                 bill_data = {
-                    'ticker': symbol.replace('NSE:', ''),
+                    'ticker': symbol.replace('NSE:', '').replace('NFO:', ''),
                     'symbol': symbol,
                     'current_market_price': ltp,
                     'entry_price': entry,
@@ -533,26 +558,31 @@ def _execute_alert_trade(app, user_id: int, trigger: Dict, ltp_map: Dict) -> Dic
                 print(f"  Smart order: CMP={ltp}, zone=[{target_price_entry}, {max_target}], "
                       f"mid={midpoint}, type={order_type_to_use}, qty={order_qty}")
 
-            buy_order_id = None
+            # Direction-aware order: BUY for LONG entry, SELL for SHORT entry
+            entry_txn = 'SELL' if direction.upper() == 'SHORT' else 'BUY'
+            # Strip exchange prefix from symbol for order placement
+            clean_symbol = symbol.replace('NSE:', '').replace('NFO:', '')
+            entry_order_id = None
             try:
                 from services.kite_orders import place_order
-                buy_result = place_order(
-                    symbol=symbol.replace('NSE:', ''),
-                    transaction_type='BUY',
+                entry_result = place_order(
+                    symbol=clean_symbol,
+                    transaction_type=entry_txn,
                     quantity=order_qty,
                     price=limit_price,
                     order_type=order_type_to_use,
-                    product='CNC'
+                    product=product_type,
+                    exchange=exchange
                 )
-                if buy_result and buy_result.get('order_id'):
-                    buy_order_id = str(buy_result['order_id'])
-                    result['order_id'] = buy_order_id
-                    print(f"  CNC {order_type_to_use} Buy placed: {buy_order_id}, qty={order_qty}")
+                if entry_result and entry_result.get('order_id'):
+                    entry_order_id = str(entry_result['order_id'])
+                    result['order_id'] = entry_order_id
+                    print(f"  {product_type} {order_type_to_use} {entry_txn} placed: {entry_order_id}, qty={order_qty}")
                 else:
-                    result['order_error'] = 'Buy order returned no order_id'
+                    result['order_error'] = f'{entry_txn} order returned no order_id'
             except Exception as e:
                 result['order_error'] = str(e)
-                print(f"  Buy order failed: {e}")
+                print(f"  {entry_txn} order failed: {e}")
 
             # Track in auto_trade_orders (OCO + Journal created on fill)
             conn2 = db.get_connection()
@@ -562,14 +592,14 @@ def _execute_alert_trade(app, user_id: int, trigger: Dict, ltp_map: Dict) -> Dic
                         user_id, alert_id, trade_bill_id, journal_id,
                         symbol, buy_order_id, buy_status, buy_price,
                         quantity, stop_loss, target,
-                        oco_trigger_id, oco_status, direction
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        oco_trigger_id, oco_status, direction, exchange
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     user_id, trigger['alert_id'], trade_bill_id, None,
-                    symbol.replace('NSE:', ''),
-                    buy_order_id, 'PENDING' if buy_order_id else 'FAILED',
+                    clean_symbol,
+                    entry_order_id, 'PENDING' if entry_order_id else 'FAILED',
                     entry, order_qty, sl, target,
-                    None, None, direction
+                    None, None, direction, exchange
                 ))
                 conn2.commit()
             finally:
@@ -650,13 +680,16 @@ def _monitor_auto_trade_orders(app):
                     fill_price = kite_order.get('average_price', ato['buy_price'])
                     print(f"  Auto-trade FILLED: {ato['symbol']} @ {fill_price}")
 
+                    direction_upper = (ato.get('direction') or 'LONG').upper()
+                    ato_exchange = (ato.get('exchange') or 'NSE').upper()
+                    ato_product = 'NRML' if ato_exchange == 'NFO' else 'CNC'
                     from services.alert_evaluator import log_audit
+                    entry_txn_label = 'Sell' if direction_upper == 'SHORT' else 'Buy'
                     log_audit(ato['user_id'], 'order_filled', 'engine', ato['symbol'],
-                              f"Buy filled @ {fill_price}, qty={ato['quantity']}",
+                              f"{entry_txn_label} filled @ {fill_price}, qty={ato['quantity']}",
                               related_id=ato['trade_bill_id'], related_type='trade_bill')
 
                     # Calculate OCO target dynamically from actual fill price (1:2 RR)
-                    direction_upper = (ato.get('direction') or 'LONG').upper()
                     oco_sl = ato['stop_loss']
                     if direction_upper == 'LONG':
                         oco_target = round(fill_price + 2 * (fill_price - oco_sl), 2)
@@ -674,11 +707,15 @@ def _monitor_auto_trade_orders(app):
                             stop_loss_trigger=oco_sl,
                             stop_loss_price=oco_sl,
                             target_trigger=oco_target,
-                            target_price=oco_target
+                            target_price=oco_target,
+                            product=ato_product,
+                            direction=direction_upper,
+                            exchange=ato_exchange
                         )
                         if oco_result and oco_result.get('trigger_id'):
                             oco_id = str(oco_result['trigger_id'])
-                            print(f"  OCO Sell placed on fill: {oco_id}")
+                            exit_label = 'Buy-to-cover' if direction_upper == 'SHORT' else 'Sell'
+                            print(f"  OCO {exit_label} placed on fill: {oco_id}")
                             log_audit(ato['user_id'], 'oco_placed', 'engine', ato['symbol'],
                                       f"OCO #{oco_id} SL={oco_sl}, Target={oco_target} (fill-based 1:2 RR)",
                                       related_id=ato['trade_bill_id'], related_type='trade_bill')

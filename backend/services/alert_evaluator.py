@@ -117,6 +117,8 @@ def evaluate_alerts(user_id: int, ltp_map: Dict[str, float],
                 'max_target_price': alert.get('max_target_price'),
                 'min_quantity': alert.get('min_quantity'),
                 'max_take_profit': alert.get('max_take_profit'),
+                'exchange': alert.get('exchange', 'NSE'),
+                'futures_trade_bill_id': alert.get('futures_trade_bill_id'),
             }
             triggered.append(trigger_info)
 

@@ -77,6 +77,7 @@
         ]},
         {section: 'Trade Bill', items: [
             {id:'trade-bill', icon:'💼', label:'Trade Bill'},
+            {id:'futures-trade-bill', icon:'📊', label:'Futures TB'},
             {id:'trade-bills', icon:'📋', label:'Trade Bills'}
         ]},
         {section: 'Trade Journal', items: [
@@ -338,6 +339,7 @@
         else if(currentTab==='market-engine') c.innerHTML = await marketEngineView();
         else if(currentTab==='audit-log') c.innerHTML = await auditLogView();
         else if(currentTab==='trade-bill') { c.innerHTML = tradeBillView(); triggerTradeBillCalc(); }
+        else if(currentTab==='futures-trade-bill') { c.innerHTML = futuresTradeBillView(); triggerFuturesTBCalc(); }
         else if(currentTab==='trade-bills') c.innerHTML = await tradeBillsView();
         else if(currentTab==='journal-dashboard') c.innerHTML = await journalDashboardView();
         else if(currentTab==='trade-log') { c.innerHTML = await tradeLogView(); fetchNotionalPnL(); }
@@ -1636,6 +1638,7 @@
         window.tradeBillTemplate = {
             // Do NOT include 'id' - this is a NEW bill
             ticker: stock.symbol,
+            direction: stock.direction || 'LONG',
             current_market_price: stock.price,
             entry_price: stock.entry,
             stop_loss: stock.stop_loss,
@@ -2927,6 +2930,7 @@
         const tb = window.tradeBillTemplate || {};
         const s = settings[0] || {trading_capital:500000, risk_per_trade:2, currency:'INR'};
         const sym = '₹';  // Always INR for NSE
+        const isShort = (tb.direction || 'LONG').toUpperCase() === 'SHORT';
 
         return `
             <div class="space-y-6 max-w-5xl">
@@ -2953,7 +2957,7 @@
                 <!-- Trade Info Section -->
                 <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
                     <h3 class="font-bold text-lg text-blue-400">Trade Info</h3>
-                    <div class="grid grid-cols-4 gap-4">
+                    <div class="grid grid-cols-5 gap-4">
                         <div>
                             <label class="text-sm text-gray-400">Ticker (NSE)</label>
                             <input id="tb-ticker" value="${tb.ticker||''}" placeholder="RELIANCE" onkeyup="handleTickerTypeahead(event)" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono">
@@ -2965,6 +2969,12 @@
                             <div id="cmp-source" class="text-xs text-gray-600 mt-0.5"></div>
                         </div>
                         <div><label class="text-sm text-gray-400">Entry Price (${sym})</label><input id="tb-entry" type="number" value="${tb.entry_price||''}" step="0.05" placeholder="2450.00" oninput="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                        <div><label class="text-sm text-gray-400">Direction</label>
+                            <select id="tb-direction" onchange="autoCalculateTradeBill()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono">
+                                <option value="LONG" ${(tb.direction||'LONG')==='LONG'?'selected':''}>📈 LONG</option>
+                                <option value="SHORT" ${(tb.direction||'LONG')==='SHORT'?'selected':''}>📉 SHORT</option>
+                            </select>
+                        </div>
                         <div><label class="text-sm text-gray-400">Trade Type</label>
                             <select id="tb-auto" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg">
                                 <option value="0" ${!tb.auto_created?'selected':''}>✋ Manual</option>
@@ -3093,13 +3103,13 @@
                     </div>
                     <div class="flex gap-2">
                         <button onclick="fillJournalFromBill()" class="flex-1 py-2.5 bg-blue-600 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-sm" id="fill-journal-btn" ${tb.id ? '' : 'disabled'}>📓 Journal</button>
-                        <button onclick="placeGttOrder()" class="flex-1 py-2.5 bg-orange-600 rounded-lg font-medium hover:bg-orange-700 disabled:opacity-40 disabled:cursor-not-allowed text-sm" id="gtt-btn" ${tb.id ? '' : 'disabled'}>📊 GTT Buy</button>
-                        <button onclick="placeNrmlOrder('BUY')" class="flex-1 py-2.5 bg-cyan-600 rounded-lg font-medium hover:bg-cyan-700 disabled:opacity-40 disabled:cursor-not-allowed text-sm" id="nrml-btn" ${tb.id ? '' : 'disabled'}>🔷 NRML Buy</button>
-                        <button onclick="placeNrmlOrder('SELL')" class="flex-1 py-2.5 bg-pink-600 rounded-lg font-medium hover:bg-pink-700 disabled:opacity-40 disabled:cursor-not-allowed text-sm" id="nrml-sell-btn" ${tb.id ? '' : 'disabled'}>🔻 NRML Sell</button>
-                        <button onclick="placeOcoSellOrder()" class="flex-1 py-2.5 bg-red-600 rounded-lg font-medium hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed text-sm" id="oco-btn" ${tb.id ? '' : 'disabled'}>🎯 OCO Sell</button>
+                        <button onclick="placeGttOrder()" class="flex-1 py-2.5 bg-orange-600 rounded-lg font-medium hover:bg-orange-700 disabled:opacity-40 disabled:cursor-not-allowed text-sm" id="gtt-btn" ${tb.id ? '' : 'disabled'}>📊 GTT ${isShort ? 'Sell' : 'Buy'}</button>
+                        <button onclick="placeNrmlOrder('${isShort ? 'SELL' : 'BUY'}')" class="flex-1 py-2.5 bg-cyan-600 rounded-lg font-medium hover:bg-cyan-700 disabled:opacity-40 disabled:cursor-not-allowed text-sm" id="nrml-btn" ${tb.id ? '' : 'disabled'}>${isShort ? '🔻' : '🔷'} NRML ${isShort ? 'Sell (Entry)' : 'Buy (Entry)'}</button>
+                        <button onclick="placeNrmlOrder('${isShort ? 'BUY' : 'SELL'}')" class="flex-1 py-2.5 bg-pink-600 rounded-lg font-medium hover:bg-pink-700 disabled:opacity-40 disabled:cursor-not-allowed text-sm" id="nrml-sell-btn" ${tb.id ? '' : 'disabled'}>${isShort ? '🔷' : '🔻'} NRML ${isShort ? 'Buy (Exit)' : 'Sell (Exit)'}</button>
+                        <button onclick="placeOcoSellOrder()" class="flex-1 py-2.5 bg-red-600 rounded-lg font-medium hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed text-sm" id="oco-btn" ${tb.id ? '' : 'disabled'}>🎯 OCO ${isShort ? 'Buy' : 'Sell'}</button>
                         <button onclick="createAlertFromTradeBill()" class="flex-1 py-2.5 bg-yellow-600 rounded-lg font-medium hover:bg-yellow-700 disabled:opacity-40 disabled:cursor-not-allowed text-sm" ${tb.id ? '' : 'disabled'}>🔔 Create Alert</button>
                     </div>
-                    <p class="text-xs text-gray-500 text-center">${tb.id ? 'Buttons enabled - bill is saved.' : 'Save the Trade Bill first to enable order buttons.'} OCO Sell = SL GTT (full qty) + Target GTT (half qty).</p>
+                    <p class="text-xs text-gray-500 text-center">${tb.id ? 'Buttons enabled - bill is saved.' : 'Save the Trade Bill first to enable order buttons.'} OCO ${isShort ? 'Buy' : 'Sell'} = SL GTT (full qty) + Target GTT (half qty).</p>
                 </div>
             </div>
         `;
@@ -3186,7 +3196,8 @@
         const maxTotalRiskPct = s.max_monthly_drawdown || 6;
 
         // Determine direction (from template or default)
-        const direction = (window.tradeBillTemplate?.direction || 'LONG').toUpperCase();
+        const dirEl = document.getElementById('tb-direction');
+        const direction = dirEl ? dirEl.value.toUpperCase() : (window.tradeBillTemplate?.direction || 'LONG').toUpperCase();
         const isLong = direction === 'LONG';
 
         // Need at least entry and stop loss
@@ -3366,6 +3377,7 @@
 
         const data = {
             ticker: ticker,
+            direction: document.getElementById('tb-direction')?.value || 'LONG',
             current_market_price: parseFloat(document.getElementById('tb-cmp').value) || null,
             entry_price: parseFloat(document.getElementById('tb-entry').value),
             stop_loss: parseFloat(document.getElementById('tb-sl').value),
@@ -4079,6 +4091,485 @@
             }
         } catch(e) { toast('Error: ' + e.message, 'error'); }
     }
+
+    // ══════════════════════════════════════════════════════════════
+    // FUTURES TRADE BILL
+    // ══════════════════════════════════════════════════════════════
+    window.futuresTBTemplate = window.futuresTBTemplate || {};
+
+    function futuresTradeBillView() {
+        const ftb = window.futuresTBTemplate || {};
+        const s = settings[0] || {trading_capital: 500000, risk_per_trade: 2, currency: 'INR'};
+        const sym = '₹';
+
+        return `
+        <div class="space-y-6 max-w-5xl mx-auto">
+            <div class="flex items-center justify-between">
+                <h2 class="text-2xl font-bold">📊 Futures Trade Bill ${ftb.id ? '#'+ftb.id : ''}</h2>
+                <div class="flex gap-2">
+                    <button onclick="loadNfoInstruments()" id="load-nfo-btn" class="px-3 py-1.5 bg-purple-600 rounded-lg hover:bg-purple-500 text-sm">🔄 Refresh NFO</button>
+                    <button onclick="newFuturesTradeBill()" class="px-3 py-1.5 bg-blue-600 rounded-lg hover:bg-blue-500 text-sm">+ New</button>
+                    <button onclick="switchTab('trade-bills')" class="px-4 py-2 bg-gray-700 rounded-lg hover:bg-gray-600">📋 View All Bills</button>
+                </div>
+            </div>
+
+            <!-- Contract Info Section -->
+            <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
+                <h3 class="font-bold text-lg text-purple-400">Contract Info</h3>
+                <div class="grid grid-cols-4 gap-4">
+                    <div>
+                        <label class="text-sm text-gray-400">Underlying</label>
+                        <input id="ftb-ticker" value="${ftb.ticker||''}" placeholder="NIFTY" onkeyup="handleFuturesTickerTypeahead(event)" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono">
+                        <div id="ftb-ticker-suggestions" class="mt-1 bg-[#1f2937] rounded-lg border border-gray-600 max-h-40 overflow-y-auto"></div>
+                    </div>
+                    <div>
+                        <label class="text-sm text-gray-400">Trading Symbol</label>
+                        <input id="ftb-tradingsymbol" value="${ftb.tradingsymbol||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly>
+                    </div>
+                    <div><label class="text-sm text-gray-400">Expiry</label><input id="ftb-expiry" type="text" value="${ftb.expiry||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                    <div><label class="text-sm text-gray-400">Instrument Type</label><input id="ftb-inst-type" value="${ftb.instrument_type||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                </div>
+                <div class="grid grid-cols-5 gap-4">
+                    <div><label class="text-sm text-gray-400">Lot Size</label><input id="ftb-lot-size" type="number" value="${ftb.lot_size||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                    <div><label class="text-sm text-gray-400">Lots</label><input id="ftb-lots" type="number" value="${ftb.lots||1}" min="1" step="1" oninput="autoCalculateFuturesTB()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                    <div><label class="text-sm text-gray-400">Quantity (Total)</label><input id="ftb-qty" type="number" value="${ftb.quantity||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                    <div><label class="text-sm text-gray-400">Direction</label>
+                        <select id="ftb-direction" onchange="autoCalculateFuturesTB()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono">
+                            <option value="LONG" ${(ftb.direction||'LONG')==='LONG'?'selected':''}>📈 LONG</option>
+                            <option value="SHORT" ${(ftb.direction||'LONG')==='SHORT'?'selected':''}>📉 SHORT</option>
+                        </select>
+                    </div>
+                    <div><label class="text-sm text-gray-400">Product</label>
+                        <select id="ftb-product" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono">
+                            <option value="NRML" ${(ftb.product_type||'NRML')==='NRML'?'selected':''}>NRML</option>
+                            <option value="MIS" ${ftb.product_type==='MIS'?'selected':''}>MIS</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Market Data + Trade Setup -->
+            <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
+                <h3 class="font-bold text-lg text-blue-400">Trade Setup</h3>
+                <div class="grid grid-cols-4 gap-4">
+                    <div><label class="text-sm text-gray-400">CMP (${sym})</label><input id="ftb-cmp" type="number" value="${ftb.current_market_price||''}" step="0.05" oninput="autoCalculateFuturesTB()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                    <div><label class="text-sm text-gray-400">Entry (${sym})</label><input id="ftb-entry" type="number" value="${ftb.entry_price||''}" step="0.05" oninput="autoCalculateFuturesTB()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                    <div><label class="text-sm text-gray-400">Stop Loss (${sym})</label><input id="ftb-sl" type="number" value="${ftb.stop_loss||''}" step="0.05" oninput="autoCalculateFuturesTB()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                    <div><label class="text-sm text-gray-400">Target (${sym})</label><input id="ftb-target" type="number" value="${ftb.target_price||''}" step="0.05" oninput="autoCalculateFuturesTB()" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                </div>
+                <!-- Candle Pattern & Conviction -->
+                <div class="grid grid-cols-3 gap-4">
+                    <div><label class="text-sm text-gray-400">Candle Pattern</label><input id="ftb-candle-pattern" type="text" value="${ftb.candle_pattern||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg text-sm bg-gray-800" readonly></div>
+                    <div><label class="text-sm text-gray-400">Candle 1 (Latest Day)</label><input id="ftb-candle1-conv" type="text" value="${ftb.candle_1_conviction||''}" style="color: ${ftb.candle_1_conviction === 'Conviction' ? '#4ade80' : (ftb.candle_1_conviction ? '#f87171' : '')}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg text-sm bg-gray-800" readonly></div>
+                    <div><label class="text-sm text-gray-400">Candle 2 (Previous Day)</label><input id="ftb-candle2-conv" type="text" value="${ftb.candle_2_conviction||''}" style="color: ${ftb.candle_2_conviction === 'Conviction' ? '#4ade80' : (ftb.candle_2_conviction ? '#f87171' : '')}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg text-sm bg-gray-800" readonly></div>
+                </div>
+                <div class="grid grid-cols-4 gap-4">
+                    <div><label class="text-sm text-gray-400">Max Entry</label><input id="ftb-max-entry" type="number" value="${ftb.max_entry||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                    <div><label class="text-sm text-gray-400">Max Take Profit</label><input id="ftb-max-tp" type="number" value="${ftb.max_take_profit||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                    <div><label class="text-sm text-gray-400">Min Qty (lots)</label><input id="ftb-min-qty" type="number" value="${ftb.min_quantity||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                    <div>
+                        <label class="text-sm text-gray-400">SL Distance %</label>
+                        <div class="relative">
+                            <input id="ftb-sl-dist" type="number" value="${ftb.sl_distance_pct||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly>
+                            <span id="ftb-sl-dist-warn" class="absolute right-2 top-1/2 -translate-y-1/2 text-lg hidden"></span>
+                        </div>
+                    </div>
+                </div>
+                <!-- Market Info -->
+                <div class="grid grid-cols-3 gap-4">
+                    <div><label class="text-sm text-gray-400">Open Interest</label><input id="ftb-oi" type="number" value="${ftb.oi||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                    <div><label class="text-sm text-gray-400">OI Change %</label><input id="ftb-oi-change" type="number" value="${ftb.oi_change_pct||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                    <div><label class="text-sm text-gray-400">Volume</label><input id="ftb-volume" type="number" value="${ftb.volume||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                </div>
+            </div>
+
+            <!-- Margin Section -->
+            <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
+                <h3 class="font-bold text-lg text-yellow-400">📐 Margin Requirements</h3>
+                <div class="grid grid-cols-4 gap-4">
+                    <div><label class="text-sm text-gray-400">SPAN Margin/Lot</label><input id="ftb-span" type="number" value="${ftb.span_margin||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                    <div><label class="text-sm text-gray-400">Exposure Margin/Lot</label><input id="ftb-exposure" type="number" value="${ftb.exposure_margin||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                    <div><label class="text-sm text-gray-400">Total Margin/Lot</label><input id="ftb-total-margin" type="number" value="${ftb.total_margin||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                    <div><label class="text-sm text-gray-400">Total Required</label><input id="ftb-margin-required" type="number" value="${ftb.total_margin_required||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono text-yellow-400 bg-gray-800" readonly></div>
+                </div>
+                <button onclick="fetchFuturesMargin()" class="px-3 py-1.5 bg-yellow-600 rounded-lg hover:bg-yellow-500 text-sm">🔄 Fetch Margin from Kite</button>
+            </div>
+
+            <!-- Risk Section -->
+            <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
+                <h3 class="font-bold text-lg text-red-400">📉 Risk & Reward</h3>
+                <div class="grid grid-cols-4 gap-4">
+                    <div><label class="text-sm text-gray-400">Risk per Point</label><input id="ftb-rpp" value="${ftb.risk_per_point||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                    <div><label class="text-sm text-gray-400">Risk Amount (${sym})</label><input id="ftb-risk" value="${ftb.risk_amount||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                    <div><label class="text-sm text-gray-400">Reward Amount (${sym})</label><input id="ftb-reward" value="${ftb.reward_amount||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                    <div><label class="text-sm text-gray-400">R:R Ratio</label><input id="ftb-rrr" value="${ftb.risk_reward_ratio||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                </div>
+                <div class="grid grid-cols-3 gap-4">
+                    <div><label class="text-sm text-gray-400">Position Value (${sym})</label><input id="ftb-pos-value" value="${ftb.position_value||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                    <div><label class="text-sm text-gray-400">Break Even</label><input id="ftb-be" value="${ftb.break_even||''}" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono bg-gray-800" readonly></div>
+                    <div><label class="text-sm text-gray-400">Trailing Stop</label><input id="ftb-ts" type="number" value="${ftb.trailing_stop||''}" step="0.05" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg font-mono"></div>
+                </div>
+            </div>
+
+            <!-- Notes & Actions -->
+            <div class="bg-[#111827] rounded-xl p-6 border border-gray-700 space-y-4">
+                <div><label class="text-sm text-gray-400">Comments</label><textarea id="ftb-comments" rows="3" class="w-full mt-1 px-3 py-2 bg-[#1f2937] border border-gray-600 rounded-lg text-sm">${ftb.comments||''}</textarea></div>
+                <div class="flex flex-wrap gap-3">
+                    <button onclick="saveFuturesTradeBill()" class="px-4 py-2 bg-green-600 rounded-lg hover:bg-green-500 font-semibold">💾 Save</button>
+                    <button onclick="createAlertFromFuturesTB()" class="px-4 py-2 bg-orange-600 rounded-lg hover:bg-orange-500 font-semibold">🔔 Create Alert</button>
+                </div>
+            </div>
+        </div>`;
+    }
+
+    function triggerFuturesTBCalc() {
+        setTimeout(() => autoCalculateFuturesTB(), 100);
+        ensureNfoInstrumentsLoaded();
+    }
+
+    async function loadNfoInstruments() {
+        const btn = document.getElementById('load-nfo-btn');
+        if (btn) { btn.disabled = true; btn.textContent = '⏳ Loading...'; }
+        try {
+            const resp = await fetch('/api/v2/instruments/load-nfo', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            });
+            const result = await resp.json();
+            if (result.success) {
+                toast(`Loaded ${result.loaded} NFO instruments!`, 'success');
+            } else {
+                toast(result.error || 'Failed to load NFO instruments', 'error');
+            }
+        } catch(e) {
+            toast('Error: ' + e.message, 'error');
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '🔄 Refresh NFO'; }
+        }
+    }
+
+    async function ensureNfoInstrumentsLoaded() {
+        try {
+            const resp = await fetch('/api/v2/instruments/search-futures?q=NIFTY&limit=1');
+            const results = await resp.json();
+            if (!results || results.length === 0) {
+                toast('Loading NFO instruments...', 'info');
+                await loadNfoInstruments();
+            }
+        } catch(e) { /* silent */ }
+    }
+
+    function autoCalculateFuturesTB() {
+        const entry = parseFloat(document.getElementById('ftb-entry')?.value) || 0;
+        const sl = parseFloat(document.getElementById('ftb-sl')?.value) || 0;
+        const target = parseFloat(document.getElementById('ftb-target')?.value) || 0;
+        const lotSize = parseInt(document.getElementById('ftb-lot-size')?.value) || 1;
+        const lots = parseInt(document.getElementById('ftb-lots')?.value) || 1;
+        const direction = document.getElementById('ftb-direction')?.value || 'LONG';
+        const isLong = direction === 'LONG';
+
+        // Quantity = lots × lot_size
+        const quantity = lots * lotSize;
+        document.getElementById('ftb-qty').value = quantity;
+
+        if (!entry || !sl) return;
+
+        // Risk per point = |entry - SL|
+        const riskPerPoint = Math.round(Math.abs(entry - sl) * 100) / 100;
+        if (riskPerPoint <= 0) return;
+
+        // SL Distance %
+        const slDistPct = Math.round((riskPerPoint / entry) * 10000) / 100;
+
+        // Max Entry = Entry ± 0.5 × SL distance (use SL distance as proxy since ATR removed)
+        const maxEntry = Math.round((isLong ? entry + 0.5 * riskPerPoint : entry - 0.5 * riskPerPoint) * 100) / 100;
+
+        // Risk at max entry
+        const riskAtMaxEntry = Math.round(Math.abs(maxEntry - sl) * 100) / 100;
+
+        // Max Take Profit (1:2 RR from worst-case entry)
+        const maxTP = riskAtMaxEntry > 0
+            ? Math.round((isLong ? maxEntry + 2 * riskAtMaxEntry : maxEntry - 2 * riskAtMaxEntry) * 100) / 100
+            : 0;
+
+        // Min quantity in lots at max entry
+        const s = settings[0] || {trading_capital: 500000, risk_per_trade: 2};
+        const maxRisk = Math.round(s.trading_capital * (s.risk_per_trade / 100));
+        const minQtyShares = riskAtMaxEntry > 0 ? Math.floor(maxRisk / riskAtMaxEntry) : 0;
+        const minQtyLots = lotSize > 0 ? Math.max(1, Math.floor(minQtyShares / lotSize)) : 1;
+
+        // Risk & Reward
+        const risk = Math.round(riskPerPoint * quantity);
+        const rewardPerPoint = target ? Math.round(Math.abs(target - entry) * 100) / 100 : 0;
+        const reward = Math.round(rewardPerPoint * quantity);
+        const rrr = risk > 0 && reward > 0 ? Math.round((reward / risk) * 100) / 100 : 0;
+
+        // Position value
+        const posValue = Math.round(entry * quantity);
+
+        // Break even
+        const otherCharges = 0;
+        const breakEven = quantity > 0 ? Math.round((entry + (otherCharges / quantity)) * 100) / 100 : entry;
+
+        // Update fields
+        document.getElementById('ftb-rpp').value = riskPerPoint.toFixed(2);
+        document.getElementById('ftb-risk').value = risk.toLocaleString();
+        document.getElementById('ftb-reward').value = reward.toLocaleString();
+        document.getElementById('ftb-rrr').value = rrr;
+        document.getElementById('ftb-pos-value').value = posValue.toLocaleString();
+        document.getElementById('ftb-be').value = breakEven.toFixed(2);
+        document.getElementById('ftb-max-entry').value = maxEntry.toFixed(2);
+        document.getElementById('ftb-max-tp').value = maxTP > 0 ? maxTP.toFixed(2) : '';
+        document.getElementById('ftb-min-qty').value = minQtyLots;
+        document.getElementById('ftb-sl-dist').value = slDistPct.toFixed(2);
+
+        // SL Distance warning
+        const slDistEl = document.getElementById('ftb-sl-dist');
+        const slDistWarn = document.getElementById('ftb-sl-dist-warn');
+        if (slDistPct > 4) {
+            slDistEl.classList.add('bg-red-900/50', 'text-red-300', 'border-red-500');
+            slDistEl.classList.remove('bg-gray-800');
+            if (slDistWarn) { slDistWarn.textContent = '\u26A0\uFE0F'; slDistWarn.classList.remove('hidden'); }
+        } else {
+            slDistEl.classList.remove('bg-red-900/50', 'text-red-300', 'border-red-500');
+            slDistEl.classList.add('bg-gray-800');
+            if (slDistWarn) { slDistWarn.classList.add('hidden'); }
+        }
+
+        // Margin required update
+        const totalMargin = parseFloat(document.getElementById('ftb-total-margin')?.value) || 0;
+        if (totalMargin > 0) {
+            document.getElementById('ftb-margin-required').value = Math.round(totalMargin * lots).toLocaleString();
+        }
+    }
+
+    async function handleFuturesTickerTypeahead(event) {
+        const query = event.target.value.trim();
+        const sugBox = document.getElementById('ftb-ticker-suggestions');
+        if (query.length < 2) { sugBox.innerHTML = ''; return; }
+
+        try {
+            const resp = await fetch(`/api/v2/instruments/search-futures?q=${encodeURIComponent(query)}&limit=10`);
+            const results = await resp.json();
+            sugBox.innerHTML = results.map(r => `
+                <div onclick="selectFuturesContract(${JSON.stringify(r).replace(/"/g, '&quot;')})"
+                     class="px-3 py-2 hover:bg-gray-600 cursor-pointer text-sm border-b border-gray-700">
+                    <span class="font-mono text-blue-400">${r.tradingsymbol}</span>
+                    <span class="text-gray-400 ml-2">${r.name || ''}</span>
+                    <span class="text-yellow-400 ml-2">Lot: ${r.lot_size}</span>
+                    <span class="text-gray-500 ml-2">${r.expiry || ''}</span>
+                </div>
+            `).join('');
+        } catch(e) { sugBox.innerHTML = ''; }
+    }
+
+    function selectFuturesContract(contract) {
+        document.getElementById('ftb-ticker').value = contract.name || contract.tradingsymbol;
+        document.getElementById('ftb-tradingsymbol').value = contract.tradingsymbol;
+        document.getElementById('ftb-expiry').value = contract.expiry || '';
+        document.getElementById('ftb-inst-type').value = contract.instrument_type || '';
+        document.getElementById('ftb-lot-size').value = contract.lot_size || 1;
+        document.getElementById('ftb-ticker-suggestions').innerHTML = '';
+
+        // Store in template for save
+        window.futuresTBTemplate = window.futuresTBTemplate || {};
+        window.futuresTBTemplate.tradingsymbol = contract.tradingsymbol;
+        window.futuresTBTemplate.ticker = contract.name || contract.tradingsymbol;
+
+        // Fetch full quote (CMP + OI + Volume), margin, and candle data
+        fetchFuturesQuote(contract.tradingsymbol);
+        fetchFuturesMargin();
+        fetchFuturesCandleData(contract.name || contract.tradingsymbol);
+        autoCalculateFuturesTB();
+    }
+
+    async function fetchFuturesQuote(tradingsymbol) {
+        try {
+            const resp = await fetch(`/api/v2/futures/quote/${encodeURIComponent(tradingsymbol)}`);
+            const data = await resp.json();
+            if (data.success) {
+                document.getElementById('ftb-cmp').value = data.last_price;
+                document.getElementById('ftb-oi').value = data.oi || '';
+                document.getElementById('ftb-volume').value = data.volume || '';
+
+                // Calculate OI change % from day's OI range
+                if (data.oi && data.oi_day_low && data.oi_day_low > 0) {
+                    const oiChangePct = ((data.oi - data.oi_day_low) / data.oi_day_low * 100).toFixed(2);
+                    document.getElementById('ftb-oi-change').value = oiChangePct;
+                }
+
+                autoCalculateFuturesTB();
+            }
+        } catch(e) { console.error('Futures quote fetch error:', e); }
+    }
+
+    async function fetchFuturesCandleData(underlying) {
+        try {
+            const resp = await fetch(`/api/v2/candle-pattern/${encodeURIComponent(underlying)}`);
+            const data = await resp.json();
+            if (!data.error) {
+                document.getElementById('ftb-candle-pattern').value = (data.patterns || []).map(p => p.pattern || p.name || p).join(', ') || 'No pattern';
+                document.getElementById('ftb-candle1-conv').value = data.candle_1_conviction || '-';
+                document.getElementById('ftb-candle2-conv').value = data.candle_2_conviction || '-';
+
+                const c1El = document.getElementById('ftb-candle1-conv');
+                const c2El = document.getElementById('ftb-candle2-conv');
+                if (c1El) c1El.style.color = data.candle_1_conviction === 'Conviction' ? '#4ade80' : '#f87171';
+                if (c2El) c2El.style.color = data.candle_2_conviction === 'Conviction' ? '#4ade80' : '#f87171';
+            }
+        } catch(e) { console.error('Futures candle data error:', e); }
+    }
+
+    async function fetchFuturesMargin() {
+        const tradingsymbol = document.getElementById('ftb-tradingsymbol').value;
+        const lots = parseInt(document.getElementById('ftb-lots').value) || 1;
+        const lotSize = parseInt(document.getElementById('ftb-lot-size').value) || 1;
+        const direction = document.getElementById('ftb-direction').value;
+
+        if (!tradingsymbol) { toast('Select a futures contract first', 'error'); return; }
+
+        try {
+            const resp = await fetch('/api/v2/futures/margin', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    tradingsymbol: tradingsymbol,
+                    transaction_type: direction === 'SHORT' ? 'SELL' : 'BUY',
+                    product: document.getElementById('ftb-product').value,
+                    quantity: lotSize  // margin per 1 lot
+                })
+            });
+            const data = await resp.json();
+            if (data.success) {
+                document.getElementById('ftb-span').value = Math.round(data.span);
+                document.getElementById('ftb-exposure').value = Math.round(data.exposure);
+                document.getElementById('ftb-total-margin').value = Math.round(data.total);
+                document.getElementById('ftb-margin-required').value = Math.round(data.total * lots).toLocaleString();
+                toast('Margin fetched successfully', 'success');
+            } else {
+                toast(data.error || 'Failed to fetch margin', 'error');
+            }
+        } catch(e) { toast('Error fetching margin: ' + e.message, 'error'); }
+    }
+
+    async function saveFuturesTradeBill() {
+        const ticker = document.getElementById('ftb-ticker').value;
+        if (!ticker) { toast('Please enter a ticker', 'error'); return; }
+
+        const data = {
+            ticker: ticker,
+            tradingsymbol: document.getElementById('ftb-tradingsymbol').value || null,
+            underlying: ticker,
+            instrument_type: document.getElementById('ftb-inst-type').value || null,
+            expiry: document.getElementById('ftb-expiry').value || null,
+            lot_size: parseInt(document.getElementById('ftb-lot-size').value) || 1,
+            lots: parseInt(document.getElementById('ftb-lots').value) || 1,
+            quantity: parseInt(document.getElementById('ftb-qty').value) || 0,
+            direction: document.getElementById('ftb-direction').value || 'LONG',
+            product_type: document.getElementById('ftb-product').value || 'NRML',
+            current_market_price: parseFloat(document.getElementById('ftb-cmp').value) || null,
+            entry_price: parseFloat(document.getElementById('ftb-entry').value) || null,
+            stop_loss: parseFloat(document.getElementById('ftb-sl').value) || null,
+            target_price: parseFloat(document.getElementById('ftb-target').value) || null,
+            candle_pattern: document.getElementById('ftb-candle-pattern').value || null,
+            candle_1_conviction: document.getElementById('ftb-candle1-conv').value || null,
+            candle_2_conviction: document.getElementById('ftb-candle2-conv').value || null,
+            max_entry: parseFloat(document.getElementById('ftb-max-entry').value) || null,
+            max_take_profit: parseFloat(document.getElementById('ftb-max-tp').value) || null,
+            min_quantity: parseInt(document.getElementById('ftb-min-qty').value) || null,
+            sl_distance_pct: parseFloat(document.getElementById('ftb-sl-dist').value) || null,
+            span_margin: parseFloat(document.getElementById('ftb-span').value) || null,
+            exposure_margin: parseFloat(document.getElementById('ftb-exposure').value) || null,
+            total_margin: parseFloat(document.getElementById('ftb-total-margin').value) || null,
+            total_margin_required: parseFloat(document.getElementById('ftb-margin-required')?.value?.replace(/,/g, '')) || null,
+            risk_per_point: parseFloat(document.getElementById('ftb-rpp').value) || null,
+            risk_amount: parseFloat(document.getElementById('ftb-risk')?.value?.replace(/,/g, '')) || null,
+            reward_amount: parseFloat(document.getElementById('ftb-reward')?.value?.replace(/,/g, '')) || null,
+            risk_reward_ratio: parseFloat(document.getElementById('ftb-rrr').value) || null,
+            position_value: parseFloat(document.getElementById('ftb-pos-value')?.value?.replace(/,/g, '')) || null,
+            break_even: parseFloat(document.getElementById('ftb-be').value) || null,
+            trailing_stop: parseFloat(document.getElementById('ftb-ts').value) || null,
+            oi: parseInt(document.getElementById('ftb-oi').value) || null,
+            oi_change_pct: parseFloat(document.getElementById('ftb-oi-change').value) || null,
+            volume: parseInt(document.getElementById('ftb-volume').value) || null,
+            comments: document.getElementById('ftb-comments').value || null
+        };
+
+        try {
+            const ftb = window.futuresTBTemplate || {};
+            let result;
+            if (ftb.id) {
+                result = await api('PUT', `/v2/futures-trade-bills/${ftb.id}`, data);
+                if (result.success) toast(`Futures TB for ${ticker} updated!`, 'success');
+            } else {
+                result = await api('POST', '/v2/futures-trade-bills', data);
+                if (result.id) {
+                    window.futuresTBTemplate = window.futuresTBTemplate || {};
+                    window.futuresTBTemplate.id = result.id;
+                    toast(`Futures TB for ${ticker} saved! (#${result.id})`, 'success');
+                }
+            }
+        } catch(e) { toast('Error saving: ' + e.message, 'error'); }
+    }
+
+    async function createAlertFromFuturesTB() {
+        const ftb = window.futuresTBTemplate || {};
+        if (!ftb.id) { toast('Save the Futures TB first', 'error'); return; }
+
+        const ticker = document.getElementById('ftb-tradingsymbol').value || document.getElementById('ftb-ticker').value;
+        const direction = document.getElementById('ftb-direction').value || 'LONG';
+        const isLong = direction === 'LONG';
+        const entry = parseFloat(document.getElementById('ftb-entry').value);
+        const sl = parseFloat(document.getElementById('ftb-sl').value);
+        const target = parseFloat(document.getElementById('ftb-target').value);
+        const qty = parseInt(document.getElementById('ftb-qty').value);
+        const maxEntry = parseFloat(document.getElementById('ftb-max-entry').value) || null;
+        const minQty = parseInt(document.getElementById('ftb-min-qty').value) || null;
+        const maxTP = parseFloat(document.getElementById('ftb-max-tp').value) || null;
+        const lotSize = parseInt(document.getElementById('ftb-lot-size').value) || 1;
+
+        const payload = {
+            symbol: ticker,
+            alert_name: `${ticker} FTB#${ftb.id}`,
+            direction: direction,
+            timeframe: '75min',
+            condition_type: isLong ? 'price_above' : 'price_below',
+            condition_operator: isLong ? '>=' : '<=',
+            condition_value: entry,
+            stop_loss: sl,
+            target_price: target,
+            quantity: qty,
+            max_target_price: maxEntry,
+            min_quantity: minQty ? minQty * lotSize : null,
+            max_take_profit: maxTP,
+            auto_trade: true,
+            exchange: 'NFO',
+            product_type: document.getElementById('ftb-product').value || 'NRML',
+            futures_trade_bill_id: ftb.id,
+            status: 'active'
+        };
+
+        try {
+            const result = await api('POST', '/v2/alerts', payload);
+            if (result.id) {
+                toast(`Alert created for ${ticker} (#${result.id})`, 'success');
+            }
+        } catch(e) { toast('Error creating alert: ' + e.message, 'error'); }
+    }
+
+    function newFuturesTradeBill() {
+        window.futuresTBTemplate = {};
+        switchTab('futures-trade-bill');
+    }
+
+    async function editFuturesTradeBill(id) {
+        try {
+            const bill = await api('GET', `/v2/futures-trade-bills/${id}`);
+            window.futuresTBTemplate = bill;
+            await switchTab('futures-trade-bill');
+        } catch(e) { toast('Error loading: ' + e.message, 'error'); }
+    }
+
 
     // ========== TRADE JOURNAL V2 ==========
     let currentJournal = null;

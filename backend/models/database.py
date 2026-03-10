@@ -1096,6 +1096,15 @@ class Database:
             ALTER TABLE auto_trade_orders ADD direction NVARCHAR(20) DEFAULT 'LONG'
         """)
 
+        # Add exchange column to auto_trade_orders if not exists
+        conn.execute("""
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.columns
+                WHERE object_id = OBJECT_ID('auto_trade_orders') AND name = 'exchange'
+            )
+            ALTER TABLE auto_trade_orders ADD exchange NVARCHAR(20) DEFAULT 'NSE'
+        """)
+
         # Market Engine State — persists background engine config
         conn.execute("""
             IF OBJECT_ID('market_engine_state', 'U') IS NULL
@@ -1285,6 +1294,127 @@ class Database:
                 IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('stock_alerts') AND name = '{col}')
                     ALTER TABLE stock_alerts ADD {col} {col_type}
             """)
+
+        # ══════════════════════════════════════════════════════════════
+        # STOCK ALERTS — Exchange column for NFO/futures support
+        # ══════════════════════════════════════════════════════════════
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('stock_alerts') AND name = 'exchange')
+                ALTER TABLE stock_alerts ADD exchange NVARCHAR(20) DEFAULT 'NSE'
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('stock_alerts') AND name = 'product_type')
+                ALTER TABLE stock_alerts ADD product_type NVARCHAR(20) DEFAULT 'CNC'
+        """)
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('stock_alerts') AND name = 'futures_trade_bill_id')
+                ALTER TABLE stock_alerts ADD futures_trade_bill_id INT
+        """)
+
+        # ══════════════════════════════════════════════════════════════
+        # NSE INSTRUMENTS — Expiry column for futures contracts
+        # ══════════════════════════════════════════════════════════════
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('nse_instruments') AND name = 'expiry')
+                ALTER TABLE nse_instruments ADD expiry DATE
+        """)
+
+        # ══════════════════════════════════════════════════════════════
+        # FUTURES TRADE BILLS — Separate table for F&O trade planning
+        # ══════════════════════════════════════════════════════════════
+        conn.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID('futures_trade_bills') AND type = 'U')
+            CREATE TABLE futures_trade_bills (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                user_id INT NOT NULL,
+
+                -- Contract Info
+                ticker NVARCHAR(100) NOT NULL,
+                symbol NVARCHAR(100),
+                exchange NVARCHAR(20) DEFAULT 'NFO',
+                tradingsymbol NVARCHAR(100),
+                underlying NVARCHAR(100),
+                instrument_type NVARCHAR(20),
+                expiry DATE,
+                lot_size INT DEFAULT 1,
+                tick_size FLOAT DEFAULT 0.05,
+
+                -- Direction & Product
+                direction NVARCHAR(20) DEFAULT 'LONG',
+                product_type NVARCHAR(20) DEFAULT 'NRML',
+
+                -- Position Sizing (lot-based)
+                lots INT DEFAULT 1,
+                quantity INT,
+
+                -- Margin Requirements
+                span_margin FLOAT,
+                exposure_margin FLOAT,
+                total_margin FLOAT,
+                total_margin_required FLOAT,
+                margin_available FLOAT,
+
+                -- Market Data
+                current_market_price FLOAT,
+                oi BIGINT,
+                oi_change_pct FLOAT,
+                volume BIGINT,
+
+                -- Price Levels
+                entry_price FLOAT,
+                stop_loss FLOAT,
+                target_price FLOAT,
+                atr FLOAT,
+
+                -- Smart Entry Zone
+                max_entry FLOAT,
+                max_take_profit FLOAT,
+                min_quantity INT,
+                sl_distance_pct FLOAT,
+
+                -- Candle Analysis
+                candle_pattern NVARCHAR(500),
+                candle_1_conviction NVARCHAR(20),
+                candle_2_conviction NVARCHAR(20),
+
+                -- Risk Calculations
+                max_risk FLOAT,
+                risk_per_point FLOAT,
+                risk_percent FLOAT,
+                risk_amount FLOAT,
+                max_qty_for_risk INT,
+
+                -- Reward Calculations
+                potential_gain FLOAT,
+                reward_amount FLOAT,
+                risk_reward_ratio FLOAT,
+
+                -- Position
+                position_value FLOAT,
+                break_even FLOAT,
+                trailing_stop FLOAT,
+                other_charges FLOAT DEFAULT 0,
+
+                -- Status Flags
+                is_filled BIT DEFAULT 0,
+                stop_entered BIT DEFAULT 0,
+                target_entered BIT DEFAULT 0,
+                journal_entered BIT DEFAULT 0,
+                auto_created BIT DEFAULT 0,
+
+                -- Execution
+                order_id NVARCHAR(100),
+                alert_id INT,
+
+                -- Notes & Metadata
+                comments NVARCHAR(MAX),
+                status NVARCHAR(50) DEFAULT 'active',
+                created_at DATETIME2 DEFAULT GETDATE(),
+                updated_at DATETIME2 DEFAULT GETDATE(),
+
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
 
         conn.commit()
         conn.close()
@@ -1612,6 +1742,113 @@ class Database:
         metrics['break_even'] = entry_price
 
         return metrics
+
+    # ========== FUTURES TRADE BILLS METHODS ==========
+    def create_futures_trade_bill(self, user_id: int, data: Dict) -> int:
+        """Create a new futures trade bill"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        columns = ', '.join(data.keys())
+        placeholders = ', '.join(['?' for _ in data])
+        values = tuple(data.values())
+
+        row = cursor.execute(f"""
+            INSERT INTO futures_trade_bills (user_id, {columns})
+            OUTPUT INSERTED.id
+            VALUES (?, {placeholders})
+        """, (user_id, *values)).fetchone()
+
+        conn.commit()
+        bill_id = int(row[0])
+        conn.close()
+        return bill_id
+
+    def get_futures_trade_bill(self, bill_id: int) -> Optional[Dict]:
+        """Get a specific futures trade bill"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM futures_trade_bills WHERE id = ?', (bill_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def get_futures_trade_bills(self, user_id: int, status: str = None) -> List[Dict]:
+        """Get all futures trade bills for a user"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        if status:
+            cursor.execute("""
+                SELECT * FROM futures_trade_bills
+                WHERE user_id = ? AND status = ?
+                ORDER BY created_at DESC
+            """, (user_id, status))
+        else:
+            cursor.execute("""
+                SELECT * FROM futures_trade_bills
+                WHERE user_id = ? AND status != 'archived'
+                ORDER BY created_at DESC
+            """, (user_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def update_futures_trade_bill(self, bill_id: int, data: Dict) -> bool:
+        """Update a futures trade bill"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        valid_columns = {
+            'ticker', 'symbol', 'exchange', 'tradingsymbol', 'underlying',
+            'instrument_type', 'expiry', 'lot_size', 'tick_size',
+            'direction', 'product_type', 'lots', 'quantity',
+            'span_margin', 'exposure_margin', 'total_margin',
+            'total_margin_required', 'margin_available',
+            'current_market_price', 'oi', 'oi_change_pct', 'volume',
+            'entry_price', 'stop_loss', 'target_price', 'atr',
+            'max_entry', 'max_take_profit', 'min_quantity', 'sl_distance_pct',
+            'candle_pattern', 'candle_1_conviction', 'candle_2_conviction',
+            'max_risk', 'risk_per_point', 'risk_percent', 'risk_amount', 'max_qty_for_risk',
+            'potential_gain', 'reward_amount', 'risk_reward_ratio',
+            'position_value', 'break_even', 'trailing_stop', 'other_charges',
+            'is_filled', 'stop_entered', 'target_entered', 'journal_entered',
+            'auto_created', 'order_id', 'alert_id', 'comments', 'status'
+        }
+        bit_columns = {'is_filled', 'stop_entered', 'target_entered', 'journal_entered', 'auto_created'}
+
+        filtered_data = {}
+        for k, v in data.items():
+            if k in valid_columns:
+                if k in bit_columns:
+                    filtered_data[k] = 1 if v else 0
+                else:
+                    filtered_data[k] = v
+        filtered_data['updated_at'] = datetime.now().isoformat()
+
+        set_clause = ', '.join([f'{k} = ?' for k in filtered_data.keys()])
+        values = tuple(filtered_data.values())
+
+        cursor.execute(f"""
+            UPDATE futures_trade_bills SET {set_clause} WHERE id = ?
+        """, (*values, bill_id))
+
+        conn.commit()
+        success = cursor.rowcount > 0
+        conn.close()
+        return success
+
+    def delete_futures_trade_bill(self, bill_id: int) -> bool:
+        """Archive a futures trade bill (soft delete)"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE futures_trade_bills SET status = 'archived', updated_at = GETDATE()
+            WHERE id = ?
+        """, (bill_id,))
+        conn.commit()
+        success = cursor.rowcount > 0
+        conn.close()
+        return success
 
 
 # Singleton instance

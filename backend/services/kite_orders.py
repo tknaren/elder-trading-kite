@@ -111,21 +111,23 @@ def place_order(
     product: str = PRODUCT_CNC,
     trigger_price: float = None,
     validity: str = VALIDITY_DAY,
-    tag: str = None
+    tag: str = None,
+    exchange: str = None
 ) -> Dict:
     """
     Place a regular order
 
     Args:
-        symbol: Trading symbol (e.g., 'RELIANCE', 'TCS')
+        symbol: Trading symbol (e.g., 'RELIANCE', 'TCS', 'NIFTY25MARFUT')
         transaction_type: 'BUY' or 'SELL'
         quantity: Number of shares (whole numbers only for NSE)
         price: Limit price (optional for MARKET orders)
         order_type: 'MARKET', 'LIMIT', 'SL', 'SL-M'
-        product: 'CNC' (delivery), 'MIS' (intraday)
+        product: 'CNC' (delivery), 'MIS' (intraday), 'NRML' (F&O)
         trigger_price: Trigger price for SL orders
         validity: 'DAY' or 'IOC'
         tag: Optional order tag for tracking
+        exchange: 'NSE' or 'NFO' (default: NSE)
 
     Returns:
         Order result with order_id
@@ -147,7 +149,7 @@ def place_order(
     try:
         order_params = {
             'tradingsymbol': symbol.upper(),
-            'exchange': EXCHANGE_NSE,
+            'exchange': exchange or EXCHANGE_NSE,
             'transaction_type': transaction_type,
             'quantity': quantity,
             'order_type': order_type,
@@ -269,27 +271,27 @@ def place_gtt_oco(
     stop_loss_price: float,
     target_trigger: float,
     target_price: float,
-    product: str = PRODUCT_CNC
+    product: str = PRODUCT_CNC,
+    direction: str = 'LONG',
+    exchange: str = None
 ) -> Dict:
     """
     Place a GTT-OCO (One Cancels Other) order for Stop Loss + Target
 
-    This is the primary bracket strategy for NSE.
-    Creates two triggers: if one executes, the other is cancelled.
-
-    Use Case:
-    - After buying stock, place GTT-OCO to manage the position
-    - Stop Loss: Sell if price drops to stop_loss_trigger
-    - Target: Sell if price rises to target_trigger
+    Supports both LONG and SHORT positions:
+    - LONG: SL below entry (SELL to close), Target above entry (SELL to close)
+    - SHORT: SL above entry (BUY to cover), Target below entry (BUY to cover)
 
     Args:
         symbol: Trading symbol
-        quantity: Number of shares to sell (should match position)
+        quantity: Number of shares (should match position)
         stop_loss_trigger: Price at which SL order triggers
-        stop_loss_price: Limit price for SL sell order
+        stop_loss_price: Limit price for SL order
         target_trigger: Price at which target order triggers
-        target_price: Limit price for target sell order
-        product: 'CNC' for delivery
+        target_price: Limit price for target order
+        product: 'CNC' for delivery, 'NRML' for F&O
+        direction: 'LONG' or 'SHORT'
+        exchange: Exchange (default: NSE)
 
     Returns:
         GTT-OCO result with trigger_id
@@ -302,50 +304,80 @@ def place_gtt_oco(
     if quantity <= 0:
         return {'success': False, 'error': 'Quantity must be a positive integer'}
 
-    if stop_loss_trigger >= target_trigger:
-        return {'success': False, 'error': 'Stop loss must be below target price'}
+    is_long = direction.upper() != 'SHORT'
+    exch = exchange or EXCHANGE_NSE
+
+    # Validate trigger order based on direction
+    if is_long and stop_loss_trigger >= target_trigger:
+        return {'success': False, 'error': 'LONG OCO: Stop loss must be below target price'}
+    if not is_long and stop_loss_trigger <= target_trigger:
+        return {'success': False, 'error': 'SHORT OCO: Stop loss must be above target price'}
+
+    # Exit transaction type: SELL to close LONG, BUY to cover SHORT
+    exit_txn = TRANSACTION_SELL if is_long else TRANSACTION_BUY
 
     try:
         # Get current LTP
-        ltp_data = client.get_ltp([f'NSE:{symbol}'])
-        current_price = ltp_data.get(f'NSE:{symbol}', {}).get('last_price', 0)
+        ltp_data = client.get_ltp([f'{exch}:{symbol}'])
+        current_price = ltp_data.get(f'{exch}:{symbol}', {}).get('last_price', 0)
 
         if current_price == 0:
             return {'success': False, 'error': f'Could not get current price for {symbol}'}
 
-        # OCO order: two SELL orders
-        # Trigger 1: Stop Loss (triggers when price drops)
-        # Trigger 2: Target (triggers when price rises)
-        trigger_id = client.kite.place_gtt(
-            trigger_type=GTT_TYPE_OCO,
-            tradingsymbol=symbol.upper(),
-            exchange=EXCHANGE_NSE,
-            trigger_values=[round(stop_loss_trigger, 2), round(target_trigger, 2)],
-            last_price=current_price,
-            orders=[
+        # OCO trigger_values must be in ascending order for Kite GTT API
+        trigger_vals = sorted([round(stop_loss_trigger, 2), round(target_trigger, 2)])
+
+        # Orders correspond to trigger_values in the same order (ascending)
+        if is_long:
+            # LONG: trigger_vals = [SL (lower), Target (upper)]
+            orders = [
                 {
-                    # Stop Loss Order (triggers on lower price)
-                    'transaction_type': TRANSACTION_SELL,
+                    'transaction_type': exit_txn,
                     'quantity': quantity,
                     'price': round(stop_loss_price, 2),
                     'order_type': ORDER_TYPE_LIMIT,
                     'product': product
                 },
                 {
-                    # Target Order (triggers on higher price)
-                    'transaction_type': TRANSACTION_SELL,
+                    'transaction_type': exit_txn,
                     'quantity': quantity,
                     'price': round(target_price, 2),
                     'order_type': ORDER_TYPE_LIMIT,
                     'product': product
                 }
             ]
+        else:
+            # SHORT: trigger_vals = [Target (lower), SL (upper)]
+            orders = [
+                {
+                    'transaction_type': exit_txn,
+                    'quantity': quantity,
+                    'price': round(target_price, 2),
+                    'order_type': ORDER_TYPE_LIMIT,
+                    'product': product
+                },
+                {
+                    'transaction_type': exit_txn,
+                    'quantity': quantity,
+                    'price': round(stop_loss_price, 2),
+                    'order_type': ORDER_TYPE_LIMIT,
+                    'product': product
+                }
+            ]
+
+        trigger_id = client.kite.place_gtt(
+            trigger_type=GTT_TYPE_OCO,
+            tradingsymbol=symbol.upper(),
+            exchange=exch,
+            trigger_values=trigger_vals,
+            last_price=current_price,
+            orders=orders
         )
 
         return {
             'success': True,
             'trigger_id': trigger_id,
-            'message': f'GTT-OCO placed for {symbol}: SL at ₹{stop_loss_trigger}, Target at ₹{target_trigger}',
+            'message': f'GTT-OCO ({direction}) placed for {symbol}: SL at ₹{stop_loss_trigger}, Target at ₹{target_trigger}',
             'symbol': symbol,
             'quantity': quantity,
             'stop_loss_trigger': stop_loss_trigger,

@@ -2635,6 +2635,227 @@ def load_instruments():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# NFO INSTRUMENTS + FUTURES TRADE BILLS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_v2.route('/instruments/load-nfo', methods=['POST'])
+def load_nfo_instruments():
+    """Load NFO futures instruments from Kite API and cache in database."""
+    try:
+        client = get_client()
+        if not client or not client.kite:
+            return jsonify({'error': 'Kite not connected. Login first.'}), 400
+        if not client._authenticated:
+            return jsonify({'error': 'Not authenticated with Kite. Please login first.'}), 401
+
+        client._rate_limit()
+        instruments = client.kite.instruments('NFO')
+
+        db = get_db()
+        loaded_count = 0
+
+        for inst in instruments:
+            # Kite API returns instrument_type='FUT' and segment='NFO-FUT' for futures
+            if inst.get('instrument_type') != 'FUT':
+                continue
+
+            symbol = inst['tradingsymbol']
+            name = inst.get('name', symbol)
+            token = inst['instrument_token']
+            lot_size = inst.get('lot_size', 1)
+            tick_size = inst.get('tick_size', 0.05)
+            expiry = inst.get('expiry')
+            inst_type = inst.get('instrument_type', '')
+            segment = inst.get('segment', 'NFO')
+
+            db.execute('''
+                MERGE nse_instruments AS target
+                USING (SELECT ? AS tradingsymbol) AS source
+                ON target.tradingsymbol = source.tradingsymbol
+                WHEN MATCHED THEN
+                    UPDATE SET name = ?, instrument_token = ?, lot_size = ?,
+                               tick_size = ?, expiry = ?, instrument_type = ?,
+                               segment = ?, exchange = 'NFO', updated_at = GETDATE()
+                WHEN NOT MATCHED THEN
+                    INSERT (tradingsymbol, name, instrument_token, lot_size, tick_size,
+                            expiry, instrument_type, segment, exchange)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'NFO');
+            ''', (symbol, name, token, lot_size, tick_size, expiry, inst_type, segment,
+                  symbol, name, token, lot_size, tick_size, expiry, inst_type, segment))
+            loaded_count += 1
+
+        db.commit()
+        return jsonify({
+            'success': True,
+            'loaded': loaded_count,
+            'message': f'Loaded {loaded_count} NFO futures instruments'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@api_v2.route('/instruments/search-futures', methods=['GET'])
+def search_futures_instruments():
+    """Search NFO futures instruments by underlying symbol."""
+    query = request.args.get('q', '').strip().upper()
+    limit = request.args.get('limit', 20, type=int)
+    if not query or len(query) < 2:
+        return jsonify([])
+
+    db = get_db()
+    rows = db.execute('''
+        SELECT TOP (?) tradingsymbol, name, instrument_token, lot_size, tick_size,
+                       expiry, instrument_type, segment
+        FROM nse_instruments
+        WHERE (tradingsymbol LIKE ? OR name LIKE ?)
+              AND exchange = 'NFO'
+              AND (expiry IS NULL OR expiry >= CAST(GETDATE() AS DATE))
+        ORDER BY expiry ASC, tradingsymbol ASC
+    ''', (limit, f'{query}%', f'%{query}%')).fetchall()
+
+    return jsonify([{
+        'tradingsymbol': r['tradingsymbol'],
+        'name': r['name'],
+        'instrument_token': r['instrument_token'],
+        'lot_size': r['lot_size'],
+        'tick_size': r['tick_size'],
+        'expiry': str(r['expiry']) if r['expiry'] else None,
+        'instrument_type': r['instrument_type'],
+        'segment': r['segment']
+    } for r in rows])
+
+
+@api_v2.route('/futures/quote/<tradingsymbol>', methods=['GET'])
+def get_futures_quote(tradingsymbol):
+    """Get full quote for a futures contract (CMP, OI, volume) from Kite."""
+    try:
+        client = get_client()
+        if not client or not client.kite or not client._authenticated:
+            return jsonify({'error': 'Kite not connected'}), 400
+
+        full_sym = f'NFO:{tradingsymbol.upper()}'
+        client._rate_limit()
+        quote_data = client.kite.quote([full_sym])
+
+        if quote_data and full_sym in quote_data:
+            q = quote_data[full_sym]
+            return jsonify({
+                'success': True,
+                'last_price': q.get('last_price', 0),
+                'oi': q.get('oi', 0),
+                'oi_day_high': q.get('oi_day_high', 0),
+                'oi_day_low': q.get('oi_day_low', 0),
+                'volume': q.get('volume', 0),
+                'net_change': q.get('net_change', 0),
+                'ohlc': q.get('ohlc', {}),
+                'lower_circuit': q.get('lower_circuit_limit', 0),
+                'upper_circuit': q.get('upper_circuit_limit', 0),
+            })
+        return jsonify({'error': f'No quote data for {tradingsymbol}'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@api_v2.route('/futures/margin', methods=['POST'])
+def get_futures_margin():
+    """Get SPAN and exposure margin for a futures contract from Kite."""
+    try:
+        client = get_client()
+        if not client or not client.kite:
+            return jsonify({'error': 'Kite not connected'}), 400
+
+        data = request.json
+        if not data or not data.get('tradingsymbol'):
+            return jsonify({'error': 'tradingsymbol required'}), 400
+
+        params = [{
+            'exchange': 'NFO',
+            'tradingsymbol': data['tradingsymbol'],
+            'transaction_type': data.get('transaction_type', 'BUY'),
+            'variety': 'regular',
+            'product': data.get('product', 'NRML'),
+            'order_type': 'MARKET',
+            'quantity': int(data.get('quantity', data.get('lot_size', 1)))
+        }]
+
+        client._rate_limit()
+        margins = client.kite.order_margins(params)
+
+        if margins and len(margins) > 0:
+            m = margins[0]
+            return jsonify({
+                'success': True,
+                'span': m.get('span', 0),
+                'exposure': m.get('exposure', 0),
+                'total': m.get('total', 0),
+                'tradingsymbol': data['tradingsymbol'],
+                'quantity': params[0]['quantity']
+            })
+        return jsonify({'error': 'No margin data returned'}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@api_v2.route('/futures-trade-bills', methods=['GET'])
+def get_futures_trade_bills():
+    """List all futures trade bills."""
+    from models.database import get_database
+    db = get_database()
+    user_id = get_user_id()
+    status = request.args.get('status')
+    bills = db.get_futures_trade_bills(user_id, status=status)
+    return jsonify(bills)
+
+
+@api_v2.route('/futures-trade-bills/<int:bill_id>', methods=['GET'])
+def get_futures_trade_bill(bill_id):
+    """Get a single futures trade bill."""
+    from models.database import get_database
+    db = get_database()
+    bill = db.get_futures_trade_bill(bill_id)
+    if not bill:
+        return jsonify({'error': 'Futures trade bill not found'}), 404
+    return jsonify(bill)
+
+
+@api_v2.route('/futures-trade-bills', methods=['POST'])
+def create_futures_trade_bill():
+    """Create a new futures trade bill."""
+    from models.database import get_database
+    db = get_database()
+    user_id = get_user_id()
+    data = request.json
+    if not data or not data.get('ticker'):
+        return jsonify({'error': 'ticker required'}), 400
+
+    bill_id = db.create_futures_trade_bill(user_id, data)
+    return jsonify({'success': True, 'id': bill_id})
+
+
+@api_v2.route('/futures-trade-bills/<int:bill_id>', methods=['PUT'])
+def update_futures_trade_bill(bill_id):
+    """Update a futures trade bill."""
+    from models.database import get_database
+    db = get_database()
+    data = request.json
+    success = db.update_futures_trade_bill(bill_id, data)
+    if success:
+        return jsonify({'success': True})
+    return jsonify({'error': 'Not found or no changes'}), 404
+
+
+@api_v2.route('/futures-trade-bills/<int:bill_id>', methods=['DELETE'])
+def delete_futures_trade_bill(bill_id):
+    """Archive a futures trade bill (soft delete)."""
+    from models.database import get_database
+    db = get_database()
+    success = db.delete_futures_trade_bill(bill_id)
+    if success:
+        return jsonify({'success': True})
+    return jsonify({'error': 'Not found'}), 404
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SYNC ALL ENDPOINT (Orders + Positions + Holdings from Kite)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -4023,8 +4244,13 @@ def create_alert():
     symbol = data.get('symbol', '').strip()
     if not symbol:
         return jsonify({'error': 'Symbol is required'}), 400
-    # Store bare symbol without exchange prefix (all trades are NSE)
-    symbol = symbol.replace('NSE:', '').strip().upper()
+    # Store bare symbol without exchange prefix
+    exchange = data.get('exchange', 'NSE').upper()
+    if exchange == 'NSE':
+        symbol = symbol.replace('NSE:', '').strip().upper()
+    else:
+        # For NFO, keep symbol as-is (e.g., NIFTY25MARFUT)
+        symbol = symbol.replace('NFO:', '').strip().upper()
 
     row = db.execute('''
         INSERT INTO stock_alerts (
@@ -4033,10 +4259,11 @@ def create_alert():
             timeframe, candle_confirm, candle_pattern,
             auto_trade, stop_loss, target_price, quantity,
             cooldown_minutes, notes, trade_bill_id,
-            max_target_price, min_quantity, max_take_profit
+            max_target_price, min_quantity, max_take_profit,
+            exchange, futures_trade_bill_id
         )
         OUTPUT INSERTED.id
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         user_id, symbol,
         data.get('alert_name', f'{symbol} Alert'),
@@ -4056,7 +4283,9 @@ def create_alert():
         data.get('trade_bill_id'),
         data.get('max_target_price'),
         data.get('min_quantity'),
-        data.get('max_take_profit')
+        data.get('max_take_profit'),
+        exchange,
+        data.get('futures_trade_bill_id')
     )).fetchone()
 
     db.commit()
